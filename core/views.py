@@ -10,7 +10,7 @@ from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSe
 from .serializers import (
     ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
-    SystemSettingSerializer, SystemSettingBulkUpdateSerializer,
+    AIAdjustRequestSerializer, SystemSettingSerializer, SystemSettingBulkUpdateSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -194,6 +194,7 @@ def ai_generate_testcase(request):
 
     project_id = serializer.validated_data['project_id']
     requirement = serializer.validated_data['requirement']
+    target = serializer.validated_data.get('target', '')
 
     try:
         project = Project.objects.get(pk=project_id)
@@ -205,6 +206,8 @@ def ai_generate_testcase(request):
             project_name=project.name,
             base_url=project.base_url or '',
             requirement=requirement,
+            project=project,
+            target=target,
         )
     except Exception as e:
         logger.exception("AI generate testcase failed")
@@ -219,20 +222,30 @@ def ai_generate_testcase(request):
             description=item.get('description', ''),
             steps=item.get('steps', ''),
             expected_result=item.get('expected_result', ''),
+            markdown_content=item.get('markdown_content', ''),
+            priority=item.get('priority', ''),
+            test_type=item.get('test_type', ''),
             status='draft',
             is_ai_generated=True,
         )
         created.append(tc)
 
-    # 保存 AI 对话记录
-    AIConversation.objects.create(
+    # 保存 AI 对话记录（存储 messages 格式）
+    messages = [
+        {"role": "user", "content": requirement},
+        {"role": "assistant", "content": json.dumps(generated, ensure_ascii=False)},
+    ]
+    conv = AIConversation.objects.create(
         conversation_type='generate',
         project=project,
         user_message=requirement,
-        ai_response=json.dumps(generated, ensure_ascii=False),
+        ai_response=json.dumps(messages, ensure_ascii=False),
     )
 
-    return Response(TestCaseSerializer(created, many=True).data, status=status.HTTP_201_CREATED)
+    return Response({
+        'testcases': TestCaseSerializer(created, many=True).data,
+        'conversation_id': conv.id,
+    }, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
@@ -270,7 +283,80 @@ def ai_analyze_result(request):
     return Response(analysis)
 
 
-# ─── 系统设置 ───
+@api_view(['POST'])
+def ai_adjust_testcase(request):
+    """AI 对话式调整测试用例"""
+    serializer = AIAdjustRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    project_id = serializer.validated_data['project_id']
+    conversation_id = serializer.validated_data.get('conversation_id')
+    user_feedback = serializer.validated_data['user_feedback']
+    current_cases = serializer.validated_data['current_cases']
+
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    # 恢复之前的对话上下文
+    conversation_history = []
+    if conversation_id:
+        try:
+            prev_conv = AIConversation.objects.get(pk=conversation_id)
+            # ai_response 存储的是 messages 数组
+            try:
+                prev_messages = json.loads(prev_conv.ai_response)
+                if isinstance(prev_messages, list):
+                    conversation_history = prev_messages
+            except (json.JSONDecodeError, TypeError):
+                pass
+        except AIConversation.DoesNotExist:
+            pass
+
+    if not conversation_history:
+        # 从项目最近的 generate 类型对话恢复
+        prev_conv = AIConversation.objects.filter(
+            project=project, conversation_type='generate'
+        ).order_by('-created_at').first()
+        if prev_conv:
+            try:
+                prev_messages = json.loads(prev_conv.ai_response)
+                if isinstance(prev_messages, list):
+                    conversation_history = prev_messages
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    try:
+        adjusted = ai_engine.adjust_testcases(
+            project=project,
+            conversation_history=conversation_history,
+            user_feedback=user_feedback,
+            current_cases=current_cases,
+        )
+    except Exception as e:
+        logger.exception("AI adjust testcase failed")
+        return Response({'error': f'AI 调整失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # 追加到对话记录
+    conversation_history.append({"role": "user", "content": user_feedback})
+    conversation_history.append({
+        "role": "assistant",
+        "content": json.dumps(adjusted, ensure_ascii=False),
+    })
+
+    conv = AIConversation.objects.create(
+        conversation_type='chat',
+        project=project,
+        user_message=user_feedback,
+        ai_response=json.dumps(conversation_history, ensure_ascii=False),
+    )
+
+    return Response({
+        'testcases': adjusted,
+        'conversation_id': conv.id,
+    })
+
 
 @api_view(['GET', 'PUT'])
 def settings_view(request):

@@ -7,6 +7,13 @@ class Project(models.Model):
     name = models.CharField('项目名称', max_length=200)
     description = models.TextField('项目描述', blank=True, default='')
     base_url = models.CharField('测试目标 URL', max_length=500, blank=True, default='')
+    # Git 仓库配置
+    repo_url = models.CharField('Git 仓库地址', max_length=500, blank=True, default='')
+    repo_username = models.CharField('仓库账号', max_length=200, blank=True, default='')
+    repo_password = models.CharField('仓库凭证/密码', max_length=500, blank=True, default='')
+    github_url = models.CharField('GitHub 地址', max_length=500, blank=True, default='')
+    github_token = models.CharField('GitHub Token', max_length=500, blank=True, default='')
+    local_repo_path = models.CharField('本地仓库路径', max_length=500, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -46,6 +53,13 @@ class TestCase(models.Model):
     expected_result = models.TextField('预期结果')
     status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='draft')
     is_ai_generated = models.BooleanField('AI 生成', default=False)
+    markdown_content = models.TextField('Markdown 内容', blank=True, default='')
+    priority = models.CharField(
+        '优先级', max_length=10,
+        choices=[('P0', 'P0'), ('P1', 'P1'), ('P2', 'P2')],
+        blank=True, default=''
+    )
+    test_type = models.CharField('测试类型', max_length=50, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -109,10 +123,12 @@ class SystemSetting(models.Model):
 
     # ── 默认设置 ──
     DEFAULTS = {
-        'claude_cli_path': {'value': 'claude', 'description': 'Claude CLI 可执行文件路径'},
+        'anthropic_api_key': {'value': '', 'description': 'Anthropic API Key（用于 AI 生成和分析）'},
+        'anthropic_model': {'value': 'claude-sonnet-4-20250514', 'description': 'Anthropic AI 模型名称'},
         'max_workers': {'value': '3', 'description': '同时执行的最大测试用例数量'},
         'execution_timeout': {'value': '120', 'description': '单个用例最大执行时间（秒）'},
         'api_base_url': {'value': '/api', 'description': '后端 API 基础地址'},
+        'repo_base_path': {'value': 'repos', 'description': 'Git 仓库克隆目标根目录'},
     }
 
     @classmethod

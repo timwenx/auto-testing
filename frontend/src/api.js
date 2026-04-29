@@ -6,6 +6,13 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// AI 专用实例（更长超时）
+const aiApi = axios.create({
+  baseURL: '/api',
+  timeout: 120000,
+  headers: { 'Content-Type': 'application/json' },
+})
+
 // ─── 项目 ───
 export const getProjects = (params) => api.get('/projects/', { params })
 export const getProject = (id) => api.get(`/projects/${id}/`)
@@ -29,8 +36,9 @@ export const executeProject = (projectId) => api.post(`/projects/${projectId}/ex
 
 // ─── AI ───
 export const getAIConversations = (params) => api.get('/ai/conversations/', { params })
-export const aiGenerateTestCase = (data) => api.post('/ai/generate-testcase/', data)
-export const aiAnalyzeResult = (data) => api.post('/ai/analyze-result/', data)
+export const aiGenerateTestCase = (data) => aiApi.post('/ai/generate-testcase/', data)
+export const aiAnalyzeResult = (data) => aiApi.post('/ai/analyze-result/', data)
+export const aiAdjustTestCase = (data) => aiApi.post('/ai/adjust-testcase/', data)
 
 // ─── 系统 ───
 export const healthCheck = () => api.get('/health/')

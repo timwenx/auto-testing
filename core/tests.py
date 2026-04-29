@@ -218,13 +218,13 @@ class SystemSettingTest(TestCase):
     """Tests for SystemSetting model and API."""
 
     def test_get_default(self):
-        val = SystemSetting.get('claude_cli_path')
-        self.assertEqual(val, 'claude')
+        val = SystemSetting.get('max_workers')
+        self.assertEqual(val, '3')
 
     def test_get_custom(self):
-        SystemSetting.objects.create(key='claude_cli_path', value='/usr/local/bin/claude')
-        val = SystemSetting.get('claude_cli_path')
-        self.assertEqual(val, '/usr/local/bin/claude')
+        SystemSetting.objects.create(key='anthropic_api_key', value='sk-ant-test')
+        val = SystemSetting.get('anthropic_api_key')
+        self.assertEqual(val, 'sk-ant-test')
 
     def test_get_missing_returns_default(self):
         val = SystemSetting.get('nonexistent', 'fallback')
@@ -232,28 +232,29 @@ class SystemSettingTest(TestCase):
 
     def test_get_all_dict_with_defaults(self):
         result = SystemSetting.get_all_dict()
-        self.assertIn('claude_cli_path', result)
+        self.assertIn('anthropic_api_key', result)
         self.assertIn('max_workers', result)
-        self.assertEqual(result['claude_cli_path'], 'claude')
+        self.assertIn('anthropic_model', result)
+        self.assertEqual(result['anthropic_model'], 'claude-sonnet-4-20250514')
 
     def test_settings_get_endpoint(self):
         client = APIClient()
         resp = client.get('/api/settings/')
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertIn('claude_cli_path', resp.data)
+        self.assertIn('anthropic_api_key', resp.data)
 
     def test_settings_put_endpoint(self):
         client = APIClient()
         resp = client.put(
             '/api/settings/',
-            {'settings': {'claude_cli_path': '/custom/path', 'max_workers': '5'}},
+            {'settings': {'anthropic_api_key': 'sk-ant-test', 'max_workers': '5'}},
             format='json',
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data['claude_cli_path'], '/custom/path')
+        self.assertEqual(resp.data['anthropic_api_key'], 'sk-ant-test')
         self.assertEqual(resp.data['max_workers'], '5')
         # Verify persisted
-        self.assertEqual(SystemSetting.get('claude_cli_path'), '/custom/path')
+        self.assertEqual(SystemSetting.get('anthropic_api_key'), 'sk-ant-test')
 
 
 class SystemStatsTest(TestCase):
