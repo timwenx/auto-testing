@@ -293,6 +293,7 @@ def ai_adjust_testcase(request):
     conversation_id = serializer.validated_data.get('conversation_id')
     user_feedback = serializer.validated_data['user_feedback']
     current_cases = serializer.validated_data['current_cases']
+    testcase_ids = serializer.validated_data.get('testcase_ids', [])
 
     try:
         project = Project.objects.get(pk=project_id)
@@ -337,6 +338,27 @@ def ai_adjust_testcase(request):
     except Exception as e:
         logger.exception("AI adjust testcase failed")
         return Response({'error': f'AI 调整失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # 将调整后的用例更新到数据库
+    # 策略：按位置匹配 testcase_ids，更新对应记录
+    if testcase_ids:
+        existing_tcs = TestCase.objects.filter(
+            id__in=testcase_ids, project=project
+        )
+        tc_map = {tc.id: tc for tc in existing_tcs}
+
+        for idx, tc_id in enumerate(testcase_ids):
+            if tc_id in tc_map and idx < len(adjusted):
+                item = adjusted[idx]
+                tc = tc_map[tc_id]
+                tc.name = item.get('name', tc.name)
+                tc.description = item.get('description', tc.description)
+                tc.steps = item.get('steps', tc.steps)
+                tc.expected_result = item.get('expected_result', tc.expected_result)
+                tc.markdown_content = item.get('markdown_content', tc.markdown_content)
+                tc.priority = item.get('priority', tc.priority)
+                tc.test_type = item.get('test_type', tc.test_type)
+                tc.save()
 
     # 追加到对话记录
     conversation_history.append({"role": "user", "content": user_feedback})

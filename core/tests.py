@@ -183,6 +183,22 @@ class AIEndpointTest(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_adjust_missing_fields(self):
+        resp = self.client.post('/api/ai/adjust-testcase/', {}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_adjust_nonexistent_project(self):
+        resp = self.client.post(
+            '/api/ai/adjust-testcase/',
+            {
+                'project_id': 99999,
+                'user_feedback': 'add more cases',
+                'current_cases': [{'name': 'test', 'steps': 's', 'expected_result': 'r'}],
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
 
 class AIConversationAPITest(TestCase):
     """Tests for AI conversation list endpoint."""
@@ -273,3 +289,102 @@ class SystemStatsTest(TestCase):
         resp = client.get('/api/health/')
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data['status'], 'ok')
+
+
+class NewFieldsTest(TestCase):
+    """Tests for markdown_content, priority, test_type fields on TestCase."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+
+    def test_create_testcase_with_new_fields(self):
+        data = {
+            'project': self.project.id,
+            'name': 'Markdown TC',
+            'steps': 'step1',
+            'expected_result': 'ok',
+            'markdown_content': '# Test\n\n## Steps\n1. Go to page',
+            'priority': 'P0',
+            'test_type': '功能',
+        }
+        client = APIClient()
+        resp = client.post('/api/testcases/', data, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['priority'], 'P0')
+        self.assertEqual(resp.data['test_type'], '功能')
+        self.assertIn('# Test', resp.data['markdown_content'])
+
+    def test_testcase_new_fields_defaults(self):
+        tc = TC_Model.objects.create(
+            project=self.project, name='Default', steps='s', expected_result='r',
+        )
+        self.assertEqual(tc.markdown_content, '')
+        self.assertEqual(tc.priority, '')
+        self.assertEqual(tc.test_type, '')
+
+    def test_testcase_priority_choices(self):
+        tc = TC_Model.objects.create(
+            project=self.project, name='P0 TC', steps='s', expected_result='r', priority='P0',
+        )
+        self.assertEqual(tc.priority, 'P0')
+        tc2 = TC_Model.objects.create(
+            project=self.project, name='P1 TC', steps='s', expected_result='r', priority='P1',
+        )
+        self.assertEqual(tc2.priority, 'P1')
+
+
+class ProjectSerializerSecurityTest(TestCase):
+    """Tests for sensitive field handling in ProjectSerializer."""
+
+    def test_password_not_in_response(self):
+        client = APIClient()
+        resp = client.post('/api/projects/', {
+            'name': 'Secure Project',
+            'repo_url': 'https://github.com/test/repo.git',
+            'repo_password': 'secret123',
+            'github_token': 'ghp_xxx',
+        }, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        # Sensitive fields should NOT appear in response
+        self.assertNotIn('repo_password', resp.data)
+        self.assertNotIn('github_token', resp.data)
+        # Non-sensitive fields should appear
+        self.assertEqual(resp.data['repo_url'], 'https://github.com/test/repo.git')
+
+    def test_password_stored_in_db(self):
+        client = APIClient()
+        resp = client.post('/api/projects/', {
+            'name': 'Stored',
+            'repo_password': 'secret',
+            'github_token': 'ghp_xxx',
+        }, format='json')
+        p = Project.objects.get(pk=resp.data['id'])
+        self.assertEqual(p.repo_password, 'secret')
+        self.assertEqual(p.github_token, 'ghp_xxx')
+
+
+class GitRepoFieldsTest(TestCase):
+    """Tests for Git repo fields on Project model."""
+
+    def test_project_git_fields(self):
+        p = Project.objects.create(
+            name='Git Project',
+            repo_url='https://github.com/test/repo.git',
+            repo_username='user',
+            repo_password='pass',
+            github_url='https://github.com/test/repo',
+            github_token='ghp_xxx',
+        )
+        self.assertEqual(p.repo_url, 'https://github.com/test/repo.git')
+        self.assertEqual(p.repo_username, 'user')
+        self.assertEqual(p.repo_password, 'pass')
+        self.assertEqual(p.local_repo_path, '')
+
+    def test_project_git_fields_defaults(self):
+        p = Project.objects.create(name='No Git')
+        self.assertEqual(p.repo_url, '')
+        self.assertEqual(p.repo_username, '')
+        self.assertEqual(p.repo_password, '')
+        self.assertEqual(p.github_url, '')
+        self.assertEqual(p.github_token, '')
+        self.assertEqual(p.local_repo_path, '')

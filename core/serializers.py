@@ -88,6 +88,11 @@ class AIAdjustRequestSerializer(serializers.Serializer):
         child=serializers.DictField(),
         help_text='当前的用例列表'
     )
+    testcase_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False, default=[],
+        help_text='当前用例对应的数据库 TestCase ID 列表（用于更新已有记录）'
+    )
 
 
 class AIAnalyzeRequestSerializer(serializers.Serializer):
