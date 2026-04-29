@@ -229,6 +229,7 @@ const aiGenerating = ref(false)
 const aiRequirement = ref('')
 const aiTarget = ref('')
 const aiGeneratedCases = ref([])
+const aiTestcaseIds = ref([])
 const aiConversationId = ref(null)
 const aiFeedback = ref('')
 const aiAdjusting = ref(false)
@@ -315,6 +316,7 @@ const handleAIGenerate = async () => {
     })
     // Backend returns { testcases: [...], conversation_id }
     aiGeneratedCases.value = data.testcases || []
+    aiTestcaseIds.value = (data.testcases || []).map(tc => tc.id)
     aiConversationId.value = data.conversation_id || null
     if (aiGeneratedCases.value.length) {
       ElMessage.success(`AI 生成了 ${aiGeneratedCases.value.length} 个测试用例`)
@@ -345,6 +347,7 @@ const handleAIFeedback = async () => {
       conversation_id: aiConversationId.value,
       user_feedback: aiFeedback.value,
       current_cases: currentCases,
+      testcase_ids: aiTestcaseIds.value,
     })
     aiGeneratedCases.value = data.testcases || []
     aiConversationId.value = data.conversation_id || aiConversationId.value
@@ -362,12 +365,13 @@ const handleAISaveAll = async () => {
   if (!aiGeneratedCases.value.length) return
   aiSaving.value = true
   try {
-    // The test cases were already saved by the backend during generation.
-    // Reload from DB to get the actual IDs.
+    // Cases are already saved in DB during generation and updated during adjustment.
+    // Just reload from DB to refresh the list.
+    const count = aiGeneratedCases.value.length
     await loadData()
     showAIGenerate.value = false
     resetAIDialog()
-    ElMessage.success(`已保存 ${aiGeneratedCases.value.length} 个测试用例`)
+    ElMessage.success(`已保存 ${count} 个测试用例`)
   } finally {
     aiSaving.value = false
   }
@@ -375,6 +379,7 @@ const handleAISaveAll = async () => {
 
 const resetAIDialog = () => {
   aiGeneratedCases.value = []
+  aiTestcaseIds.value = []
   aiConversationId.value = null
   aiFeedback.value = ''
   aiTarget.value = ''
