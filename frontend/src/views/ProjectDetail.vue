@@ -5,9 +5,14 @@
       <template #header>
         <div class="card-header">
           <span>{{ project.name }}</span>
-          <el-button type="primary" size="small" @click="handleExecuteAll" :loading="executingAll">
-            <el-icon><VideoPlay /></el-icon> 批量执行
-          </el-button>
+          <div>
+            <el-button type="primary" size="small" @click="handleExecuteAll" :loading="executingAll">
+              <el-icon><VideoPlay /></el-icon> 批量执行
+            </el-button>
+            <el-button type="warning" size="small" @click="handleExecuteAllAgent" :loading="executingAllAgent">
+              <el-icon><Cpu /></el-icon> Agent 批量执行
+            </el-button>
+          </div>
         </div>
       </template>
       <el-descriptions :column="2" size="small">
@@ -61,10 +66,13 @@
           </template>
         </el-table-column>
         <el-table-column prop="execution_count" label="执行次数" width="90" />
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="400" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="handleExecute(row)">执行</el-button>
+            <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
+            <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
             <el-button size="small" text @click="showDetail(row)">详情</el-button>
+            <el-button size="small" text type="info" @click="handleViewExecutions(row)">执行记录</el-button>
             <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -201,6 +209,114 @@
         </template>
       </template>
     </el-dialog>
+
+    <!-- Agent 用例调整对话框 -->
+    <AgentRefineDialog
+      :visible="showAgentRefine"
+      :testcase-id="agentRefineTestcaseId"
+      @close="showAgentRefine = false"
+      @updated="loadData"
+    />
+
+    <!-- 执行详情对话框 -->
+    <el-dialog v-model="showExecutionDetail" title="执行详情" width="900px">
+      <div v-loading="executionDetailLoading">
+        <template v-if="executionDetail">
+          <el-descriptions :column="2" border size="small" style="margin-bottom: 16px">
+            <el-descriptions-item label="状态">
+              <el-tag :type="statusType(executionDetail.status)" size="small">{{ executionDetail.status }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="执行模式">{{ executionDetail.execution_mode }}</el-descriptions-item>
+            <el-descriptions-item label="耗时">{{ executionDetail.duration ? executionDetail.duration + 's' : '-' }}</el-descriptions-item>
+            <el-descriptions-item label="工具调用">{{ executionDetail.tool_calls_count }} 次</el-descriptions-item>
+            <el-descriptions-item label="AI 模型">{{ executionDetail.ai_model || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="创建时间">{{ executionDetail.created_at }}</el-descriptions-item>
+          </el-descriptions>
+
+          <!-- 逐步执行日志（时间线） -->
+          <template v-if="executionDetail.step_logs && executionDetail.step_logs.length">
+            <h4 style="margin: 16px 0 8px">逐步执行日志</h4>
+            <el-timeline>
+              <el-timeline-item
+                v-for="step in executionDetail.step_logs"
+                :key="step.step_num"
+                :timestamp="step.timestamp"
+                placement="top"
+              >
+                <el-card shadow="never" body-style="padding: 10px 14px">
+                  <div style="display: flex; justify-content: space-between; align-items: center">
+                    <div>
+                      <el-tag size="small" effect="plain">{{ step.action }}</el-tag>
+                      <span v-if="step.target" style="margin-left: 8px; font-size: 13px; color: #606266">{{ step.target }}</span>
+                    </div>
+                    <el-button
+                      v-if="step.screenshot_path"
+                      size="small"
+                      text
+                      type="primary"
+                      @click="handlePreviewImage('/api/executions/screenshots/?path=' + encodeURIComponent(step.screenshot_path))"
+                    >
+                      查看截图
+                    </el-button>
+                  </div>
+                  <div v-if="step.result" style="margin-top: 6px; font-size: 12px; color: #909399; word-break: break-all">
+                    {{ step.result }}
+                  </div>
+                </el-card>
+              </el-timeline-item>
+            </el-timeline>
+          </template>
+
+          <!-- 截图缩略图 -->
+          <template v-if="executionDetail.screenshots && executionDetail.screenshots.length">
+            <h4 style="margin: 16px 0 8px">截图</h4>
+            <div class="screenshot-grid">
+              <div
+                v-for="(src, idx) in executionDetail.screenshots"
+                :key="idx"
+                class="screenshot-thumb"
+                @click="handlePreviewImage('/api/executions/screenshots/?path=' + encodeURIComponent(src))"
+              >
+                <el-image
+                  :src="'/api/executions/screenshots/?path=' + encodeURIComponent(src)"
+                  fit="cover"
+                  style="width: 100%; height: 100px"
+                >
+                  <template #error>
+                    <div style="display: flex; align-items: center; justify-content: center; height: 100px; color: #c0c4cc">
+                      <span>加载失败</span>
+                    </div>
+                  </template>
+                </el-image>
+              </div>
+            </div>
+          </template>
+
+          <!-- Agent 原始响应 -->
+          <template v-if="executionDetail.agent_response && executionDetail.agent_response.response_text">
+            <h4 style="margin: 16px 0 8px">Agent 回复</h4>
+            <div class="agent-response-box">
+              <pre style="white-space: pre-wrap; margin: 0; font-size: 13px">{{ executionDetail.agent_response.response_text }}</pre>
+            </div>
+          </template>
+
+          <!-- 原始日志 -->
+          <el-collapse style="margin-top: 16px">
+            <el-collapse-item title="原始执行日志">
+              <pre style="white-space: pre-wrap; font-size: 12px; max-height: 300px; overflow-y: auto">{{ executionDetail.log }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </template>
+        <el-empty v-else-if="!executionDetailLoading" description="暂无执行记录" />
+      </div>
+    </el-dialog>
+
+    <!-- 图片预览 -->
+    <el-dialog v-model="showImagePreview" title="截图预览" width="70%">
+      <div style="text-align: center">
+        <el-image :src="previewImage" fit="contain" style="max-height: 70vh" />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -210,9 +326,13 @@ import { useRoute } from 'vue-router'
 import { marked } from 'marked'
 import {
   getProject, getProjectTestCases, createTestCase,
-  deleteTestCase, executeTestCase, executeProject, aiGenerateTestCase, aiAdjustTestCase,
+  deleteTestCase, executeTestCase, executeProject,
+  executeTestCaseAgent, executeProjectAgent,
+  aiGenerateTestCase, aiAdjustTestCase,
+  getExecutions,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AgentRefineDialog from './AgentRefineDialog.vue'
 
 const route = useRoute()
 const projectId = route.params.id
@@ -235,6 +355,13 @@ const aiFeedback = ref('')
 const aiAdjusting = ref(false)
 const aiSaving = ref(false)
 const expandedCaseIdx = ref(-1)
+const showAgentRefine = ref(false)
+const agentRefineTestcaseId = ref(null)
+const showExecutionDetail = ref(false)
+const executionDetail = ref(null)
+const executionDetailLoading = ref(false)
+const previewImage = ref('')
+const showImagePreview = ref(false)
 const form = ref({ name: '', description: '', steps: '', expected_result: '' })
 
 // Configure marked for safe rendering
@@ -301,6 +428,36 @@ const handleExecuteAll = async () => {
   } finally {
     executingAll.value = false
   }
+}
+
+const handleExecuteAgent = async (row) => {
+  try {
+    await executeTestCaseAgent(row.id)
+    ElMessage.success('Agent 执行已提交')
+    row.status = 'running'
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || 'Agent 执行失败')
+  }
+}
+
+const executingAllAgent = ref(false)
+
+const handleExecuteAllAgent = async () => {
+  executingAllAgent.value = true
+  try {
+    const { data } = await executeProjectAgent(projectId)
+    ElMessage.success(`已提交 ${data.length} 个 Agent 执行`)
+    await loadData()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || 'Agent 执行失败')
+  } finally {
+    executingAllAgent.value = false
+  }
+}
+
+const handleAgentRefine = (row) => {
+  agentRefineTestcaseId.value = row.id
+  showAgentRefine.value = true
 }
 
 const handleAIGenerate = async () => {
@@ -398,6 +555,28 @@ const renderCaseMarkdown = (md) => {
 const showDetail = (row) => {
   detailTC.value = row
   showDetailDialog.value = true
+}
+
+const handleViewExecutions = async (row) => {
+  executionDetail.value = null
+  executionDetailLoading.value = true
+  showExecutionDetail.value = true
+  try {
+    const { data } = await getExecutions({ testcase: row.id })
+    const records = data.results || data
+    if (records.length > 0) {
+      executionDetail.value = records[0]  // 最近一次执行
+    }
+  } catch (e) {
+    // ignore
+  } finally {
+    executionDetailLoading.value = false
+  }
+}
+
+const handlePreviewImage = (src) => {
+  previewImage.value = src
+  showImagePreview.value = true
 }
 
 onMounted(loadData)
@@ -501,5 +680,28 @@ onMounted(loadData)
   overflow-y: auto;
   background-color: #fafafa;
   cursor: default;
+}
+.screenshot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.screenshot-thumb {
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.screenshot-thumb:hover {
+  border-color: #409eff;
+}
+.agent-response-box {
+  background-color: #f6f8fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 12px;
+  max-height: 200px;
+  overflow-y: auto;
 }
 </style>

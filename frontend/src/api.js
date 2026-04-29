@@ -33,12 +33,20 @@ export const getExecutions = (params) => api.get('/executions/', { params })
 export const getExecution = (id) => api.get(`/executions/${id}/`)
 export const executeTestCase = (testcaseId) => api.post(`/testcases/${testcaseId}/execute/`)
 export const executeProject = (projectId) => api.post(`/projects/${projectId}/execute-all/`)
+export const executeTestCaseAgent = (testcaseId) => aiApi.post(`/testcases/${testcaseId}/execute-agent/`)
+export const executeProjectAgent = (projectId) => aiApi.post(`/projects/${projectId}/execute-agent/`)
 
 // ─── AI ───
 export const getAIConversations = (params) => api.get('/ai/conversations/', { params })
 export const aiGenerateTestCase = (data) => aiApi.post('/ai/generate-testcase/', data)
 export const aiAnalyzeResult = (data) => aiApi.post('/ai/analyze-result/', data)
 export const aiAdjustTestCase = (data) => aiApi.post('/ai/adjust-testcase/', data)
+
+// ─── Agent API ───
+export const agentGenerate = (data) => aiApi.post('/agent/generate/', data)
+export const agentRefine = (data) => aiApi.post('/agent/refine/', data)
+export const agentConfirm = (data) => aiApi.post('/agent/confirm/', data)
+export const agentExecute = (data) => aiApi.post('/agent/execute/', data)
 
 // ─── 系统 ───
 export const healthCheck = () => api.get('/health/')

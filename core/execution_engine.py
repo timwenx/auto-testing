@@ -1,6 +1,7 @@
 """
 执行引擎 — 嵌入式 PlaywrightRunner，通过 AI 生成 Playwright 代码并执行
 """
+import json
 import logging
 import os
 import subprocess
@@ -163,3 +164,201 @@ def execute_testcase_async(testcase, base_url: str, callback=None):
         return result
 
     return _get_executor().submit(_task)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Agent 模式执行
+# ══════════════════════════════════════════════════════════════════
+
+def _format_agent_log(agent_result: dict) -> str:
+    """将 Agent 执行结果格式化为可读日志"""
+    lines = []
+    lines.append("=" * 60)
+    lines.append("Agent 模式执行日志")
+    lines.append("=" * 60)
+
+    # 工具调用记录
+    tool_calls = agent_result.get('tool_calls_log', [])
+    if tool_calls:
+        lines.append(f"\n工具调用次数: {len(tool_calls)}")
+        lines.append("-" * 40)
+        for i, call in enumerate(tool_calls, 1):
+            lines.append(f"[{i}] {call['tool']}({json.dumps(call['input'], ensure_ascii=False)})")
+            output = call.get('output', '')
+            if len(output) > 200:
+                output = output[:200] + '...'
+            lines.append(f"    → {output}")
+        lines.append("-" * 40)
+
+    # Token 统计
+    lines.append(f"输入 tokens: {agent_result.get('total_input_tokens', 0)}")
+    lines.append(f"输出 tokens: {agent_result.get('total_output_tokens', 0)}")
+
+    # 最终回复
+    response_text = agent_result.get('response_text', '')
+    if response_text:
+        lines.append(f"\n最终回复:\n{response_text}")
+
+    return '\n'.join(lines)
+
+
+def _build_step_logs(agent_result: dict) -> list:
+    """将 tool_calls_log 转换为结构化的 step_logs 格式"""
+    steps = []
+    tool_calls = agent_result.get('tool_calls_log', [])
+    for i, call in enumerate(tool_calls, 1):
+        tool_name = call['tool']
+        tool_input = call.get('input', {})
+        output = call.get('output', '')
+
+        # 提取关键信息
+        action = tool_name
+        target = ''
+        screenshot_path = ''
+        if tool_name == 'browser_navigate':
+            target = tool_input.get('url', '')
+        elif tool_name == 'browser_click':
+            target = tool_input.get('selector', '')
+        elif tool_name == 'browser_fill':
+            target = tool_input.get('selector', '')
+            action = f"填写 {tool_input.get('value', '')[:30]}"
+        elif tool_name == 'browser_screenshot':
+            action = '截图'
+            # 从 output 中提取截图路径
+            if '截图已保存:' in output:
+                screenshot_path = output.split('截图已保存:')[-1].strip()
+        elif tool_name == 'browser_get_text':
+            target = tool_input.get('selector', '')
+        elif tool_name == 'report_result':
+            action = f"报告结果: {tool_input.get('status', '')}"
+            target = tool_input.get('summary', '')
+
+        step = {
+            'step_num': i,
+            'action': action,
+            'target': target,
+            'result': output[:300],  # 截断避免过大
+            'screenshot_path': screenshot_path,
+            'timestamp': call.get('timestamp', ''),
+        }
+        steps.append(step)
+
+    return steps
+
+
+def _extract_screenshots(agent_result: dict) -> list:
+    """从 tool_calls_log 中提取所有截图路径"""
+    screenshots = []
+    for call in agent_result.get('tool_calls_log', []):
+        if call['tool'] == 'browser_screenshot':
+            output = call.get('output', '')
+            # 截图工具返回 "截图已保存: <path>"
+            if '截图已保存:' in output:
+                path = output.split('截图已保存:')[-1].strip()
+                if path:
+                    screenshots.append(path)
+            elif '已保存' in output:
+                # 兼容其他格式
+                import re
+                match = re.search(r'[:\s](\S+\.png)', output)
+                if match:
+                    screenshots.append(match.group(1))
+    return screenshots
+
+
+def execute_testcase_with_agent(testcase, base_url: str) -> dict:
+    """
+    通过 Agent 模式执行测试用例。
+
+    与 execute_testcase_sync 返回相同格式的 dict，但 script 字段存储 Agent 对话日志。
+    """
+    from .agent_service import AgentRunner
+    from .agent_tools import build_test_execution_system_prompt
+
+    project = testcase.project
+
+    try:
+        # 获取 max_turns 配置
+        from .models import SystemSetting
+        try:
+            max_turns = int(SystemSetting.get('agent_max_turns', '20'))
+        except (ValueError, TypeError):
+            max_turns = 20
+
+        # 构建 system prompt
+        system_prompt = build_test_execution_system_prompt(testcase, base_url, project)
+
+        # 初始用户消息
+        user_message = (
+            f"请执行以下测试用例:\n\n"
+            f"用例: {testcase.name}\n"
+            f"目标 URL: {base_url}\n\n"
+            f"请先探索代码理解项目，然后使用浏览器工具逐步执行测试，最后调用 report_result 报告结果。"
+        )
+        messages = [{"role": "user", "content": user_message}]
+
+        # 执行 Agent
+        start = time.time()
+        runner = AgentRunner(project=project)
+        agent_result = runner.run(
+            system_prompt=system_prompt,
+            messages=messages,
+            max_turns=max_turns,
+        )
+        duration = time.time() - start
+
+        # 解析 report_result（如果 Agent 调用了的话）
+        # report_result 的结果存在 context['report_result'] 里，但 context 是 run 的局部变量
+        # 所以我们需要从 response_text 中提取，或者从 tool_calls_log 中找
+        status = 'passed'
+        log = _format_agent_log(agent_result)
+
+        # 从 tool_calls_log 中查找 report_result 调用
+        report = None
+        for call in reversed(agent_result.get('tool_calls_log', [])):
+            if call['tool'] == 'report_result':
+                report = call['input']
+                break
+
+        if report:
+            status = report.get('status', 'passed')
+            summary = report.get('summary', '')
+            details = report.get('details', '')
+            log = f"[Agent 结果] {summary}\n{details}\n\n{log}"
+
+        # 构建结构化数据
+        step_logs = _build_step_logs(agent_result)
+        screenshots = _extract_screenshots(agent_result)
+
+        return {
+            'status': status,
+            'log': log,
+            'error_message': '' if status == 'passed' else agent_result.get('response_text', ''),
+            'duration': round(duration, 2),
+            'script': json.dumps({
+                'mode': 'agent',
+                'tool_calls': agent_result.get('tool_calls_log', []),
+                'input_tokens': agent_result.get('total_input_tokens', 0),
+                'output_tokens': agent_result.get('total_output_tokens', 0),
+            }, ensure_ascii=False, default=str),
+            'step_logs': step_logs,
+            'screenshots': screenshots,
+            'agent_response': {
+                'response_text': agent_result.get('response_text', ''),
+                'total_input_tokens': agent_result.get('total_input_tokens', 0),
+                'total_output_tokens': agent_result.get('total_output_tokens', 0),
+            },
+        }
+
+    except Exception as e:
+        logger.exception("Agent execution failed")
+        return {
+            'status': 'error',
+            'log': '',
+            'error_message': str(e),
+            'duration': 0,
+            'script': '',
+            'step_logs': [],
+            'screenshots': [],
+            'agent_response': {},
+        }

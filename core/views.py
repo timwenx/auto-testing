@@ -11,6 +11,8 @@ from .serializers import (
     ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
     AIAdjustRequestSerializer, SystemSettingSerializer, SystemSettingBulkUpdateSerializer,
+    AgentGenerateRequestSerializer, AgentRefineRequestSerializer,
+    AgentConfirmRequestSerializer, AgentExecuteRequestSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -169,6 +171,164 @@ def execute_project(request, project_id):
     )
 
 
+@api_view(['POST'])
+def execute_testcase_agent(request, testcase_id):
+    """通过 Agent 模式执行单个测试用例"""
+    try:
+        testcase = TestCase.objects.select_related('project').get(pk=testcase_id)
+    except TestCase.DoesNotExist:
+        return Response({'error': '测试用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    base_url = testcase.project.base_url
+    if not base_url:
+        return Response(
+            {'error': '请先在项目中配置测试目标 URL'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from .ai_engine import _get_model
+    try:
+        ai_model = _get_model()
+    except Exception:
+        ai_model = ''
+
+    # 创建执行记录
+    record = ExecutionRecord.objects.create(
+        project=testcase.project,
+        testcase=testcase,
+        status='running',
+        execution_mode='agent',
+        ai_model=ai_model,
+    )
+    testcase.status = 'running'
+    testcase.save(update_fields=['status'])
+
+    # 异步执行
+    def _on_complete(tc, result):
+        record.status = result['status']
+        record.log = result['log']
+        record.error_message = result['error_message']
+        record.duration = result['duration']
+        # 从 script 字段解析 tool_calls_count
+        try:
+            import json
+            script_data = json.loads(result.get('script', '{}'))
+            record.tool_calls_count = len(script_data.get('tool_calls', []))
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # 保存 Agent 结构化数据
+        record.step_logs = result.get('step_logs', [])
+        record.screenshots = result.get('screenshots', [])
+        record.agent_response = result.get('agent_response', {})
+        record.save()
+        tc.status = result['status']
+        tc.save(update_fields=['status'])
+
+    def _agent_task():
+        result = execution_engine.execute_testcase_with_agent(testcase, base_url)
+        _on_complete(testcase, result)
+        return result
+
+    from concurrent.futures import ThreadPoolExecutor
+    from .models import SystemSetting
+    try:
+        max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
+    except (ValueError, TypeError):
+        max_workers = 2
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    executor.submit(_agent_task)
+
+    return Response(
+        ExecutionRecordSerializer(record).data,
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+@api_view(['POST'])
+def execute_project_agent(request, project_id):
+    """通过 Agent 模式批量执行项目下所有就绪/草稿测试用例"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not project.base_url:
+        return Response(
+            {'error': '请先在项目中配置测试目标 URL'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    testcases = project.testcases.filter(status__in=['draft', 'ready'])
+    if not testcases.exists():
+        return Response(
+            {'error': '没有可执行的测试用例'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from .ai_engine import _get_model
+    try:
+        ai_model = _get_model()
+    except Exception:
+        ai_model = ''
+
+    records = []
+    for tc in testcases:
+        record = ExecutionRecord.objects.create(
+            project=project,
+            testcase=tc,
+            status='running',
+            execution_mode='agent',
+            ai_model=ai_model,
+        )
+        tc.status = 'running'
+        tc.save(update_fields=['status'])
+
+        def _make_callback(r, t):
+            def _on_complete(result):
+                r.status = result['status']
+                r.log = result['log']
+                r.error_message = result['error_message']
+                r.duration = result['duration']
+                try:
+                    import json
+                    script_data = json.loads(result.get('script', '{}'))
+                    r.tool_calls_count = len(script_data.get('tool_calls', []))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                # 保存 Agent 结构化数据
+                r.step_logs = result.get('step_logs', [])
+                r.screenshots = result.get('screenshots', [])
+                r.agent_response = result.get('agent_response', {})
+                r.save()
+                t.status = result['status']
+                t.save(update_fields=['status'])
+            return _on_complete
+
+        def _make_task(t, callback):
+            def _agent_task():
+                result = execution_engine.execute_testcase_with_agent(t, project.base_url)
+                callback(result)
+                return result
+            return _agent_task
+
+        from concurrent.futures import ThreadPoolExecutor
+        from .models import SystemSetting
+        try:
+            max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
+        except (ValueError, TypeError):
+            max_workers = 2
+
+        # 每个用例独立 executor，避免 Agent 模式下过多并发
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        executor.submit(_make_task(tc, _make_callback(record, tc)))
+        records.append(record)
+
+    return Response(
+        ExecutionRecordSerializer(records, many=True).data,
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
 # ─── AI ───
 
 class AIConversationListView(generics.ListAPIView):
@@ -225,8 +385,10 @@ def ai_generate_testcase(request):
             markdown_content=item.get('markdown_content', ''),
             priority=item.get('priority', ''),
             test_type=item.get('test_type', ''),
+            target_page_or_api=target,
             status='draft',
             is_ai_generated=True,
+            created_by='agent',
         )
         created.append(tc)
 
@@ -358,6 +520,7 @@ def ai_adjust_testcase(request):
                 tc.markdown_content = item.get('markdown_content', tc.markdown_content)
                 tc.priority = item.get('priority', tc.priority)
                 tc.test_type = item.get('test_type', tc.test_type)
+                tc.version = (tc.version or 1) + 1
                 tc.save()
 
     # 追加到对话记录
@@ -398,6 +561,227 @@ def settings_view(request):
             defaults={'value': value},
         )
     return Response(SystemSetting.get_all_dict())
+
+
+# ─── Agent 统一 API ───
+
+@api_view(['POST'])
+def agent_generate(request):
+    """
+    POST /api/agent/generate
+    Agent 驱动生成测试用例（包装 ai_generate_testcase，返回 spec 格式）
+    """
+    serializer = AgentGenerateRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    project_id = serializer.validated_data['project_id']
+    requirement = serializer.validated_data['requirement']
+    target = serializer.validated_data.get('target', '')
+
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        generated = ai_engine.generate_testcases(
+            project_name=project.name,
+            base_url=project.base_url or '',
+            requirement=requirement,
+            project=project,
+            target=target,
+        )
+    except Exception as e:
+        logger.exception("Agent generate failed")
+        return Response({'error': f'Agent 生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # 保存到数据库
+    created = []
+    for item in generated:
+        tc = TestCase.objects.create(
+            project=project,
+            name=item.get('name', '未命名用例'),
+            description=item.get('description', ''),
+            steps=item.get('steps', ''),
+            expected_result=item.get('expected_result', ''),
+            markdown_content=item.get('markdown_content', ''),
+            priority=item.get('priority', ''),
+            test_type=item.get('test_type', ''),
+            target_page_or_api=target,
+            status='draft',
+            is_ai_generated=True,
+            created_by='agent',
+        )
+        created.append(tc)
+
+    # 保存 AI 对话记录
+    messages = [
+        {"role": "user", "content": requirement},
+        {"role": "assistant", "content": json.dumps(generated, ensure_ascii=False)},
+    ]
+    conv = AIConversation.objects.create(
+        conversation_type='generate',
+        project=project,
+        user_message=requirement,
+        ai_response=json.dumps(messages, ensure_ascii=False),
+    )
+
+    # 返回 spec 格式
+    first_tc = created[0] if created else None
+    return Response({
+        'testcase_id': first_tc.id if first_tc else None,
+        'version': first_tc.version if first_tc else 1,
+        'testcases': TestCaseSerializer(created, many=True).data,
+        'steps': generated,
+        'markdown': first_tc.markdown_content if first_tc else '',
+        'conversation_id': conv.id,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+def agent_refine(request):
+    """
+    POST /api/agent/refine
+    Agent 驱动单用例对话式调整
+    """
+    serializer = AgentRefineRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    testcase_id = serializer.validated_data['testcase_id']
+    user_feedback = serializer.validated_data.get('user_feedback', '')
+
+    try:
+        testcase = TestCase.objects.select_related('project').get(pk=testcase_id)
+    except TestCase.DoesNotExist:
+        return Response({'error': '测试用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    project = testcase.project
+
+    try:
+        from .agent_service import refine_testcase_with_agent
+        result = refine_testcase_with_agent(
+            testcase=testcase,
+            project=project,
+            user_feedback=user_feedback or None,
+        )
+    except Exception as e:
+        logger.exception("Agent refine failed")
+        return Response({'error': f'Agent 调整失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'action': result.get('action', 'question'),
+        'message': result.get('message', ''),
+        'suggestions': result.get('suggestions', []),
+        'updated_testcase': result.get('updated_testcase'),
+        'version': testcase.version,
+        'testcase': TestCaseSerializer(testcase).data,
+    })
+
+
+@api_view(['POST'])
+def agent_confirm(request):
+    """
+    POST /api/agent/confirm
+    确认用例（将状态从 draft 改为 ready）
+    """
+    serializer = AgentConfirmRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    testcase_id = serializer.validated_data['testcase_id']
+
+    try:
+        testcase = TestCase.objects.get(pk=testcase_id)
+    except TestCase.DoesNotExist:
+        return Response({'error': '测试用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    testcase.status = 'ready'
+    testcase.save(update_fields=['status'])
+
+    return Response({
+        'testcase_id': testcase.id,
+        'status': testcase.status,
+        'ready_to_execute': True,
+    })
+
+
+@api_view(['POST'])
+def agent_execute(request):
+    """
+    POST /api/agent/execute
+    Agent 驱动执行单个测试用例（包装 execute_testcase_agent 逻辑）
+    """
+    serializer = AgentExecuteRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    testcase_id = serializer.validated_data['testcase_id']
+
+    try:
+        testcase = TestCase.objects.select_related('project').get(pk=testcase_id)
+    except TestCase.DoesNotExist:
+        return Response({'error': '测试用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    base_url = testcase.project.base_url
+    if not base_url:
+        return Response(
+            {'error': '请先在项目中配置测试目标 URL'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from .ai_engine import _get_model
+    try:
+        ai_model = _get_model()
+    except Exception:
+        ai_model = ''
+
+    # 创建执行记录
+    record = ExecutionRecord.objects.create(
+        project=testcase.project,
+        testcase=testcase,
+        status='running',
+        execution_mode='agent',
+        ai_model=ai_model,
+    )
+    testcase.status = 'running'
+    testcase.save(update_fields=['status'])
+
+    # 异步执行
+    def _on_complete(tc, result):
+        record.status = result['status']
+        record.log = result['log']
+        record.error_message = result['error_message']
+        record.duration = result['duration']
+        try:
+            script_data = json.loads(result.get('script', '{}'))
+            record.tool_calls_count = len(script_data.get('tool_calls', []))
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # 保存 Agent 结构化数据
+        record.step_logs = result.get('step_logs', [])
+        record.screenshots = result.get('screenshots', [])
+        record.agent_response = result.get('agent_response', {})
+        record.save()
+        tc.status = result['status']
+        tc.save(update_fields=['status'])
+
+    def _agent_task():
+        result = execution_engine.execute_testcase_with_agent(testcase, base_url)
+        _on_complete(testcase, result)
+        return result
+
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
+    except (ValueError, TypeError):
+        max_workers = 2
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    executor.submit(_agent_task)
+
+    return Response({
+        'test_run_id': record.id,
+        'testcase_id': testcase.id,
+        'status': 'running',
+        'message': 'Agent 执行已提交',
+    }, status=status.HTTP_202_ACCEPTED)
 
 
 # ─── 系统 ───
