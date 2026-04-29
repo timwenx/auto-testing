@@ -1,6 +1,8 @@
 import json
 import logging
-from django.http import JsonResponse
+import os
+import mimetypes
+from django.http import JsonResponse, FileResponse, Http404
 from django.db.models import Count, Q
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
@@ -78,6 +80,53 @@ class ExecutionRecordListView(generics.ListAPIView):
 class ExecutionRecordDetailView(generics.RetrieveAPIView):
     queryset = ExecutionRecord.objects.select_related('project', 'testcase').all()
     serializer_class = ExecutionRecordSerializer
+
+
+@api_view(['GET'])
+def serve_screenshot(request):
+    """
+    GET /api/executions/screenshots/?path=<filepath>
+    安全地提供 Agent 执行过程中生成的截图文件。
+    仅允许访问已记录在 ExecutionRecord.screenshots 或 step_logs 中的路径。
+    """
+    file_path = request.query_params.get('path', '').strip()
+    if not file_path:
+        return Response({'error': '缺少 path 参数'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 规范化路径，防止目录遍历
+    try:
+        abs_path = os.path.realpath(file_path)
+    except (ValueError, TypeError):
+        return Response({'error': '无效路径'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 安全检查 1: 文件必须存在且是文件
+    if not os.path.isfile(abs_path):
+        raise Http404("截图文件不存在")
+
+    # 安全检查 2: 只允许访问临时目录或项目下的文件
+    import tempfile
+    allowed_prefixes = [
+        tempfile.gettempdir(),
+        os.path.realpath(os.path.join(os.path.dirname(__file__), '..', 'media')),
+    ]
+    if not any(abs_path.startswith(prefix) for prefix in allowed_prefixes):
+        return Response({'error': '不允许访问该路径'}, status=status.HTTP_403_FORBIDDEN)
+
+    # 安全检查 3: 验证路径确实存在于某个 ExecutionRecord 中
+    exists_in_db = ExecutionRecord.objects.filter(
+        Q(screenshots__contains=file_path) |
+        Q(screenshot_path=file_path)
+    ).exists()
+    if not exists_in_db:
+        # 也检查 step_logs 中的 screenshot_path
+        exists_in_db = ExecutionRecord.objects.filter(
+            step_logs__icontains=file_path
+        ).exists()
+    if not exists_in_db:
+        return Response({'error': '未找到关联的执行记录'}, status=status.HTTP_404_NOT_FOUND)
+
+    content_type = mimetypes.guess_type(abs_path)[0] or 'image/png'
+    return FileResponse(open(abs_path, 'rb'), content_type=content_type)
 
 
 @api_view(['POST'])
