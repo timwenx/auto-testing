@@ -2,6 +2,7 @@
 Unit tests for core views, models, and serializers.
 """
 import json
+from unittest import mock
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework import status
@@ -388,3 +389,372 @@ class GitRepoFieldsTest(TestCase):
         self.assertEqual(p.github_url, '')
         self.assertEqual(p.github_token, '')
         self.assertEqual(p.local_repo_path, '')
+
+
+# ─── Agent API Endpoint Tests ───
+
+
+class AgentConfirmTest(TestCase):
+    """Tests for /api/agent/confirm/ endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='r',
+            status='draft', created_by='agent',
+        )
+
+    def test_confirm_changes_status_to_ready(self):
+        resp = self.client.post(
+            '/api/agent/confirm/',
+            {'testcase_id': self.tc.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['status'], 'ready')
+        self.assertTrue(resp.data['ready_to_execute'])
+        self.tc.refresh_from_db()
+        self.assertEqual(self.tc.status, 'ready')
+
+    def test_confirm_missing_testcase_id(self):
+        resp = self.client.post('/api/agent/confirm/', {}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_confirm_nonexistent_testcase(self):
+        resp = self.client.post(
+            '/api/agent/confirm/',
+            {'testcase_id': 99999},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class AgentRefineTest(TestCase):
+    """Tests for /api/agent/refine/ endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='r',
+            status='draft', created_by='agent', version=1,
+        )
+
+    def test_refine_missing_testcase_id(self):
+        resp = self.client.post('/api/agent/refine/', {}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_refine_nonexistent_testcase(self):
+        resp = self.client.post(
+            '/api/agent/refine/',
+            {'testcase_id': 99999, 'user_feedback': 'add more'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    @mock.patch('core.agent_service.refine_testcase_with_agent')
+    def test_refine_success_question(self, mock_refine):
+        mock_refine.return_value = {
+            'action': 'question',
+            'message': '是否需要测试空输入场景？',
+            'suggestions': ['空输入测试', '特殊字符测试'],
+        }
+        resp = self.client.post(
+            '/api/agent/refine/',
+            {'testcase_id': self.tc.id, 'user_feedback': ''},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['action'], 'question')
+        self.assertIn('suggestions', resp.data)
+        mock_refine.assert_called_once()
+
+    @mock.patch('core.agent_service.refine_testcase_with_agent')
+    def test_refine_success_update(self, mock_refine):
+        mock_refine.return_value = {
+            'action': 'update',
+            'message': '已根据反馈更新用例',
+            'updated_testcase': {
+                'name': 'Updated TC',
+                'markdown_content': '# Updated',
+            },
+        }
+        resp = self.client.post(
+            '/api/agent/refine/',
+            {'testcase_id': self.tc.id, 'user_feedback': '增加超时测试'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['action'], 'update')
+        self.assertIn('updated_testcase', resp.data)
+
+
+class AgentGenerateTest(TestCase):
+    """Tests for /api/agent/generate/ endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_generate_missing_fields(self):
+        resp = self.client.post('/api/agent/generate/', {}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_generate_nonexistent_project(self):
+        resp = self.client.post(
+            '/api/agent/generate/',
+            {'project_id': 99999, 'requirement': 'test login'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    @mock.patch('core.views.ai_engine.generate_testcases')
+    def test_generate_success(self, mock_generate):
+        project = Project.objects.create(name='P', base_url='https://example.com')
+        mock_generate.return_value = [
+            {
+                'name': 'Login Test',
+                'description': 'Test login flow',
+                'steps': '1. Go to login\n2. Enter credentials',
+                'expected_result': 'Logged in',
+                'markdown_content': '# Login Test',
+                'priority': 'P0',
+                'test_type': '功能',
+            },
+        ]
+        resp = self.client.post(
+            '/api/agent/generate/',
+            {'project_id': project.id, 'requirement': 'test login'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertIn('testcases', resp.data)
+        self.assertIn('steps', resp.data)
+        self.assertIn('conversation_id', resp.data)
+        self.assertEqual(len(resp.data['testcases']), 1)
+        # Verify TestCase was created in DB
+        self.assertEqual(TC_Model.objects.filter(project=project).count(), 1)
+        tc = TC_Model.objects.filter(project=project).first()
+        self.assertEqual(tc.created_by, 'agent')
+        self.assertTrue(tc.is_ai_generated)
+
+
+class AgentExecuteTest(TestCase):
+    """Tests for /api/agent/execute/ endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='r',
+            status='draft',
+        )
+
+    def test_execute_missing_testcase_id(self):
+        resp = self.client.post('/api/agent/execute/', {}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_execute_nonexistent_testcase(self):
+        resp = self.client.post(
+            '/api/agent/execute/',
+            {'testcase_id': 99999},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_execute_missing_base_url(self):
+        no_url_project = Project.objects.create(name='NoURL')
+        tc = TC_Model.objects.create(project=no_url_project, name='TC', steps='s', expected_result='r')
+        resp = self.client.post(
+            '/api/agent/execute/',
+            {'testcase_id': tc.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @mock.patch('core.views.execution_engine.execute_testcase_with_agent')
+    def test_execute_success(self, mock_execute):
+        mock_execute.return_value = {
+            'status': 'passed',
+            'log': 'Test passed',
+            'error_message': '',
+            'duration': 5.0,
+            'script': '{"tool_calls": []}',
+            'step_logs': [{'step_num': 1, 'action': 'navigate'}],
+            'screenshots': ['/tmp/screenshot.png'],
+            'agent_response': {'response_text': 'Done'},
+        }
+        resp = self.client.post(
+            '/api/agent/execute/',
+            {'testcase_id': self.tc.id},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(resp.data['status'], 'running')
+        self.assertIn('test_run_id', resp.data)
+        # Verify ExecutionRecord was created
+        self.assertTrue(ExecutionRecord.objects.filter(testcase=self.tc).exists())
+        record = ExecutionRecord.objects.get(testcase=self.tc)
+        self.assertEqual(record.execution_mode, 'agent')
+
+
+# ─── New Model Fields Tests ───
+
+
+class TestCaseAgentFieldsTest(TestCase):
+    """Tests for new TestCase agent-related fields."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+
+    def test_create_testcase_with_agent_fields(self):
+        tc = TC_Model.objects.create(
+            project=self.project,
+            name='Agent TC',
+            steps='s',
+            expected_result='r',
+            target_page_or_api='/api/users/',
+            created_by='agent',
+            version=1,
+            conversation_history=[{'role': 'user', 'content': 'test'}],
+        )
+        self.assertEqual(tc.target_page_or_api, '/api/users/')
+        self.assertEqual(tc.created_by, 'agent')
+        self.assertEqual(tc.version, 1)
+        self.assertEqual(len(tc.conversation_history), 1)
+
+    def test_agent_fields_defaults(self):
+        tc = TC_Model.objects.create(
+            project=self.project, name='Default', steps='s', expected_result='r',
+        )
+        self.assertEqual(tc.target_page_or_api, '')
+        self.assertEqual(tc.created_by, 'manual')
+        self.assertEqual(tc.version, 1)
+        self.assertEqual(tc.conversation_history, [])
+
+    def test_created_by_choices(self):
+        for choice_val, _ in TC_Model.CREATED_BY_CHOICES:
+            tc = TC_Model.objects.create(
+                project=self.project,
+                name=f'TC-{choice_val}',
+                steps='s',
+                expected_result='r',
+                created_by=choice_val,
+            )
+            self.assertEqual(tc.created_by, choice_val)
+
+    def test_conversation_history_json_roundtrip(self):
+        history = [
+            {'role': 'user', 'content': '分析用例'},
+            {'role': 'assistant', 'content': '{"action":"question","message":"是否需要?"}'},
+        ]
+        tc = TC_Model.objects.create(
+            project=self.project, name='JSON', steps='s', expected_result='r',
+            conversation_history=history,
+        )
+        tc.refresh_from_db()
+        self.assertEqual(len(tc.conversation_history), 2)
+        self.assertEqual(tc.conversation_history[0]['role'], 'user')
+
+    def test_serializer_exposes_agent_fields(self):
+        tc = TC_Model.objects.create(
+            project=self.project,
+            name='Ser TC',
+            steps='s',
+            expected_result='r',
+            target_page_or_api='/login',
+            created_by='agent',
+            version=3,
+        )
+        client = APIClient()
+        resp = client.get(f'/api/testcases/{tc.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['target_page_or_api'], '/login')
+        self.assertEqual(resp.data['created_by'], 'agent')
+        self.assertEqual(resp.data['version'], 3)
+
+
+class ExecutionRecordDetailFieldsTest(TestCase):
+    """Tests for new ExecutionRecord detail fields."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='r',
+        )
+
+    def test_create_record_with_detail_fields(self):
+        record = ExecutionRecord.objects.create(
+            project=self.project,
+            testcase=self.tc,
+            status='passed',
+            execution_mode='agent',
+            screenshots=['/tmp/ss1.png', '/tmp/ss2.png'],
+            step_logs=[
+                {'step_num': 1, 'action': 'browser_navigate', 'target': 'https://example.com', 'result': 'ok'},
+                {'step_num': 2, 'action': '截图', 'target': '', 'result': '截图已保存: /tmp/ss1.png'},
+            ],
+            agent_response={'response_text': 'Test passed', 'total_input_tokens': 1000, 'total_output_tokens': 500},
+        )
+        record.refresh_from_db()
+        self.assertEqual(len(record.screenshots), 2)
+        self.assertEqual(len(record.step_logs), 2)
+        self.assertEqual(record.agent_response['response_text'], 'Test passed')
+
+    def test_detail_fields_defaults(self):
+        record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='passed',
+        )
+        self.assertEqual(record.screenshots, [])
+        self.assertEqual(record.step_logs, [])
+        self.assertEqual(record.agent_response, {})
+
+    def test_serializer_exposes_detail_fields(self):
+        record = ExecutionRecord.objects.create(
+            project=self.project,
+            testcase=self.tc,
+            status='passed',
+            screenshots=['/tmp/ss.png'],
+            step_logs=[{'step_num': 1, 'action': 'click'}],
+            agent_response={'response_text': 'Done'},
+        )
+        client = APIClient()
+        resp = client.get(f'/api/executions/{record.id}/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIn('screenshots', resp.data)
+        self.assertIn('step_logs', resp.data)
+        self.assertIn('agent_response', resp.data)
+        self.assertEqual(len(resp.data['screenshots']), 1)
+        self.assertEqual(resp.data['agent_response']['response_text'], 'Done')
+
+
+# ─── Screenshot Endpoint Tests ───
+
+
+class ScreenshotEndpointTest(TestCase):
+    """Tests for /api/executions/screenshots/ endpoint."""
+
+    def test_missing_path_param(self):
+        client = APIClient()
+        resp = client.get('/api/executions/screenshots/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_nonexistent_file(self):
+        client = APIClient()
+        resp = client.get('/api/executions/screenshots/?path=/nonexistent/file.png')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_path_not_in_db(self):
+        """File exists but is not recorded in any ExecutionRecord."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            f.write(b'\x89PNG\r\n')
+            temp_path = f.name
+        try:
+            client = APIClient()
+            resp = client.get(f'/api/executions/screenshots/?path={temp_path}')
+            # Should be 404 because the path is not in any ExecutionRecord
+            self.assertIn(resp.status_code, [status.HTTP_404_NOT_FOUND, status.HTTP_403_FORBIDDEN])
+        finally:
+            import os
+            os.unlink(temp_path)
