@@ -10,9 +10,15 @@ class ProjectSerializer(serializers.ModelSerializer):
         model = Project
         fields = [
             'id', 'name', 'description', 'base_url',
+            'repo_url', 'repo_username', 'repo_password',
+            'github_url', 'github_token', 'local_repo_path',
             'testcase_count', 'last_execution_status',
             'created_at', 'updated_at',
         ]
+        extra_kwargs = {
+            'repo_password': {'write_only': True},
+            'github_token': {'write_only': True},
+        }
 
     def get_last_execution_status(self, obj):
         ex = obj.last_execution
@@ -28,6 +34,7 @@ class TestCaseSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'project', 'project_name', 'name', 'description',
             'steps', 'expected_result', 'status', 'is_ai_generated',
+            'markdown_content', 'priority', 'test_type',
             'execution_count', 'created_at', 'updated_at',
         ]
 
@@ -63,6 +70,24 @@ class AIGenerateRequestSerializer(serializers.Serializer):
     """AI 生成用例的请求"""
     project_id = serializers.IntegerField()
     requirement = serializers.CharField(help_text='用自然语言描述要测试的功能')
+    target = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='测试目标（可选），如「用户登录页面」「/api/users/ 接口」'
+    )
+
+
+class AIAdjustRequestSerializer(serializers.Serializer):
+    """AI 对话式调整用例的请求"""
+    project_id = serializers.IntegerField()
+    conversation_id = serializers.IntegerField(
+        required=False, default=None, allow_null=True,
+        help_text='之前的对话 ID（可选，用于恢复上下文）'
+    )
+    user_feedback = serializers.CharField(help_text='用户的修改意见')
+    current_cases = serializers.ListField(
+        child=serializers.DictField(),
+        help_text='当前的用例列表'
+    )
 
 
 class AIAnalyzeRequestSerializer(serializers.Serializer):

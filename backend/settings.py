@@ -97,4 +97,4 @@ REST_FRAMEWORK = {
 }
 
 # AI 引擎配置
-CLAUDE_CLI_PATH = os.environ.get('CLAUDE_CLI_PATH', 'claude')
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')

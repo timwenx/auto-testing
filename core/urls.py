@@ -21,6 +21,7 @@ urlpatterns = [
     path('ai/conversations/', views.AIConversationListView.as_view(), name='ai-conversations'),
     path('ai/generate-testcase/', views.ai_generate_testcase, name='ai-generate-testcase'),
     path('ai/analyze-result/', views.ai_analyze_result, name='ai-analyze-result'),
+    path('ai/adjust-testcase/', views.ai_adjust_testcase, name='ai-adjust-testcase'),
 
     # 系统设置
     path('settings/', views.settings_view, name='settings'),

@@ -6,9 +6,17 @@
       </template>
       <el-form :model="settings" label-width="120px" v-loading="loading">
         <el-divider content-position="left">AI 引擎</el-divider>
-        <el-form-item label="Claude CLI 路径">
-          <el-input v-model="settings.claude_cli_path" placeholder="claude" />
-          <div class="form-hint">Claude CLI 可执行文件路径，已安装则保持默认</div>
+        <el-form-item label="Anthropic API Key">
+          <el-input v-model="settings.anthropic_api_key" placeholder="sk-ant-..." type="password" show-password />
+          <div class="form-hint">Anthropic API Key，用于 AI 生成和分析测试用例</div>
+        </el-form-item>
+        <el-form-item label="AI 模型">
+          <el-select v-model="settings.anthropic_model" filterable allow-create placeholder="选择模型">
+            <el-option label="Claude Sonnet 4" value="claude-sonnet-4-20250514" />
+            <el-option label="Claude Opus 4" value="claude-opus-4-20250514" />
+            <el-option label="Claude Haiku 3.5" value="claude-3-5-haiku-20241022" />
+          </el-select>
+          <div class="form-hint">选择 AI 模型，也可手动输入自定义模型名</div>
         </el-form-item>
         <el-divider content-position="left">执行引擎</el-divider>
         <el-form-item label="最大并发数">
@@ -54,7 +62,8 @@ import { getSettings, updateSettings, healthCheck } from '../api'
 import { ElMessage } from 'element-plus'
 
 const defaultSettings = {
-  claude_cli_path: 'claude',
+  anthropic_api_key: '',
+  anthropic_model: 'claude-sonnet-4-20250514',
   max_workers: 3,
   execution_timeout: 120,
   api_base_url: '/api',
@@ -71,7 +80,8 @@ const loadSettings = async () => {
     const { data } = await getSettings()
     // 后端返回 {key: value} 字典
     settings.value = {
-      claude_cli_path: data.claude_cli_path ?? defaultSettings.claude_cli_path,
+      anthropic_api_key: data.anthropic_api_key ?? defaultSettings.anthropic_api_key,
+      anthropic_model: data.anthropic_model ?? defaultSettings.anthropic_model,
       max_workers: parseInt(data.max_workers) || defaultSettings.max_workers,
       execution_timeout: parseInt(data.execution_timeout) || defaultSettings.execution_timeout,
       api_base_url: data.api_base_url ?? defaultSettings.api_base_url,
@@ -87,7 +97,8 @@ const handleSave = async () => {
   saving.value = true
   try {
     await updateSettings({
-      claude_cli_path: String(settings.value.claude_cli_path),
+      anthropic_api_key: String(settings.value.anthropic_api_key),
+      anthropic_model: String(settings.value.anthropic_model),
       max_workers: String(settings.value.max_workers),
       execution_timeout: String(settings.value.execution_timeout),
       api_base_url: String(settings.value.api_base_url),
@@ -104,7 +115,8 @@ const handleReset = async () => {
   saving.value = true
   try {
     await updateSettings({
-      claude_cli_path: defaultSettings.claude_cli_path,
+      anthropic_api_key: defaultSettings.anthropic_api_key,
+      anthropic_model: defaultSettings.anthropic_model,
       max_workers: String(defaultSettings.max_workers),
       execution_timeout: String(defaultSettings.execution_timeout),
       api_base_url: defaultSettings.api_base_url,
