@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Project, TestCase, ExecutionRecord, AIConversation
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting
 
 
 @admin.register(Project)
@@ -25,3 +25,9 @@ class ExecutionRecordAdmin(admin.ModelAdmin):
 class AIConversationAdmin(admin.ModelAdmin):
     list_display = ['id', 'conversation_type', 'project', 'created_at']
     list_filter = ['conversation_type']
+
+
+@admin.register(SystemSetting)
+class SystemSettingAdmin(admin.ModelAdmin):
+    list_display = ['key', 'value', 'description', 'updated_at']
+    search_fields = ['key', 'description']

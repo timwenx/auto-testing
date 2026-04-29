@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Project, TestCase, ExecutionRecord, AIConversation
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -68,3 +68,18 @@ class AIGenerateRequestSerializer(serializers.Serializer):
 class AIAnalyzeRequestSerializer(serializers.Serializer):
     """AI 分析执行结果的请求"""
     execution_id = serializers.IntegerField()
+
+
+class SystemSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemSetting
+        fields = ['id', 'key', 'value', 'description', 'updated_at']
+        read_only_fields = ['id', 'description', 'updated_at']
+
+
+class SystemSettingBulkUpdateSerializer(serializers.Serializer):
+    """批量更新设置"""
+    settings = serializers.DictField(
+        child=serializers.CharField(allow_blank=True),
+        help_text='键值对，如 {"claude_cli_path": "claude", "max_workers": "3"}',
+    )

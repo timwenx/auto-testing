@@ -6,10 +6,11 @@ from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .models import Project, TestCase, ExecutionRecord, AIConversation
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting
 from .serializers import (
     ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
+    SystemSettingSerializer, SystemSettingBulkUpdateSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -267,6 +268,28 @@ def ai_analyze_result(request):
     )
 
     return Response(analysis)
+
+
+# ─── 系统设置 ───
+
+@api_view(['GET', 'PUT'])
+def settings_view(request):
+    """获取或批量更新系统设置"""
+    if request.method == 'GET':
+        all_settings = SystemSetting.get_all_dict()
+        return Response(all_settings)
+
+    # PUT — 批量更新
+    serializer = SystemSettingBulkUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    updates = serializer.validated_data['settings']
+
+    for key, value in updates.items():
+        obj, created = SystemSetting.objects.update_or_create(
+            key=key,
+            defaults={'value': value},
+        )
+    return Response(SystemSetting.get_all_dict())
 
 
 # ─── 系统 ───

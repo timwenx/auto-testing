@@ -22,6 +22,9 @@ urlpatterns = [
     path('ai/generate-testcase/', views.ai_generate_testcase, name='ai-generate-testcase'),
     path('ai/analyze-result/', views.ai_analyze_result, name='ai-analyze-result'),
 
+    # 系统设置
+    path('settings/', views.settings_view, name='settings'),
+
     # 系统
     path('health/', views.health_check, name='health-check'),
     path('stats/', views.system_stats, name='system-stats'),
