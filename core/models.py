@@ -92,6 +92,52 @@ class ExecutionRecord(models.Model):
         return f"[{self.status}] {tc_name} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
+class SystemSetting(models.Model):
+    """系统设置 — 以 key-value 形式存储"""
+    key = models.CharField('设置键', max_length=100, unique=True)
+    value = models.TextField('设置值', blank=True, default='')
+    description = models.CharField('描述', max_length=200, blank=True, default='')
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['key']
+        verbose_name = '系统设置'
+        verbose_name_plural = '系统设置'
+
+    def __str__(self):
+        return f"{self.key} = {self.value[:40]}"
+
+    # ── 默认设置 ──
+    DEFAULTS = {
+        'claude_cli_path': {'value': 'claude', 'description': 'Claude CLI 可执行文件路径'},
+        'max_workers': {'value': '3', 'description': '同时执行的最大测试用例数量'},
+        'execution_timeout': {'value': '120', 'description': '单个用例最大执行时间（秒）'},
+        'api_base_url': {'value': '/api', 'description': '后端 API 基础地址'},
+    }
+
+    @classmethod
+    def get(cls, key: str, default: str = '') -> str:
+        """获取设置值，不存在则返回默认"""
+        try:
+            return cls.objects.get(key=key).value
+        except cls.DoesNotExist:
+            info = cls.DEFAULTS.get(key)
+            return info['value'] if info else default
+
+    @classmethod
+    def get_all_dict(cls) -> dict:
+        """返回所有设置为 {key: value} 字典，缺失的用默认值补齐"""
+        stored = {s.key: s.value for s in cls.objects.all()}
+        result = {}
+        for key, info in cls.DEFAULTS.items():
+            result[key] = stored.get(key, info['value'])
+        # 也返回不在 DEFAULTS 里的自定义设置
+        for key, val in stored.items():
+            if key not in result:
+                result[key] = val
+        return result
+
+
 class AIConversation(models.Model):
     """AI 对话记录"""
     CONVERSATION_TYPES = [

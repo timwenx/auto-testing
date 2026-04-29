@@ -36,4 +36,8 @@ export const aiAnalyzeResult = (data) => api.post('/ai/analyze-result/', data)
 export const healthCheck = () => api.get('/health/')
 export const getStats = () => api.get('/stats/')
 
+// ─── 系统设置 ───
+export const getSettings = () => api.get('/settings/')
+export const updateSettings = (data) => api.put('/settings/', { settings: data })
+
 export default api

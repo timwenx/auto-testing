@@ -4,7 +4,7 @@
       <template #header>
         <span>系统设置</span>
       </template>
-      <el-form :model="settings" label-width="120px">
+      <el-form :model="settings" label-width="120px" v-loading="loading">
         <el-divider content-position="left">AI 引擎</el-divider>
         <el-form-item label="Claude CLI 路径">
           <el-input v-model="settings.claude_cli_path" placeholder="claude" />
@@ -12,11 +12,11 @@
         </el-form-item>
         <el-divider content-position="left">执行引擎</el-divider>
         <el-form-item label="最大并发数">
-          <el-input-number v-model="settings.max_workers" :min="1" :max="10" />
+          <el-input-number v-model.number="settings.max_workers" :min="1" :max="10" />
           <div class="form-hint">同时执行的最大测试用例数量</div>
         </el-form-item>
         <el-form-item label="执行超时(秒)">
-          <el-input-number v-model="settings.execution_timeout" :min="30" :max="600" />
+          <el-input-number v-model.number="settings.execution_timeout" :min="30" :max="600" />
           <div class="form-hint">单个用例的最大执行时间</div>
         </el-form-item>
         <el-divider content-position="left">前端</el-divider>
@@ -25,7 +25,7 @@
           <div class="form-hint">后端 API 基础地址</div>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="handleSave">保存设置</el-button>
+          <el-button type="primary" @click="handleSave" :loading="saving">保存设置</el-button>
           <el-button @click="handleReset">恢复默认</el-button>
         </el-form-item>
       </el-form>
@@ -50,7 +50,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { healthCheck } from '../api'
+import { getSettings, updateSettings, healthCheck } from '../api'
 import { ElMessage } from 'element-plus'
 
 const defaultSettings = {
@@ -62,27 +62,64 @@ const defaultSettings = {
 
 const settings = ref({ ...defaultSettings })
 const healthOk = ref(false)
+const loading = ref(false)
+const saving = ref(false)
 
-const handleSave = () => {
-  localStorage.setItem('mytest_settings', JSON.stringify(settings.value))
-  ElMessage.success('设置已保存')
+const loadSettings = async () => {
+  loading.value = true
+  try {
+    const { data } = await getSettings()
+    // 后端返回 {key: value} 字典
+    settings.value = {
+      claude_cli_path: data.claude_cli_path ?? defaultSettings.claude_cli_path,
+      max_workers: parseInt(data.max_workers) || defaultSettings.max_workers,
+      execution_timeout: parseInt(data.execution_timeout) || defaultSettings.execution_timeout,
+      api_base_url: data.api_base_url ?? defaultSettings.api_base_url,
+    }
+  } catch {
+    ElMessage.warning('无法加载设置，使用默认值')
+  } finally {
+    loading.value = false
+  }
 }
 
-const handleReset = () => {
-  settings.value = { ...defaultSettings }
-  localStorage.removeItem('mytest_settings')
-  ElMessage.success('已恢复默认设置')
+const handleSave = async () => {
+  saving.value = true
+  try {
+    await updateSettings({
+      claude_cli_path: String(settings.value.claude_cli_path),
+      max_workers: String(settings.value.max_workers),
+      execution_timeout: String(settings.value.execution_timeout),
+      api_base_url: String(settings.value.api_base_url),
+    })
+    ElMessage.success('设置已保存')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+const handleReset = async () => {
+  saving.value = true
+  try {
+    await updateSettings({
+      claude_cli_path: defaultSettings.claude_cli_path,
+      max_workers: String(defaultSettings.max_workers),
+      execution_timeout: String(defaultSettings.execution_timeout),
+      api_base_url: defaultSettings.api_base_url,
+    })
+    settings.value = { ...defaultSettings }
+    ElMessage.success('已恢复默认设置')
+  } catch (e) {
+    ElMessage.error('恢复默认失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 onMounted(async () => {
-  // 加载本地存储的设置
-  const saved = localStorage.getItem('mytest_settings')
-  if (saved) {
-    try {
-      settings.value = { ...defaultSettings, ...JSON.parse(saved) }
-    } catch {}
-  }
-  // 检查后端健康状态
+  await loadSettings()
   try {
     await healthCheck()
     healthOk.value = true
