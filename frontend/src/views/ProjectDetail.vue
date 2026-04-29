@@ -345,6 +345,7 @@ const showDetailDialog = ref(false)
 const showAIGenerate = ref(false)
 const detailTC = ref(null)
 const executingAll = ref(false)
+const executingAllAgent = ref(false)
 const aiGenerating = ref(false)
 const aiRequirement = ref('')
 const aiTarget = ref('')
@@ -439,8 +440,6 @@ const handleExecuteAgent = async (row) => {
     ElMessage.error(e.response?.data?.error || 'Agent 执行失败')
   }
 }
-
-const executingAllAgent = ref(false)
 
 const handleExecuteAllAgent = async () => {
   executingAllAgent.value = true
