@@ -17,8 +17,8 @@ class TestCaseAdmin(admin.ModelAdmin):
 
 @admin.register(ExecutionRecord)
 class ExecutionRecordAdmin(admin.ModelAdmin):
-    list_display = ['id', 'project', 'testcase', 'status', 'duration', 'created_at']
-    list_filter = ['status', 'project']
+    list_display = ['id', 'project', 'testcase', 'status', 'execution_mode', 'tool_calls_count', 'duration', 'created_at']
+    list_filter = ['status', 'execution_mode', 'project']
 
 
 @admin.register(AIConversation)
