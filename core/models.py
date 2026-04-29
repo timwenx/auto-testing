@@ -43,6 +43,11 @@ class TestCase(models.Model):
         ('passed', '通过'),
         ('failed', '失败'),
     ]
+    CREATED_BY_CHOICES = [
+        ('manual', '手动创建'),
+        ('claude_cli', 'Claude CLI'),
+        ('agent', 'Agent 生成'),
+    ]
 
     project = models.ForeignKey(
         Project, on_delete=models.CASCADE, related_name='testcases', verbose_name='所属项目'
@@ -60,6 +65,19 @@ class TestCase(models.Model):
         blank=True, default=''
     )
     test_type = models.CharField('测试类型', max_length=50, blank=True, default='')
+    # ── Agent 对话相关字段 ──
+    target_page_or_api = models.CharField(
+        '测试目标页面/API', max_length=500, blank=True, default='',
+        help_text='具体的页面路径或 API 端点'
+    )
+    version = models.IntegerField('版本号', default=1)
+    created_by = models.CharField(
+        '创建方式', max_length=20, choices=CREATED_BY_CHOICES, default='manual'
+    )
+    conversation_history = models.JSONField(
+        '对话历史', default=list, blank=True,
+        help_text='Agent 多轮对话的消息记录'
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -81,6 +99,10 @@ class ExecutionRecord(models.Model):
         ('failed', '失败'),
         ('error', '异常'),
     ]
+    EXECUTION_MODE_CHOICES = [
+        ('script', '脚本模式'),
+        ('agent', 'Agent 模式'),
+    ]
 
     project = models.ForeignKey(
         Project, on_delete=models.CASCADE, related_name='executions', verbose_name='所属项目'
@@ -90,10 +112,28 @@ class ExecutionRecord(models.Model):
         related_name='executions', verbose_name='关联用例'
     )
     status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='pending')
+    execution_mode = models.CharField(
+        '执行模式', max_length=20, choices=EXECUTION_MODE_CHOICES, default='script'
+    )
+    tool_calls_count = models.IntegerField('工具调用次数', default=0)
+    ai_model = models.CharField('AI 模型', max_length=100, blank=True, default='')
     log = models.TextField('执行日志', blank=True, default='')
     screenshot_path = models.CharField('截图路径', max_length=500, blank=True, default='')
     duration = models.FloatField('耗时(秒)', null=True, blank=True)
     error_message = models.TextField('错误信息', blank=True, default='')
+    # ── Agent 执行详情字段 ──
+    screenshots = models.JSONField(
+        '截图列表', default=list, blank=True,
+        help_text='Agent 执行过程中的截图路径列表'
+    )
+    step_logs = models.JSONField(
+        '逐步日志', default=list, blank=True,
+        help_text='结构化的逐步执行日志'
+    )
+    agent_response = models.JSONField(
+        'Agent 原始响应', default=dict, blank=True,
+        help_text='Agent 执行的完整原始响应数据'
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
@@ -129,6 +169,9 @@ class SystemSetting(models.Model):
         'execution_timeout': {'value': '120', 'description': '单个用例最大执行时间（秒）'},
         'api_base_url': {'value': '/api', 'description': '后端 API 基础地址'},
         'repo_base_path': {'value': 'repos', 'description': 'Git 仓库克隆目标根目录'},
+        'agent_max_turns': {'value': '20', 'description': 'Agent 最大工具调用轮次'},
+        'agent_headless': {'value': 'true', 'description': 'Playwright 浏览器是否无头模式'},
+        'default_execution_mode': {'value': 'script', 'description': '默认执行模式（script/agent）'},
     }
 
     @classmethod

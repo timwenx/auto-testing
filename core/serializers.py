@@ -35,6 +35,8 @@ class TestCaseSerializer(serializers.ModelSerializer):
             'id', 'project', 'project_name', 'name', 'description',
             'steps', 'expected_result', 'status', 'is_ai_generated',
             'markdown_content', 'priority', 'test_type',
+            'target_page_or_api', 'version', 'created_by',
+            'conversation_history',
             'execution_count', 'created_at', 'updated_at',
         ]
 
@@ -50,8 +52,10 @@ class ExecutionRecordSerializer(serializers.ModelSerializer):
         model = ExecutionRecord
         fields = [
             'id', 'project', 'project_name', 'testcase', 'testcase_name',
-            'status', 'log', 'screenshot_path', 'duration',
-            'error_message', 'created_at',
+            'status', 'execution_mode', 'tool_calls_count', 'ai_model',
+            'log', 'screenshot_path', 'duration',
+            'error_message', 'screenshots', 'step_logs', 'agent_response',
+            'created_at',
         ]
 
 
@@ -113,3 +117,34 @@ class SystemSettingBulkUpdateSerializer(serializers.Serializer):
         child=serializers.CharField(allow_blank=True),
         help_text='键值对，如 {"claude_cli_path": "claude", "max_workers": "3"}',
     )
+
+
+# ─── Agent API 请求 Serializer ───
+
+class AgentGenerateRequestSerializer(serializers.Serializer):
+    """Agent 生成用例的请求"""
+    project_id = serializers.IntegerField()
+    requirement = serializers.CharField(help_text='用自然语言描述要测试的功能')
+    target = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='测试目标（可选），如「用户登录页面」「/api/users/ 接口」'
+    )
+
+
+class AgentRefineRequestSerializer(serializers.Serializer):
+    """Agent 单用例对话式调整请求"""
+    testcase_id = serializers.IntegerField(help_text='要调整的测试用例 ID')
+    user_feedback = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='用户的修改意见，为空时 Agent 主动提问'
+    )
+
+
+class AgentConfirmRequestSerializer(serializers.Serializer):
+    """Agent 确认用例请求"""
+    testcase_id = serializers.IntegerField(help_text='要确认的测试用例 ID')
+
+
+class AgentExecuteRequestSerializer(serializers.Serializer):
+    """Agent 执行用例请求"""
+    testcase_id = serializers.IntegerField(help_text='要执行的测试用例 ID')
