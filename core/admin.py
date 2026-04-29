@@ -10,15 +10,17 @@ class ProjectAdmin(admin.ModelAdmin):
 
 @admin.register(TestCase)
 class TestCaseAdmin(admin.ModelAdmin):
-    list_display = ['name', 'project', 'status', 'is_ai_generated', 'created_at']
-    list_filter = ['status', 'is_ai_generated', 'project']
-    search_fields = ['name']
+    list_display = ['name', 'project', 'status', 'priority', 'test_type', 'created_by', 'version', 'is_ai_generated', 'created_at']
+    list_filter = ['status', 'is_ai_generated', 'created_by', 'priority', 'project']
+    search_fields = ['name', 'target_page_or_api']
+    readonly_fields = ['conversation_history']
 
 
 @admin.register(ExecutionRecord)
 class ExecutionRecordAdmin(admin.ModelAdmin):
     list_display = ['id', 'project', 'testcase', 'status', 'execution_mode', 'tool_calls_count', 'duration', 'created_at']
     list_filter = ['status', 'execution_mode', 'project']
+    readonly_fields = ['screenshots', 'step_logs', 'agent_response']
 
 
 @admin.register(AIConversation)
