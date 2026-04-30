@@ -303,7 +303,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import {
   getProject, getProjectTestCases, createTestCase,
@@ -317,6 +317,7 @@ import AgentRefineDialog from './AgentRefineDialog.vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 
 const route = useRoute()
+const router = useRouter()
 const projectId = route.params.id
 
 const loading = ref(false)
@@ -415,9 +416,14 @@ const handleExecuteAll = async () => {
 
 const handleExecuteAgent = async (row) => {
   try {
-    await executeTestCaseAgent(row.id)
+    const { data } = await executeTestCaseAgent(row.id)
     ElMessage.success('Agent 执行已提交')
     row.status = 'running'
+    // 跳转到执行观察面板
+    const testRunId = data.test_run_id || data.id
+    if (testRunId) {
+      router.push({ name: 'ExecutionObserver', params: { id: testRunId } })
+    }
   } catch (e) {
     ElMessage.error(e.response?.data?.error || 'Agent 执行失败')
   }
@@ -429,6 +435,13 @@ const handleExecuteAllAgent = async () => {
     const { data } = await executeProjectAgent(projectId)
     ElMessage.success(`已提交 ${data.length} 个 Agent 执行`)
     await loadData()
+    // 跳转到第一个执行的观察面板
+    if (data.length > 0) {
+      const firstId = data[0].test_run_id || data[0].id
+      if (firstId) {
+        router.push({ name: 'ExecutionObserver', params: { id: firstId } })
+      }
+    }
   } catch (e) {
     ElMessage.error(e.response?.data?.error || 'Agent 执行失败')
   } finally {

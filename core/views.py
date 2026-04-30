@@ -169,7 +169,6 @@ class ExecutionRecordDetailView(generics.RetrieveAPIView):
 
 
 @api_view(['GET'])
-@api_view(['GET'])
 def serve_screenshot(request):
     """
     GET /api/executions/screenshots/?path=<filepath>
