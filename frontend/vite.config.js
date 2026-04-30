@@ -17,6 +17,10 @@ export default defineConfig({
         timeout: 0,
         proxyTimeout: 0,
       },
+      '/media': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
   build: {

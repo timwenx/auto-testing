@@ -1122,7 +1122,7 @@ class BuildStepLogsTest(TestCase):
         steps = _build_step_logs(agent_result)
         self.assertEqual(len(steps), 2)
         self.assertEqual(steps[0]['step_num'], 1)
-        self.assertEqual(steps[0]['action'], 'browser_navigate')
+        self.assertEqual(steps[0]['action'], '导航到 https://example.com')
         self.assertEqual(steps[0]['target'], 'https://example.com')
         self.assertEqual(steps[1]['step_num'], 2)
         self.assertEqual(steps[1]['target'], '#login-btn')
@@ -1465,7 +1465,7 @@ class ScreenshotStreamTest(TestCase):
 class ScreenshotStreamRunTest(TestCase):
     """Tests for ScreenshotStream.maybe_capture (unit-level)."""
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_maybe_capture_emits_browser_frame(self, mock_emit):
         """maybe_capture 在间隔到达时截图并推送事件"""
         from .screenshot_stream import ScreenshotStream
@@ -1487,7 +1487,7 @@ class ScreenshotStreamRunTest(TestCase):
         self.assertIn('ts', call_args[2])
         self.assertIsInstance(call_args[2]['ts'], (int, float))
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_maybe_capture_skips_closed_page(self, mock_emit):
         """page.is_closed() 为 True 时不截图"""
         from .screenshot_stream import ScreenshotStream
@@ -1501,7 +1501,7 @@ class ScreenshotStreamRunTest(TestCase):
         mock_page.screenshot.assert_not_called()
         mock_emit.assert_not_called()
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_maybe_capture_skips_within_interval(self, mock_emit):
         """间隔内重复调用不截图"""
         from .screenshot_stream import ScreenshotStream
@@ -1515,7 +1515,7 @@ class ScreenshotStreamRunTest(TestCase):
         mock_page.screenshot.assert_not_called()
         mock_emit.assert_not_called()
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_maybe_capture_handles_screenshot_error(self, mock_emit):
         """截图异常时静默失败，不中断主流程"""
         from .screenshot_stream import ScreenshotStream
@@ -1564,7 +1564,7 @@ class GetLatestFrameTest(TestCase):
         self.assertEqual(ts, 1234567890.0)
         self.assertEqual(jpeg, fake_jpeg)
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_maybe_capture_populates_cache(self, mock_emit):
         """maybe_capture() 成功后 _latest_frames 中有对应条目"""
         from .screenshot_stream import ScreenshotStream, get_latest_frame
@@ -1581,7 +1581,7 @@ class GetLatestFrameTest(TestCase):
         self.assertIsNotNone(ts)
         self.assertEqual(jpeg, b'\xff\xd8jpeg_data')
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_repeated_capture_overwrites_cache(self, mock_emit):
         """多次 maybe_capture() 只保留最新帧"""
         from .screenshot_stream import ScreenshotStream, get_latest_frame
@@ -1602,7 +1602,7 @@ class GetLatestFrameTest(TestCase):
         _, jpeg2 = get_latest_frame(88)
         self.assertEqual(jpeg2, b'frame_2')
 
-    @mock.patch('core.event_emitter._emit_step_event')
+    @mock.patch('core.event_emitter._emit_frame_event')
     def test_stop_clears_cache(self, mock_emit):
         """stop() 清除 _latest_frames 中对应 execution_id 的条目"""
         from .screenshot_stream import ScreenshotStream, get_latest_frame

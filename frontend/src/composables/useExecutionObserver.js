@@ -1,8 +1,11 @@
 /**
- * useExecutionObserver — 封装 WebSocket 连接管理，实时监听执行过程事件。
-
+ * useExecutionObserver — 封装步骤事件 WebSocket 连接管理，实时监听执行过程事件。
+ *
+ * 仅负责步骤事件（step_start / step_complete / agent_thinking / phase_change / execution_end）
+ * 和连接管理。截图帧事件由独立的 useFrameObserver 处理。
+ *
  * 用法:
- *   const { steps, currentFrame, stats, status, connect, disconnect } = useExecutionObserver(executionId)
+ *   const { steps, stats, status, connect, disconnect } = useExecutionObserver(executionId)
  *   connect()  // 建立连接
  *   disconnect() // 断开连接
  */
@@ -12,7 +15,6 @@ import { getExecutionSteps, getExecution } from '../api'
 export function useExecutionObserver(executionId) {
   // ── 响应式状态 ──
   const steps = ref([])                // 步骤列表
-  const currentFrame = ref(null)       // 当前截图帧 (HTTP URL)
   const stats = reactive({
     inputTokens: 0,
     outputTokens: 0,
@@ -23,41 +25,6 @@ export function useExecutionObserver(executionId) {
   const status = ref('idle')           // idle | connecting | connected | running | completed | error
   const error = ref(null)
   const currentPhase = ref(null)       // 当前执行阶段（来自 phase_change 事件）
-
-  // ── 帧轮询（HTTP fallback） ──
-  let lastFrameTime = 0               // 上次收到 browser_frame 事件的 Date.now()（ms）
-  let framePollTimer = null
-  const FRAME_POLL_INTERVAL = 2000    // 轮询间隔 (ms)
-  const FRAME_POLL_THRESHOLD = 2000   // 多久没收到 browser_frame 后启用轮询 (ms)
-  const FRAME_DEBOUNCE_MS = 500       // 帧更新 debounce 间隔（ms）
-  let lastFrameUpdateTime = 0         // 上次帧更新的 Date.now()（ms）
-
-  function _getFrameUrl(ts) {
-    const id = executionId.value !== undefined ? executionId.value : executionId
-    return `/api/executions/${id}/latest_frame/?t=${ts || Date.now()}`
-  }
-
-  function _startFramePolling() {
-    if (framePollTimer) return
-    framePollTimer = setInterval(() => {
-      // 如果执行已结束，停止轮询
-      if (status.value !== 'running') {
-        _stopFramePolling()
-        return
-      }
-      // 如果最近收到过 WS 通知，不需要轮询
-      if (Date.now() - lastFrameTime < FRAME_POLL_THRESHOLD) return
-      // 设置新 URL 触发浏览器重新加载图片（cache-busting）
-      currentFrame.value = _getFrameUrl(Date.now())
-    }, FRAME_POLL_INTERVAL)
-  }
-
-  function _stopFramePolling() {
-    if (framePollTimer) {
-      clearInterval(framePollTimer)
-      framePollTimer = null
-    }
-  }
 
   // ── WebSocket 管理 ──
   let ws = null
@@ -130,7 +97,6 @@ export function useExecutionObserver(executionId) {
         if (data.status && data.status !== 'running') {
           _stopStalePoll()
           status.value = 'completed'
-          _stopFramePolling()
           // 通过 REST 同步最终 executionInfo
           _syncExecutionInfo()
         }
@@ -164,7 +130,6 @@ export function useExecutionObserver(executionId) {
 
   /**
    * 立即拉取缺失的步骤（断线重连后，利用实时持久化的步骤数据回填）。
-   * 回填完成后刷新一次截图帧。
    */
   async function _fetchMissingSteps() {
     try {
@@ -188,9 +153,6 @@ export function useExecutionObserver(executionId) {
         stats.inputTokens = data.agent_response.input_tokens
         stats.outputTokens = data.agent_response.output_tokens
       }
-
-      // 回填完成后刷新截图帧
-      currentFrame.value = _getFrameUrl(Date.now())
     } catch (e) {
       console.warn('[Observer] _fetchMissingSteps failed:', e)
     }
@@ -298,15 +260,12 @@ export function useExecutionObserver(executionId) {
           if (serverSteps > steps.value.length) {
             _fetchMissingSteps()
           }
-          // 执行可能已在运行中，启动帧轮询兜底
-          _startFramePolling()
         }
         break
       }
 
       case 'step_start':
         status.value = 'running'
-        _startFramePolling()
         steps.value.push({
           step_num: data.step_num,
           tool_name: data.action || '',
@@ -365,26 +324,8 @@ export function useExecutionObserver(executionId) {
         currentPhase.value = data || null
         break
 
-      case 'browser_frame':
-        // 轻量通知（仅时间戳），通过 HTTP 拉取实际图片（debounce 500ms）
-        lastFrameTime = Date.now()
-        if (Date.now() - lastFrameUpdateTime < FRAME_DEBOUNCE_MS) break
-        lastFrameUpdateTime = Date.now()
-        currentFrame.value = _getFrameUrl(data.ts || Date.now())
-        break
-
-      case 'frame_heartbeat':
-        // Watchdog 在浏览器工具执行期间发送的心跳通知（debounce 500ms）
-        lastFrameTime = Date.now()
-        if (status.value === 'running' && Date.now() - lastFrameUpdateTime >= FRAME_DEBOUNCE_MS) {
-          lastFrameUpdateTime = Date.now()
-          currentFrame.value = _getFrameUrl(Date.now())
-        }
-        break
-
       case 'execution_end':
         status.value = 'completed'
-        _stopFramePolling()
         _stopPing()
         stats.totalSteps = data.total_steps || steps.value.length
         stats.inputTokens = data.input_tokens || 0
@@ -413,7 +354,6 @@ export function useExecutionObserver(executionId) {
    */
   async function _fetchFinalDataAndClose() {
     const id = executionId.value !== undefined ? executionId.value : executionId
-    _stopFramePolling()
     _stopStalePoll()
     try {
       const [stepsRes, infoRes] = await Promise.all([
@@ -461,7 +401,6 @@ export function useExecutionObserver(executionId) {
     }
     _stopPing()
     _stopStalePoll()
-    _stopFramePolling()
     if (ws) {
       ws.close(1000, 'Manual disconnect')
       ws = null
@@ -476,7 +415,6 @@ export function useExecutionObserver(executionId) {
 
   return {
     steps,
-    currentFrame,
     stats,
     status,
     error,

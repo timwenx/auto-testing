@@ -105,6 +105,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getExecution, getExecutionSteps } from '../api'
 import { useExecutionObserver } from '../composables/useExecutionObserver'
+import { useFrameObserver } from '../composables/useFrameObserver'
 import ExecutionTimeline from '../components/ExecutionTimeline.vue'
 import ExecutionStats from '../components/ExecutionStats.vue'
 import ToolDetailPanel from '../components/ToolDetailPanel.vue'
@@ -130,6 +131,7 @@ const canReplay = computed(() => isTerminalStatus.value)
 function enterReplay() {
   replayMode.value = true
   disconnect()
+  disconnectFrame()
 }
 
 function exitReplay() {
@@ -137,6 +139,7 @@ function exitReplay() {
   // 如果执行仍在运行，重新连接
   if (executionInfo.value?.status === 'running') {
     connect()
+    connectFrame()
   }
 }
 
@@ -144,8 +147,11 @@ function exitReplay() {
 const executionInfo = ref(null)
 const screenshots = ref([])  // 截图画廊数据
 
-// Observer composable
-const { steps, currentFrame, stats, status, error, currentPhase, connect, disconnect } = useExecutionObserver(executionId)
+// Step 通道 composable（步骤事件）
+const { steps, stats, status, error, currentPhase, connect, disconnect } = useExecutionObserver(executionId)
+
+// Frame 通道 composable（截图帧事件）
+const { currentFrame, frameWsStatus, connectFrame, disconnectFrame } = useFrameObserver(executionId)
 
 // 选中步骤
 const selectedStepIdx = ref(-1)
@@ -232,6 +238,7 @@ watch(status, async (newStatus, oldStatus) => {
           stats.outputTokens = data.agent_response.output_tokens
         }
         disconnect()
+        disconnectFrame()
       }
     } catch (e) {
       console.warn('REST backfill after reconnect failed:', e)
@@ -262,13 +269,42 @@ onMounted(async () => {
   if (TERMINAL_STATUSES.includes(executionInfo.value?.status)) {
     status.value = 'completed'
     await _loadStepData()
+    _setTerminalFrame()
     return
   }
 
-  // 分支 3: 进行中执行 → 先 REST 拉取已持久化步骤，再建 WS 连接
+  // 分支 3: 进行中执行 → 先 REST 拉取已持久化步骤，再建双 WS 连接
   await _loadStepData()
-  connect()
+  connect()        // 步骤事件通道
+  connectFrame()   // 截图帧通道
 })
+
+/**
+ * 从 REST 数据中设置终态下的截图帧
+ */
+function _setTerminalFrame() {
+  // 从 screenshots 数组中取最后一个条目
+  const allScreenshots = [
+    ...(screenshots.value || []),
+  ]
+  if (allScreenshots.length > 0) {
+    const lastScreenshot = allScreenshots[allScreenshots.length - 1]
+    const path = typeof lastScreenshot === 'string' ? lastScreenshot : (lastScreenshot.image || lastScreenshot.path || '')
+    if (path) {
+      currentFrame.value = `/api/executions/screenshots/?path=${encodeURIComponent(path)}`
+      return
+    }
+  }
+  // 从 step_logs 中查找最后一个有 screenshot_path 的步骤
+  const stepsWithScreenshot = steps.value.filter(s => s.screenshot_path)
+  if (stepsWithScreenshot.length > 0) {
+    const lastStep = stepsWithScreenshot[stepsWithScreenshot.length - 1]
+    currentFrame.value = `/api/executions/screenshots/?path=${encodeURIComponent(lastStep.screenshot_path)}`
+    return
+  }
+  // 回退到 latest_frame 端点
+  currentFrame.value = `/api/executions/${executionId.value}/latest_frame/?t=${Date.now()}`
+}
 
 /**
  * 加载步骤数据（REST 回填）

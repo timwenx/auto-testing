@@ -65,7 +65,8 @@ defineEmits(['close'])
 
 const ICON_MAP = {
   browser_navigate: '🌐', browser_click: '👆', browser_fill: '✏️',
-  browser_press_key: '⌨️', browser_wait_for: '⏳', browser_get_text: '📋',
+  browser_fill_form: '📝', browser_select: '📋', browser_press_key: '⌨️',
+  browser_snapshot: '📸', browser_query_all: '🔎', browser_get_text: '📋',
   browser_screenshot: '📸', list_files: '📂', read_file: '📄',
   search_code: '🔍', list_directory: '📁', report_result: '📊',
 }

@@ -17,9 +17,31 @@
 
 {markdown_section}
 
-## 工作流程
+## 读懂页面快照
 
-请按以下步骤完成测试：
+每个浏览器操作（navigate/click/fill/fill_form/select/press_key）都会自动返回**结构化 DOM 树快照**。快照格式如下：
+
+```
+📄 URL: https://example.com/login
+📌 标题: Login Page
+
+[页面结构]
+📋 <form id="loginForm" action="/api/login" method="post">
+  🔤 <input id="username" name="username" type="text" placeholder="用户名">
+  🔤 <input id="password" name="password" type="password" placeholder="密码">
+  🔤 <select id="role" name="role">
+    👆 <option value="admin"> "管理员"
+    👆 <option value="user"> "普通用户"
+  👆 <button type="submit"> "登录"
+📌 <h2> "系统公告"
+  "请使用企业账号登录"
+```
+
+**图标含义**: 🔤=输入框/下拉框  👆=按钮/链接/选项  📌=标题  📋=表单  📊=表格  🖼️=图片
+**缩进表示层级关系**，子元素缩进在父元素下方。
+**直接从快照中读取选择器**（id、name、class），不需要额外查询。
+
+## 工作流程
 
 ### 第 1 阶段：探索代码（可选但推荐）
 1. 使用 `list_files` 了解项目结构
@@ -32,15 +54,12 @@
 - 确定测试数据和验证点
 
 ### 第 3 阶段：执行测试
-1. 使用 `browser_navigate` 打开目标页面
-2. 使用 `browser_wait_for` 等待页面加载
-3. **导航后必须先调用 `browser_get_page_content`** 获取页面全部内容概览，了解页面结构和所有可见元素
-4. 需要获取某一类元素（如所有列表项、所有表格行、所有按钮文字）时，使用 `browser_query_all` 一次批量获取，**禁止逐个调用 browser_get_text**
-5. 逐步执行测试操作（click、fill、press_key 等）
-6. 每次重要操作（如点击、提交）后，再次调用 `browser_get_page_content` 确认页面变化
-7. 只有当你已经明确知道目标元素的精确选择器且只需要验证单个元素时，才使用 `browser_get_text`
-8. `browser_screenshot` 用于关键节点截图留证
-9. 每步操作后检查结果，失败时尝试诊断原因
+1. 使用 `browser_navigate` 打开目标页面 → **仔细阅读返回的 DOM 树快照**
+2. **根据快照中的选择器（id/name/class）直接操作，不要猜测**
+3. 多个字段用 `browser_fill_form` 一次填完 + 可选提交
+4. 操作后返回的新快照会反映页面变化，直接对比验证
+5. 只有快照被截断或信息不够时，才用 `browser_query_all` 补充
+6. `browser_screenshot` 用于关键节点截图留证
 
 ### 第 4 阶段：报告结果
 - 使用 `report_result` 工具报告最终结果
@@ -49,9 +68,10 @@
 - details: 详细说明测试过程和结果
 
 ## 重要约束
-- **禁止逐个调用 browser_get_text 来遍历页面元素**。导航后先 `browser_get_page_content` 全局概览，需要批量获取同类元素用 `browser_query_all`，只有验证单个已知选择器时才用 `browser_get_text`
-- 每次浏览器操作后，先验证操作是否成功再继续
-- 如果某步操作失败，尝试分析原因（选择器是否正确、页面是否完全加载等）
+- **先读快照再操作**: 每个操作返回的 DOM 树包含了所有可操作元素的 id/name/class/type/placeholder，务必先读懂再操作，不要盲目试错
+- **从快照直接获取选择器**: 看到 `id="username"` 就用 `#username`，看到 `name="password"` 就用 `[name="password"]`，不需要额外调用工具查询
+- **表单优先 fill_form**: 有多个字段时用 `browser_fill_form` 一次搞定
+- **禁止重复导航同一 URL**: 如果已经在目标页面，不要重新导航
+- **禁止连续查询基础元素**: `browser_query_all("form")` + `browser_query_all("input")` + `browser_query_all("button")` 是浪费，快照里全都有
 - 如果连续 3 次操作失败，使用 `report_result` 报告错误并结束
 - 不要跳过测试步骤，严格按照用例描述执行
-- 截图可以在关键节点使用，记录测试过程

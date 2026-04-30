@@ -181,37 +181,250 @@ REPO_TOOLS = [
 
 
 # ══════════════════════════════════════════════════════════════════
-# Playwright 浏览器工具 (7 个)
+# Playwright 浏览器工具
 # ══════════════════════════════════════════════════════════════════
 
+# ---------- 共用 JS 片段 ----------
+
+_JS_COLLECT_ATTRS = """
+    const ATTRS = ['id','class','name','type','placeholder','value',
+                   'href','src','alt','title','role','aria-label',
+                   'data-testid','disabled','readonly','required',
+                   'action','method','for','label','selected','checked'];
+    function getAttrs(el) {
+        const parts = [];
+        for (const a of ATTRS) {
+            const v = el.getAttribute(a);
+            if (v !== null && v !== '') {
+                if (a === 'class') {
+                    parts.push('class="' + v.trim().split(/\\s+/).slice(0,3).join(' ') + '"');
+                } else if (['disabled','readonly','required','selected','checked'].includes(a)) {
+                    parts.push(a);
+                } else {
+                    parts.push(a + '="' + (v.length > 80 ? v.substring(0,80)+'...' : v) + '"');
+                }
+            }
+        }
+        return parts.join(' ');
+    }
+"""
+
+_JS_SNAPSHOT = """
+() => {
+    const SKIP = new Set(['script','style','noscript','svg','path','br','hr','wbr','iframe']);
+    const INTERACTIVE = new Set(['input','button','select','textarea','a','option']);
+    const HEADING = new Set(['h1','h2','h3','h4','h5','h6']);
+    const STRUCT = new Set(['form','table','thead','tbody','tr','td','th','ul','ol','li',
+                            'details','summary','dialog','nav','header','footer','main',
+                            'section','article','aside','div','span','label','fieldset',
+                            'legend','img','video']);
+
+    function describe(el, depth) {
+        if (depth > 8) return null;
+        const tag = el.tagName.toLowerCase();
+        if (SKIP.has(tag) || !el.checkVisibility()) return null;
+
+        const node = { tag };
+
+        // 收集属性
+        const attrParts = [];
+        for (const a of ['id','class','name','type','placeholder','value','href','src',
+                         'alt','title','role','aria-label','data-testid','disabled',
+                         'readonly','required','action','method','for','selected','checked']) {
+            const v = el.getAttribute(a);
+            if (v !== null && v !== '') {
+                if (a === 'class') attrParts.push('class="' + v.trim().split(/\\s+/).slice(0,3).join(' ') + '"');
+                else if (['disabled','readonly','required','selected','checked'].includes(a)) attrParts.push(a);
+                else attrParts.push(a + '="' + (v.length > 80 ? v.substring(0,80)+'...' : v) + '"');
+            }
+        }
+        node.attrs = attrParts.join(' ');
+
+        // 直接文本 (不包含子元素的文本)
+        let directText = '';
+        for (const child of el.childNodes) {
+            if (child.nodeType === 3) directText += child.textContent;
+        }
+        node.text = directText.trim().substring(0, 150);
+
+        // 递归子元素
+        const children = [];
+        for (const child of el.children) {
+            const c = describe(child, depth + 1);
+            if (c) children.push(c);
+        }
+        node.children = children;
+        return node;
+    }
+
+    // 判断节点是否"有意义" (有属性、有文本、或是结构容器)
+    function isMeaningful(node) {
+        if (!node) return false;
+        if (node.attrs && node.attrs.length > 0) return true;
+        if (node.text && node.text.length >= 1) return true;
+        if (INTERACTIVE.has(node.tag)) return true;
+        if (HEADING.has(node.tag)) return true;
+        if (node.children && node.children.length > 0) return true;
+        return false;
+    }
+
+    // 裁剪: 去掉无意义的中间节点，只保留叶子结构
+    function prune(node) {
+        if (!node) return null;
+        if (node.children) {
+            node.children = node.children.map(prune).filter(isMeaningful);
+        }
+        // 如果是纯 div/span 且无属性无文本只有一个子节点，则提升子节点
+        if (['div','span'].includes(node.tag) && !node.attrs && !node.text
+            && node.children && node.children.length === 1) {
+            return node.children[0];
+        }
+        return node;
+    }
+
+    // 估算输出大小，如果太大就截断
+    function countNodes(node) {
+        if (!node) return 0;
+        let c = 1;
+        if (node.children) for (const ch of node.children) c += countNodes(ch);
+        return c;
+    }
+
+    const body = document.body;
+    if (!body) return { url: location.href, title: document.title || '', tree: null };
+
+    let tree = describe(body, 0);
+    tree = prune(tree);
+
+    // 如果节点数 > 150，尝试只保留交互元素附近的上下文
+    if (countNodes(tree) > 150) {
+        function keepImportant(node, depth) {
+            if (!node) return null;
+            const important = INTERACTIVE.has(node.tag) || HEADING.has(node.tag) || node.attrs;
+            const newObj = { tag: node.tag, attrs: node.attrs, text: node.text };
+            if (node.children) {
+                newObj.children = node.children
+                    .map(c => keepImportant(c, depth + 1))
+                    .filter(c => c !== null);
+            }
+            // 保留: 交互元素、标题、有文本的元素、有 id/name 的元素
+            if (important || (node.text && node.text.length > 0) ||
+                (newObj.children && newObj.children.length > 0)) {
+                return newObj;
+            }
+            return null;
+        }
+        tree = keepImportant(tree, 0) || tree;
+    }
+
+    return { url: location.href, title: document.title || '', tree };
+}
+"""
+
+
+def _format_tree(node, indent=0, max_lines=120):
+    """将 DOM 树格式化为缩进文本，限制总行数"""
+    lines = []
+    _format_tree_recursive(node, indent, lines, [0], max_lines)
+    return "\n".join(lines)
+
+
+def _format_tree_recursive(node, indent, lines, counter, max_lines):
+    if not node or counter[0] >= max_lines:
+        return
+    pad = "  " * indent
+    tag = node.get('tag', '?')
+    attrs = node.get('attrs', '')
+    text = node.get('text', '')
+    children = node.get('children', [])
+
+    # 选择图标
+    icon = ''
+    if tag in ('input', 'select', 'textarea'):
+        icon = '🔤 '
+    elif tag == 'button' or tag == 'a':
+        icon = '👆 '
+    elif tag in ('h1','h2','h3','h4','h5','h6'):
+        icon = '📌 '
+    elif tag == 'img':
+        icon = '🖼️ '
+    elif tag == 'form':
+        icon = '📋 '
+    elif tag == 'table':
+        icon = '📊 '
+
+    attr_str = f" {attrs}" if attrs else ""
+    text_str = f" \"{text}\"" if text else ""
+    lines.append(f"{pad}{icon}<{tag}{attr_str}>{text_str}")
+    counter[0] += 1
+
+    if children:
+        for child in children:
+            if counter[0] >= max_lines:
+                lines.append(f"{pad}  ... (截断，用 browser_query_all 获取更多)")
+                return
+            _format_tree_recursive(child, indent + 1, lines, counter, max_lines)
+
+
+def _snapshot_page(page):
+    """获取页面快照: URL + 标题 + 结构化 DOM 树。供多个工具复用。"""
+    return page.evaluate(_JS_SNAPSHOT)
+
+
+def _format_snapshot(snap):
+    """格式化 snapshot 结果为结构化 DOM 树文本"""
+    lines = [f"📄 URL: {snap['url']}", f"📌 标题: {snap.get('title', '')}"]
+    tree = snap.get('tree')
+    if tree:
+        lines.append("\n[页面结构]")
+        lines.append(_format_tree(tree))
+    else:
+        lines.append("\n(页面无可见内容)")
+    return "\n".join(lines)
+
+
+# ---------- 工具实现 ----------
+
 def _execute_browser_navigate(input_dict, context):
-    """导航到指定 URL"""
+    """导航到指定 URL，等待加载完成后自动返回页面快照"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
     url = input_dict['url']
+    wait_until = input_dict.get('wait_until', 'domcontentloaded')
     try:
-        page.goto(url, wait_until='domcontentloaded', timeout=30000)
-        return f"已导航到: {page.url}"
+        page.goto(url, wait_until=wait_until, timeout=30000)
+        # 自动等待网络空闲
+        try:
+            page.wait_for_load_state('networkidle', timeout=5000)
+        except Exception:
+            pass
+        # 返回页面快照，省去额外调用
+        snap = _snapshot_page(page)
+        return f"✅ 已导航到: {page.url}\n\n{_format_snapshot(snap)}"
     except Exception as e:
         return f"Error navigating to {url}: {e}"
 
 
 def _execute_browser_click(input_dict, context):
-    """点击页面元素"""
+    """点击元素，操作后自动返回页面快照以便验证结果"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
     selector = input_dict['selector']
     try:
         page.click(selector, timeout=10000)
-        return f"已点击: {selector}"
+        # 短暂等待页面响应
+        import time as _time
+        _time.sleep(0.5)
+        snap = _snapshot_page(page)
+        return f"✅ 已点击: {selector}\n\n{_format_snapshot(snap)}"
     except Exception as e:
         return f"Error clicking {selector}: {e}"
 
 
 def _execute_browser_fill(input_dict, context):
-    """填写表单输入框"""
+    """填写单个输入框，操作后自动返回页面快照"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
@@ -219,9 +432,64 @@ def _execute_browser_fill(input_dict, context):
     value = input_dict['value']
     try:
         page.fill(selector, value, timeout=10000)
-        return f"已填写 '{selector}': {value[:50]}{'...' if len(value) > 50 else ''}"
+        snap = _snapshot_page(page)
+        display_val = value[:50] + ('...' if len(value) > 50 else '')
+        return f"✅ 已填写 '{selector}': {display_val}\n\n{_format_snapshot(snap)}"
     except Exception as e:
         return f"Error filling {selector}: {e}"
+
+
+def _execute_browser_fill_form(input_dict, context):
+    """一次填写多个表单字段，可选择是否自动点击提交按钮"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+    fields = input_dict['fields']  # [{"selector": "...", "value": "..."}, ...]
+    submit_selector = input_dict.get('submit_selector', '')
+    results = []
+    try:
+        for f in fields:
+            sel, val = f['selector'], f['value']
+            try:
+                page.fill(sel, val, timeout=10000)
+                results.append(f"✅ {sel} = {val[:50]}")
+            except Exception as e:
+                results.append(f"❌ {sel}: {e}")
+        # 可选: 自动点击提交
+        if submit_selector:
+            try:
+                page.click(submit_selector, timeout=10000)
+                import time as _time
+                _time.sleep(0.5)
+                results.append(f"✅ 已点击提交: {submit_selector}")
+            except Exception as e:
+                results.append(f"❌ 提交 {submit_selector}: {e}")
+        snap = _snapshot_page(page)
+        return "\n".join(results) + f"\n\n{_format_snapshot(snap)}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _execute_browser_select(input_dict, context):
+    """选择下拉框选项"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+    selector = input_dict['selector']
+    value = input_dict.get('value', '')
+    label = input_dict.get('label', '')
+    try:
+        if label:
+            page.select_option(selector, label=label, timeout=10000)
+        elif value:
+            page.select_option(selector, value=value, timeout=10000)
+        else:
+            return "Error: 必须指定 value 或 label"
+        snap = _snapshot_page(page)
+        chosen = label or value
+        return f"✅ 已选择 '{selector}': {chosen}\n\n{_format_snapshot(snap)}"
+    except Exception as e:
+        return f"Error selecting {selector}: {e}"
 
 
 def _execute_browser_press_key(input_dict, context):
@@ -232,31 +500,68 @@ def _execute_browser_press_key(input_dict, context):
     key = input_dict['key']
     try:
         page.keyboard.press(key)
-        return f"已按下按键: {key}"
+        import time as _time
+        _time.sleep(0.3)
+        snap = _snapshot_page(page)
+        return f"✅ 已按下: {key}\n\n{_format_snapshot(snap)}"
     except Exception as e:
         return f"Error pressing key {key}: {e}"
 
 
-def _execute_browser_wait_for(input_dict, context):
-    """等待元素出现或页面加载完成"""
+def _execute_browser_snapshot(input_dict, context):
+    """获取当前页面的完整快照: URL、标题、所有交互元素(带属性)、页面文本内容。
+    一次调用即可了解页面上所有可操作的元素和当前显示的内容。"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
-    selector = input_dict.get('selector', '')
-    timeout = input_dict.get('timeout', 10000)
     try:
-        if selector:
-            page.wait_for_selector(selector, timeout=timeout)
-            return f"元素已出现: {selector}"
-        else:
-            page.wait_for_load_state('networkidle', timeout=timeout)
-            return "页面加载完成"
+        snap = _snapshot_page(page)
+        return _format_snapshot(snap)
     except Exception as e:
-        return f"Error waiting: {e}"
+        return f"Error: {e}"
+
+
+def _execute_browser_query_all(input_dict, context):
+    """根据 CSS 选择器批量获取所有匹配元素的详细属性和文本"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+    selector = input_dict['selector']
+    try:
+        results = page.evaluate(f"""(selector) => {{
+            {_JS_COLLECT_ATTRS}
+            const els = document.querySelectorAll(selector);
+            const items = [];
+            for (const el of els) {{
+                const tag = el.tagName.toLowerCase();
+                const attrs = getAttrs(el);
+                let text = (el.innerText || '').trim();
+                if (text.length > 200) text = text.substring(0, 200) + '...';
+                items.push({{ tag, attrs, text }});
+            }}
+            return items;
+        }}""", selector)
+        if not results:
+            return f"未找到匹配 '{selector}' 的元素"
+        lines = []
+        for i, item in enumerate(results):
+            line = f"[{i}] <{item['tag']}"
+            if item['attrs']:
+                line += f" {item['attrs']}"
+            line += ">"
+            if item['text']:
+                line += f" {item['text']}"
+            lines.append(line)
+            if len(lines) >= 50:
+                lines.append(f"... 共 {len(results)} 个元素，截断显示前 50 个")
+                break
+        return f"共找到 {len(results)} 个匹配 '{selector}' 的元素:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Error querying {selector}: {e}"
 
 
 def _execute_browser_get_text(input_dict, context):
-    """获取页面元素的文本内容"""
+    """获取单个元素的文本内容，用于精确验证特定元素"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
@@ -274,7 +579,7 @@ def _execute_browser_get_text(input_dict, context):
 
 
 def _execute_browser_screenshot(input_dict, context):
-    """对当前页面截图，保存到 media/screenshots/ 持久化目录"""
+    """对当前页面截图，保存到 media/{execution_id}/"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
@@ -282,17 +587,12 @@ def _execute_browser_screenshot(input_dict, context):
     try:
         if not save_path:
             from django.conf import settings as django_settings
-            project_id = context.get('project_id', 'unknown')
-            testcase_id = context.get('testcase_id', 'unknown')
-            # 递增截图计数器
+            execution_id = context.get('execution_id', 'unknown')
             counter = context.get('screenshot_counter', 0) + 1
             context['screenshot_counter'] = counter
-            # 保存到 media/screenshots/{project_id}/{testcase_id}/
             screenshot_dir = os.path.join(
                 str(django_settings.MEDIA_ROOT),
-                'screenshots',
-                str(project_id),
-                str(testcase_id),
+                str(execution_id),
             )
             os.makedirs(screenshot_dir, exist_ok=True)
             save_path = os.path.join(screenshot_dir, f'step_{counter}.png')
@@ -303,163 +603,23 @@ def _execute_browser_screenshot(input_dict, context):
         return f"Error taking screenshot: {e}"
 
 
-def _execute_browser_get_page_content(input_dict, context):
-    """获取页面主要内容区域的文本概览，用于一次性了解页面结构和内容"""
-    page = context.get('page')
-    if not page:
-        return "Error: 浏览器未初始化"
-    try:
-        result = page.evaluate("""() => {
-            function collectElements(root, depth) {
-                if (depth > 6) return [];
-                const items = [];
-                for (const el of root.children) {
-                    const tag = el.tagName.toLowerCase();
-                    if (['script','style','noscript','svg'].includes(tag)) continue;
-                    const text = (el.innerText || '').trim();
-                    // 收集关键属性
-                    const attrNames = ['id', 'class', 'name', 'type', 'placeholder', 'value',
-                                       'href', 'src', 'alt', 'title', 'role', 'aria-label',
-                                       'data-testid', 'disabled', 'required', 'for'];
-                    const attrParts = [];
-                    for (const a of attrNames) {
-                        const v = el.getAttribute(a);
-                        if (v !== null && v !== '') {
-                            if (a === 'class') {
-                                const short = v.trim().split(/\\s+/).slice(0, 2).join('.');
-                                attrParts.push('.' + short);
-                            } else if (a === 'disabled' || a === 'required') {
-                                attrParts.push('[' + a + ']');
-                            } else {
-                                const display = v.length > 60 ? v.substring(0, 60) + '...' : v;
-                                attrParts.push(a + '="' + display + '"');
-                            }
-                        }
-                    }
-                    const attrStr = attrParts.join(' ');
-                    // 有文本的元素直接输出
-                    if (text && text.length >= 2) {
-                        const display = text.length > 200 ? text.substring(0, 200) + '...' : text;
-                        items.push({tag, attrs: attrStr, text: display});
-                        // 大块文本不再递归子元素（避免重复）
-                        if (text.length <= 200) {
-                            items.push(...collectElements(el, depth + 1));
-                        }
-                    } else {
-                        // 无文本但有属性的元素（如 input、img）也要输出
-                        if (attrStr || ['input','img','button','select','textarea','a','form'].includes(tag)) {
-                            items.push({tag, attrs: attrStr, text: ''});
-                        }
-                        // 继续递归子元素
-                        items.push(...collectElements(el, depth + 1));
-                    }
-                }
-                return items;
-            }
-            const body = document.body || document.querySelector('body');
-            if (!body) return [];
-            return collectElements(body, 0);
-        }""")
-        if not result:
-            return "(页面无可见内容)"
-        lines = []
-        total_len = 0
-        for item in result:
-            tag = item['tag']
-            attrs = item['attrs']
-            text = item['text']
-            line = f"<{tag}"
-            if attrs:
-                line += f" {attrs}"
-            line += ">"
-            if text:
-                line += f" {text}"
-            lines.append(line)
-            total_len += len(line)
-            if total_len > 4000:
-                lines.append("... (内容过长已截断，请用 browser_query_all 或 browser_get_text 获取具体元素)")
-                break
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error getting page content: {e}"
-
-
-def _execute_browser_query_all(input_dict, context):
-    """根据 CSS 选择器批量获取所有匹配元素的详细信息和文本"""
-    page = context.get('page')
-    if not page:
-        return "Error: 浏览器未初始化"
-    selector = input_dict['selector']
-    try:
-        # 用 JS 一次性收集每个元素的关键属性和文本
-        results = page.evaluate(f"""(selector) => {{
-            const els = document.querySelectorAll(selector);
-            const items = [];
-            for (const el of els) {{
-                const info = {{ tag: el.tagName.toLowerCase() }};
-                // 收集关键属性
-                const attrs = ['id', 'class', 'name', 'type', 'placeholder', 'value',
-                               'href', 'src', 'alt', 'title', 'role', 'aria-label',
-                               'data-testid', 'disabled', 'readonly', 'required',
-                               'action', 'method', 'for', 'label'];
-                const attrParts = [];
-                for (const a of attrs) {{
-                    const v = el.getAttribute(a);
-                    if (v !== null && v !== '') {{
-                        if (a === 'class') {{
-                            const short = v.trim().split(/\\s+/).slice(0, 3).join('.');
-                            attrParts.push('class="' + short + '"');
-                        }} else if (a === 'disabled' || a === 'readonly' || a === 'required') {{
-                            attrParts.push(a);
-                        }} else {{
-                            const display = v.length > 80 ? v.substring(0, 80) + '...' : v;
-                            attrParts.push(a + '="' + display + '"');
-                        }}
-                    }}
-                }}
-                info.attrs = attrParts.join(' ');
-                // 文本内容
-                let text = (el.innerText || '').trim();
-                if (text.length > 200) text = text.substring(0, 200) + '...';
-                info.text = text;
-                items.push(info);
-            }}
-            return items;
-        }}""", selector)
-        if not results:
-            return f"未找到匹配 '{selector}' 的元素"
-        lines = []
-        for i, item in enumerate(results):
-            attr_str = item['attrs']
-            text = item['text']
-            tag = item['tag']
-            line = f"[{i}] <{tag}"
-            if attr_str:
-                line += f" {attr_str}"
-            line += ">"
-            if text:
-                line += f" {text}"
-            lines.append(line)
-            if len(lines) >= 50:
-                lines.append(f"... 共 {len(results)} 个元素，已截断显示前 50 个")
-                break
-        header = f"共找到 {len(results)} 个匹配 '{selector}' 的元素:"
-        return header + "\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error querying {selector}: {e}"
-
-
 BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_navigate',
-            'description': '在浏览器中导航到指定 URL。用于打开测试目标页面。',
+            'description': '导航到指定 URL，自动等待页面加载完成，并返回页面快照（URL、标题、所有交互元素、文本内容）。无需额外调用 browser_snapshot。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
                     'url': {
                         'type': 'string',
                         'description': '要导航到的完整 URL',
+                    },
+                    'wait_until': {
+                        'type': 'string',
+                        'description': '等待策略: "domcontentloaded"(默认) 或 "load" 或 "networkidle"',
+                        'default': 'domcontentloaded',
+                        'enum': ['domcontentloaded', 'load', 'networkidle'],
                     },
                 },
                 'required': ['url'],
@@ -470,7 +630,7 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_click',
-            'description': '点击页面上的元素。使用 CSS 选择器定位元素。在点击前确保页面已加载。',
+            'description': '点击页面元素。点击后自动返回页面快照，可直接看到操作结果。支持 CSS 选择器或文本定位。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
@@ -487,7 +647,7 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_fill',
-            'description': '在输入框中填写文本。使用 CSS 选择器定位输入框。',
+            'description': '填写单个输入框。填写后自动返回页面快照。如果需要一次填写多个字段，请使用 browser_fill_form。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
@@ -507,8 +667,65 @@ BROWSER_TOOLS = [
     },
     {
         'schema': {
+            'name': 'browser_fill_form',
+            'description': '一次填写多个表单字段，可选自动点击提交按钮。比逐个 browser_fill 高效得多。例如填写登录表单: fields=[{"selector":"input[name=username]","value":"admin"}, {"selector":"input[name=password]","value":"123456"}], submit_selector="button[type=submit]"',
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'fields': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'selector': {'type': 'string', 'description': '输入框 CSS 选择器'},
+                                'value': {'type': 'string', 'description': '要填写的文本'},
+                            },
+                            'required': ['selector', 'value'],
+                        },
+                        'description': '要填写的字段列表，每个包含 selector 和 value',
+                    },
+                    'submit_selector': {
+                        'type': 'string',
+                        'description': '提交按钮的 CSS 选择器（可选）。填写完成后自动点击此按钮。',
+                        'default': '',
+                    },
+                },
+                'required': ['fields'],
+            },
+        },
+        'execute': _execute_browser_fill_form,
+    },
+    {
+        'schema': {
+            'name': 'browser_select',
+            'description': '选择下拉框(select)的选项。可通过 value 或 label(显示文本) 选择。',
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': '下拉框的 CSS 选择器',
+                    },
+                    'value': {
+                        'type': 'string',
+                        'description': '选项的 value 属性值',
+                        'default': '',
+                    },
+                    'label': {
+                        'type': 'string',
+                        'description': '选项的显示文本',
+                        'default': '',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+        'execute': _execute_browser_select,
+    },
+    {
+        'schema': {
             'name': 'browser_press_key',
-            'description': '按下键盘按键，如 Enter、Escape、Tab 等。',
+            'description': '按下键盘按键（如 Enter、Escape、Tab）。按键后自动返回页面快照。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
@@ -524,37 +741,43 @@ BROWSER_TOOLS = [
     },
     {
         'schema': {
-            'name': 'browser_wait_for',
-            'description': '等待页面元素出现或页面加载完成。如果只指定 selector，等待该元素出现；不指定则等待页面 networkidle。',
+            'name': 'browser_snapshot',
+            'description': '获取当前页面的完整快照，包括: URL、标题、所有交互元素(input/button/select/a 等及其 id/class/name/type/placeholder 等属性)和页面文本内容。一次调用即可全面了解页面状态。适合在操作后验证结果。',
+            'input_schema': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+        'execute': _execute_browser_snapshot,
+    },
+    {
+        'schema': {
+            'name': 'browser_query_all',
+            'description': '根据 CSS 选择器批量获取所有匹配元素的详细属性(id/class/name/type/placeholder/value 等)和文本。一次返回所有匹配，比逐个 browser_get_text 高效得多。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
                     'selector': {
                         'type': 'string',
-                        'description': '要等待的元素 CSS 选择器，留空则等待页面加载完成',
-                        'default': '',
-                    },
-                    'timeout': {
-                        'type': 'integer',
-                        'description': '超时时间（毫秒），默认 10000',
-                        'default': 10000,
+                        'description': 'CSS 选择器，如 "li"、".product"、".table tbody tr"、"input"',
                     },
                 },
-                'required': [],
+                'required': ['selector'],
             },
         },
-        'execute': _execute_browser_wait_for,
+        'execute': _execute_browser_query_all,
     },
     {
         'schema': {
             'name': 'browser_get_text',
-            'description': '获取页面上指定元素的文本内容。用于验证页面显示是否符合预期。',
+            'description': '获取单个元素的纯文本内容。仅在需要精确验证某个已知选择器的元素时使用。了解页面全貌请用 browser_snapshot，批量获取请用 browser_query_all。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
                     'selector': {
                         'type': 'string',
-                        'description': 'CSS 选择器，如 ".error-message"、"h1"',
+                        'description': 'CSS 选择器',
                     },
                 },
                 'required': ['selector'],
@@ -565,13 +788,13 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_screenshot',
-            'description': '对当前页面进行截图。截图将保存为 PNG 文件。用于记录测试过程或验证页面状态。',
+            'description': '对当前页面截图，保存为 PNG 文件。用于记录测试过程或截图留证。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
                     'save_path': {
                         'type': 'string',
-                        'description': '截图保存路径，留空则自动生成临时文件',
+                        'description': '截图保存路径，留空自动生成',
                         'default': '',
                     },
                 },
@@ -579,35 +802,6 @@ BROWSER_TOOLS = [
             },
         },
         'execute': _execute_browser_screenshot,
-    },
-    {
-        'schema': {
-            'name': 'browser_get_page_content',
-            'description': '获取当前页面的主要内容文本概览，一次性列出页面上的主要元素及其文本。适合在导航后快速了解页面整体内容和结构，而不用逐个调用 browser_get_text。',
-            'input_schema': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
-        },
-        'execute': _execute_browser_get_page_content,
-    },
-    {
-        'schema': {
-            'name': 'browser_query_all',
-            'description': '根据 CSS 选择器批量获取所有匹配元素的文本内容。一次返回所有匹配元素，比逐个调用 browser_get_text 高效得多。例如用 "li" 获取所有列表项、用 ".product" 获取所有产品卡片。',
-            'input_schema': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS 选择器，如 "li"、".product"、".table tbody tr"',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-        'execute': _execute_browser_query_all,
     },
 ]
 

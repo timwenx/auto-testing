@@ -22,6 +22,9 @@ from . import execution_engine
 
 logger = logging.getLogger(__name__)
 
+# 模块级线程池 — 避免局部变量被 GC 导致 "cannot schedule new futures after shutdown"
+_agent_executor = ThreadPoolExecutor(max_workers=2)
+
 
 def _create_screenshot_records(record, step_logs, screenshot_paths):
     """从执行结果创建持久化 Screenshot 记录"""
@@ -120,13 +123,8 @@ def _save_script_result(record, result):
 
 
 def _submit_agent_task(task_fn):
-    """用 ThreadPoolExecutor 提交 Agent 异步任务"""
-    try:
-        max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
-    except (ValueError, TypeError):
-        max_workers = 2
-    executor = ThreadPoolExecutor(max_workers=max_workers)
-    executor.submit(task_fn)
+    """用模块级线程池提交 Agent 异步任务"""
+    _agent_executor.submit(task_fn)
 
 
 def _get_ai_model():
@@ -302,11 +300,35 @@ def serve_screenshot(request):
             return os.path.realpath(os.path.abspath(path))
         except Exception:
             return path
-    
+
+    def _parse_execution_id_from_path(path):
+        """
+        从路径中解析 execution_id。
+        新路径格式: {execution_id}/xxx.png
+        旧路径格式: screenshots/{project_id}/{execution_id}/xxx.png
+        """
+        import re
+        # 新格式: "24/auto_123456.jpg"
+        m = re.match(r'^(\d+)/', path)
+        if m:
+            return int(m.group(1))
+        # 旧格式: "screenshots/2/18/step_1.png"
+        m = re.match(r'^screenshots/\d+/(\d+)/', path)
+        if m:
+            return int(m.group(1))
+        return None
+
     normalized_req_path = normalize_for_comparison(file_path)
     normalized_abs_path = normalize_for_comparison(abs_path)
-    
-    # 检查是否存在于数据库记录中
+
+    # 计算相对 media root 的路径
+    relative_to_media = None
+    try:
+        relative_to_media = os.path.relpath(abs_path_real, media_root)
+    except (ValueError, Exception):
+        pass
+
+    # 检查是否存在于数据库记录中（使用索引查询，避免全表扫描）
     exists_in_db = (
         ExecutionRecord.objects.filter(screenshot_path=file_path).exists()
         or ExecutionRecord.objects.filter(screenshot_path=abs_path).exists()
@@ -316,47 +338,42 @@ def serve_screenshot(request):
     )
 
     # auto_captured 截图的 Screenshot.image 存储的是 media_root 相对路径
-    if not exists_in_db:
-        try:
-            from django.conf import settings as django_settings
-            media_root = str(django_settings.MEDIA_ROOT)
-            relative_to_media = os.path.relpath(abs_path_real, media_root)
-            exists_in_db = Screenshot.objects.filter(image=relative_to_media).exists()
-        except (ValueError, Exception):
-            pass
+    if not exists_in_db and relative_to_media:
+        exists_in_db = Screenshot.objects.filter(image=relative_to_media).exists()
 
+    # 从路径中解析 execution_id，只查询该执行的记录（避免全表扫描）
     if not exists_in_db:
-        # 检查 screenshots JSON 字段（用多种格式比较）
-        for record in ExecutionRecord.objects.only('screenshots'):
-            if not record.screenshots:
-                continue
-            for screenshot_path in record.screenshots:
-                if (screenshot_path == file_path or 
-                    screenshot_path == abs_path or
-                    normalize_for_comparison(screenshot_path) == normalized_req_path or
-                    normalize_for_comparison(screenshot_path) == normalized_abs_path):
-                    exists_in_db = True
-                    break
-            if exists_in_db:
-                break
+        exec_id = _parse_execution_id_from_path(file_path)
+        if not exec_id and relative_to_media:
+            exec_id = _parse_execution_id_from_path(relative_to_media)
 
-    if not exists_in_db:
-        # 检查 step_logs 中的 screenshot_path
-        for record in ExecutionRecord.objects.only('step_logs'):
-            if not record.step_logs:
-                continue
-            for step in record.step_logs:
-                if isinstance(step, dict):
-                    sp = step.get('screenshot_path', '')
-                    if (sp == file_path or 
-                        sp == abs_path or
-                        normalize_for_comparison(sp) == normalized_req_path or
-                        normalize_for_comparison(sp) == normalized_abs_path):
-                        exists_in_db = True
-                        break
-            if exists_in_db:
-                break
-    
+        if exec_id:
+            # 只查询指定 execution 的 screenshots 和 step_logs
+            try:
+                record = ExecutionRecord.objects.only('screenshots', 'step_logs').get(pk=exec_id)
+                # 检查 screenshots JSON 字段
+                if record.screenshots:
+                    for screenshot_path in record.screenshots:
+                        if (screenshot_path == file_path or
+                            screenshot_path == abs_path or
+                            normalize_for_comparison(screenshot_path) == normalized_req_path or
+                            normalize_for_comparison(screenshot_path) == normalized_abs_path):
+                            exists_in_db = True
+                            break
+                # 检查 step_logs 中的 screenshot_path
+                if not exists_in_db and record.step_logs:
+                    for step in record.step_logs:
+                        if isinstance(step, dict):
+                            sp = step.get('screenshot_path', '')
+                            if (sp == file_path or
+                                sp == abs_path or
+                                normalize_for_comparison(sp) == normalized_req_path or
+                                normalize_for_comparison(sp) == normalized_abs_path):
+                                exists_in_db = True
+                                break
+            except ExecutionRecord.DoesNotExist:
+                pass
+
     if not exists_in_db:
         logger.warning(
             "Screenshot not found in DB records: file_path=%s, abs_path=%s",
