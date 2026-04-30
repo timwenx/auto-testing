@@ -297,11 +297,16 @@ def _extract_screenshots(agent_result: dict) -> list:
     return screenshots
 
 
-def execute_testcase_with_agent(testcase, base_url: str) -> dict:
+def execute_testcase_with_agent(testcase, base_url: str, execution_id=None) -> dict:
     """
     通过 Agent 模式执行测试用例。
 
     与 execute_testcase_sync 返回相同格式的 dict，但 script 字段存储 Agent 对话日志。
+
+    Args:
+        testcase: TestCase 对象
+        base_url: 测试目标 URL
+        execution_id: 执行记录 ID（用于实时事件推送，可选）
     """
     from .agent_service import AgentRunner
     from .agent_tools import build_test_execution_system_prompt
@@ -330,7 +335,7 @@ def execute_testcase_with_agent(testcase, base_url: str) -> dict:
 
         # 执行 Agent
         start = time.time()
-        runner = AgentRunner(project=project, testcase_id=testcase.pk)
+        runner = AgentRunner(project=project, testcase_id=testcase.pk, execution_id=execution_id)
         agent_result = runner.run(
             system_prompt=system_prompt,
             messages=messages,

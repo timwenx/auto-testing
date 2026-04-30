@@ -192,6 +192,29 @@ def refine_testcase_with_agent(testcase, project, user_feedback=None):
     return result
 
 
+def _extract_target(tool_name, tool_input):
+    """从工具输入中提取目标摘要，用于事件推送"""
+    if not isinstance(tool_input, dict):
+        return ''
+    if tool_name == 'browser_navigate':
+        return tool_input.get('url', '')
+    elif tool_name in ('browser_click', 'browser_fill', 'browser_get_text', 'browser_press_key'):
+        return tool_input.get('selector', '')
+    elif tool_name == 'browser_wait_for':
+        return tool_input.get('selector', '')
+    elif tool_name == 'browser_screenshot':
+        return 'screenshot'
+    elif tool_name == 'report_result':
+        return tool_input.get('summary', '')
+    elif tool_name in ('list_files', 'list_directory'):
+        return tool_input.get('path', '')
+    elif tool_name == 'read_file':
+        return tool_input.get('file_path', '')
+    elif tool_name == 'search_code':
+        return tool_input.get('query', '')
+    return ''
+
+
 class AgentRunner:
     """
     Agent 执行引擎。
@@ -201,9 +224,10 @@ class AgentRunner:
         result = runner.run(system_prompt="...", messages=[...], max_turns=20)
     """
 
-    def __init__(self, project, testcase_id=None):
+    def __init__(self, project, testcase_id=None, execution_id=None):
         self.project = project
         self.testcase_id = testcase_id
+        self.execution_id = execution_id
         self._playwright = None
         self._browser = None
         self._page = None
@@ -232,6 +256,7 @@ class AgentRunner:
             }
         """
         from .ai_engine import _get_client, _get_model
+        from .event_emitter import _emit_step_event
 
         client = _get_client()
         model = _get_model()
@@ -280,6 +305,11 @@ class AgentRunner:
 
                 if text_parts:
                     response_text = '\n'.join(text_parts)
+                    # 推送 Agent 思维过程
+                    if self.execution_id:
+                        _emit_step_event(self.execution_id, 'agent_thinking', {
+                            'text': response_text[:500],
+                        })
 
                 # 如果没有工具调用，Agent 循环结束
                 if response.stop_reason == 'end_turn' or not tool_use_blocks:
@@ -294,6 +324,15 @@ class AgentRunner:
                     tool_name = tool_use.name
                     tool_input = tool_use.input
                     logger.info("[Agent] 工具调用: %s(%s)", tool_name, tool_input)
+
+                    # 推送步骤开始事件
+                    step_start_time = time.time()
+                    if self.execution_id:
+                        _emit_step_event(self.execution_id, 'step_start', {
+                            'step_num': len(self._tool_calls_log) + 1,
+                            'action': tool_name,
+                            'target': _extract_target(tool_name, tool_input),
+                        })
 
                     # 检查是否需要初始化浏览器
                     if tool_name in browser_tool_names:
@@ -319,6 +358,21 @@ class AgentRunner:
                         'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
                     })
 
+                    # 推送步骤完成事件
+                    if self.execution_id:
+                        duration_ms = int((time.time() - step_start_time) * 1000)
+                        screenshot_path = ''
+                        if '截图已保存:' in (result_text or ''):
+                            screenshot_path = result_text.split('截图已保存:')[-1].strip()
+                        _emit_step_event(self.execution_id, 'step_complete', {
+                            'step_num': len(self._tool_calls_log),
+                            'action': tool_name,
+                            'target': _extract_target(tool_name, tool_input),
+                            'result': (result_text or '')[:300],
+                            'screenshot_path': screenshot_path,
+                            'duration_ms': duration_ms,
+                        })
+
                     tool_results.append({
                         'type': 'tool_result',
                         'tool_use_id': tool_use.id,
@@ -335,6 +389,15 @@ class AgentRunner:
 
         if turn >= max_turns:
             logger.warning("[Agent] 达到最大轮次 %d，强制结束", max_turns)
+
+        # 推送执行结束事件
+        if self.execution_id:
+            _emit_step_event(self.execution_id, 'execution_end', {
+                'status': 'completed',
+                'total_steps': len(self._tool_calls_log),
+                'input_tokens': self._total_input_tokens,
+                'output_tokens': self._total_output_tokens,
+            })
 
         return {
             'response_text': response_text,
