@@ -61,18 +61,21 @@ class ExecutionConsumer(WebsocketConsumer):
 
         # 查询当前执行状态，一并发送给客户端
         execution_status = 'unknown'
+        completed_steps = 0
         try:
             from .models import ExecutionRecord
             record = ExecutionRecord.objects.get(pk=self.execution_id)
             execution_status = record.status
+            completed_steps = len(record.step_logs or [])
         except Exception:
             pass
 
-        # 发送连接确认（含当前执行状态）
+        # 发送连接确认（含当前执行状态和已完成步骤数）
         self.send(text_data=json.dumps({
             'type': 'connection_established',
             'execution_id': self.execution_id,
             'execution_status': execution_status,
+            'completed_steps': completed_steps,
         }))
 
         # 启动服务端心跳定时器
