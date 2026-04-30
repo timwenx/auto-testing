@@ -410,34 +410,23 @@ class AIConversationListView(generics.ListAPIView):
         return qs
 
 
-@api_view(['POST'])
-def ai_generate_testcase(request):
-    """AI 生成测试用例"""
-    serializer = AIGenerateRequestSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+def _generate_and_save_testcases(project, requirement, target=''):
+    """
+    调用 AI 生成测试用例并持久化到数据库。
 
-    project_id = serializer.validated_data['project_id']
-    requirement = serializer.validated_data['requirement']
-    target = serializer.validated_data.get('target', '')
+    Returns:
+        (generated_raw, created_tcs, conversation) 三元组
+    Raises:
+        Exception: AI 调用失败时向上抛出
+    """
+    generated = ai_engine.generate_testcases(
+        project_name=project.name,
+        base_url=project.base_url or '',
+        requirement=requirement,
+        project=project,
+        target=target,
+    )
 
-    try:
-        project = Project.objects.get(pk=project_id)
-    except Project.DoesNotExist:
-        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
-
-    try:
-        generated = ai_engine.generate_testcases(
-            project_name=project.name,
-            base_url=project.base_url or '',
-            requirement=requirement,
-            project=project,
-            target=target,
-        )
-    except Exception as e:
-        logger.exception("AI generate testcase failed")
-        return Response({'error': f'AI 生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    # 保存到数据库
     created = []
     for item in generated:
         tc = TestCase.objects.create(
@@ -456,7 +445,6 @@ def ai_generate_testcase(request):
         )
         created.append(tc)
 
-    # 保存 AI 对话记录（存储 messages 格式）
     messages = [
         {"role": "user", "content": requirement},
         {"role": "assistant", "content": json.dumps(generated, ensure_ascii=False)},
@@ -467,6 +455,30 @@ def ai_generate_testcase(request):
         user_message=requirement,
         ai_response=json.dumps(messages, ensure_ascii=False),
     )
+
+    return generated, created, conv
+
+
+@api_view(['POST'])
+def ai_generate_testcase(request):
+    """AI 生成测试用例"""
+    serializer = AIGenerateRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    project_id = serializer.validated_data['project_id']
+    requirement = serializer.validated_data['requirement']
+    target = serializer.validated_data.get('target', '')
+
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        generated, created, conv = _generate_and_save_testcases(project, requirement, target)
+    except Exception as e:
+        logger.exception("AI generate testcase failed")
+        return Response({'error': f'AI 生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({
         'testcases': TestCaseSerializer(created, many=True).data,
@@ -648,47 +660,10 @@ def agent_generate(request):
         return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
 
     try:
-        generated = ai_engine.generate_testcases(
-            project_name=project.name,
-            base_url=project.base_url or '',
-            requirement=requirement,
-            project=project,
-            target=target,
-        )
+        generated, created, conv = _generate_and_save_testcases(project, requirement, target)
     except Exception as e:
         logger.exception("Agent generate failed")
         return Response({'error': f'Agent 生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    # 保存到数据库
-    created = []
-    for item in generated:
-        tc = TestCase.objects.create(
-            project=project,
-            name=item.get('name', '未命名用例'),
-            description=item.get('description', ''),
-            steps=item.get('steps', ''),
-            expected_result=item.get('expected_result', ''),
-            markdown_content=item.get('markdown_content', ''),
-            priority=item.get('priority', ''),
-            test_type=item.get('test_type', ''),
-            target_page_or_api=target,
-            status='draft',
-            is_ai_generated=True,
-            created_by='agent',
-        )
-        created.append(tc)
-
-    # 保存 AI 对话记录
-    messages = [
-        {"role": "user", "content": requirement},
-        {"role": "assistant", "content": json.dumps(generated, ensure_ascii=False)},
-    ]
-    conv = AIConversation.objects.create(
-        conversation_type='generate',
-        project=project,
-        user_message=requirement,
-        ai_response=json.dumps(messages, ensure_ascii=False),
-    )
 
     # 返回 spec 格式
     first_tc = created[0] if created else None
