@@ -200,9 +200,13 @@ def _extract_target(tool_name, tool_input):
         return ''
     if tool_name == 'browser_navigate':
         return tool_input.get('url', '')
-    elif tool_name in ('browser_click', 'browser_fill', 'browser_get_text', 'browser_press_key'):
+    elif tool_name in ('browser_click', 'browser_fill', 'browser_get_text',
+                        'browser_select', 'browser_snapshot'):
         return tool_input.get('selector', '')
-    elif tool_name == 'browser_wait_for':
+    elif tool_name == 'browser_fill_form':
+        fields = tool_input.get('fields', [])
+        return f"{len(fields)} fields" + (f" + submit" if tool_input.get('submit_selector') else '')
+    elif tool_name == 'browser_query_all':
         return tool_input.get('selector', '')
     elif tool_name == 'browser_screenshot':
         return 'screenshot'
@@ -227,6 +231,19 @@ def format_step_action(tool_name, tool_input):
         return tool_name
     if tool_name == 'browser_fill':
         return f"填写 {tool_input.get('value', '')[:30]}"
+    elif tool_name == 'browser_fill_form':
+        fields = tool_input.get('fields', [])
+        return f"填写表单 ({len(fields)} 个字段)"
+    elif tool_name == 'browser_select':
+        return f"选择 {tool_input.get('label', '') or tool_input.get('value', '')}"
+    elif tool_name == 'browser_navigate':
+        return f"导航到 {tool_input.get('url', '')[:50]}"
+    elif tool_name == 'browser_click':
+        return f"点击 {tool_input.get('selector', '')}"
+    elif tool_name == 'browser_snapshot':
+        return '获取页面快照'
+    elif tool_name == 'browser_query_all':
+        return f"查询 {tool_input.get('selector', '')}"
     elif tool_name == 'browser_screenshot':
         return '截图'
     elif tool_name == 'report_result':
@@ -345,6 +362,7 @@ class AgentRunner:
             'project': self.project,
             'project_id': self.project.pk,
             'testcase_id': self.testcase_id,
+            'execution_id': self.execution_id,
             'page': None,  # lazy init
             'screenshot_counter': 0,
         }
@@ -568,7 +586,8 @@ class AgentRunner:
         if self.execution_id:
             try:
                 from .screenshot_stream import ScreenshotStream
-                self._screenshot_stream = ScreenshotStream()
+                # 禁用自动持久化以避免异步上下文冲突，稳定应用
+                self._screenshot_stream = ScreenshotStream(persist_enabled=False)
                 self._screenshot_stream.start(
                     self._page, self.execution_id,
                     project_id=self.project.pk,

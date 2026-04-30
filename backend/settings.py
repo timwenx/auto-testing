@@ -25,7 +25,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     # 第三方
-    'channels',
+    # 'channels',  # 已禁用 - 导致异步冲突和内存泄漏
     'rest_framework',
     'corsheaders',
     # 本地
@@ -64,7 +64,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 ASGI_APPLICATION = 'backend.asgi.application'
 
-# Django Channels — 开发环境用 InMemoryChannelLayer（无需 Redis）
+# Django Channels
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
@@ -94,7 +94,7 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Media files (uploads)
-MEDIA_URL = 'media/'
+MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # CORS — 开发时允许前端 dev server

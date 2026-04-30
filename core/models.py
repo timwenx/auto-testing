@@ -147,8 +147,8 @@ class ExecutionRecord(models.Model):
 
 
 def _screenshot_upload_path(instance, filename):
-    """截图文件上传路径：media/screenshots/<project_id>/<execution_id>/<filename>"""
-    return f"screenshots/{instance.execution.project_id}/{instance.execution_id}/{filename}"
+    """截图文件上传路径：media/<execution_id>/<filename>"""
+    return f"{instance.execution_id}/{filename}"
 
 
 class Screenshot(models.Model):

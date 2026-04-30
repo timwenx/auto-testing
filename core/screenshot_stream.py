@@ -136,8 +136,8 @@ class ScreenshotStream:
                         self._execution_id, len(screenshot_bytes))
 
             # 通过 WebSocket 只发送轻量通知（时间戳，不含图片数据）
-            from .event_emitter import _emit_step_event
-            _emit_step_event(self._execution_id, 'browser_frame', {
+            from .event_emitter import _emit_frame_event
+            _emit_frame_event(self._execution_id, 'browser_frame', {
                 'ts': round(now * 1000),  # 毫秒时间戳，前端用作 cache-buster
             })
 
@@ -155,16 +155,14 @@ class ScreenshotStream:
         """将截图保存到磁盘并创建 Screenshot 数据库记录"""
         try:
             from django.conf import settings as django_settings
-            from .models import Screenshot
 
             self._last_persist_time = timestamp
             self._persist_counter += 1
 
-            # 构建保存路径：media/screenshots/{project_id}/{execution_id}/
+            # 构建保存路径：media/{execution_id}/
             media_root = str(django_settings.MEDIA_ROOT)
             save_dir = os.path.join(
-                media_root, 'screenshots',
-                str(self._project_id), str(self._execution_id),
+                media_root, str(self._execution_id),
             )
             os.makedirs(save_dir, exist_ok=True)
 
@@ -174,19 +172,32 @@ class ScreenshotStream:
             with open(file_path, 'wb') as f:
                 f.write(jpeg_bytes)
 
-            # 创建数据库记录（auto_captured=True, step_num 留空）
+            # 异步创建数据库记录（在线程池中执行）
             relative_path = os.path.relpath(file_path, media_root)
+            self._create_screenshot_record(relative_path)
+
+            logger.info("[ScreenshotStream] Persisted auto screenshot #%d for execution %s: %s",
+                        self._persist_counter, self._execution_id, file_path)
+        except Exception as e:
+            logger.warning("[ScreenshotStream] Failed to persist screenshot: %s", e)
+
+    def _create_screenshot_record(self, relative_path):
+        """
+        创建截图数据库记录。
+
+        此方法始终在 Playwright 主线程（同步线程）中调用，
+        不存在真正的异步上下文，因此直接在同步上下文中执行 ORM 操作。
+        """
+        try:
+            from .models import Screenshot
             Screenshot.objects.create(
                 execution_id=self._execution_id,
                 image=relative_path,
                 auto_captured=True,
                 action='自动截图',
             )
-
-            logger.info("[ScreenshotStream] Persisted auto screenshot #%d for execution %s: %s",
-                        self._persist_counter, self._execution_id, file_path)
         except Exception as e:
-            logger.warning("[ScreenshotStream] Failed to persist screenshot: %s", e)
+            logger.debug("[ScreenshotStream] Failed to create screenshot record: %s", e)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -231,8 +242,8 @@ class _FrameWatchdog:
         while not self._stop_event.is_set():
             try:
                 # 只发送轻量通知，不调用 Playwright API
-                from .event_emitter import _emit_step_event
-                _emit_step_event(self._execution_id, 'frame_heartbeat', {
+                from .event_emitter import _emit_frame_event
+                _emit_frame_event(self._execution_id, 'frame_heartbeat', {
                     'ts': round(time.time() * 1000),
                 })
                 logger.debug("[FrameWatchdog] 发送心跳通知 execution_id=%s", self._execution_id)

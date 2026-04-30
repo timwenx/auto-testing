@@ -56,31 +56,33 @@ echo "  Backend:  http://localhost:8000"
 echo "  Frontend: http://localhost:3000"
 echo "  Admin:    http://localhost:8000/admin/"
 echo
-echo "  Press Ctrl+C to stop."
+echo "  Press Ctrl+C to stop all servers."
 echo "========================================"
 echo
 
-# Start both servers in background
-python3 manage.py runserver 0.0.0.0:8000 &
+# 清理函数: Ctrl+C 时同时杀掉两个进程
+cleanup() {
+    echo
+    echo "Stopping servers..."
+    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    wait $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    echo "Stopped."
+    exit 0
+}
+trap cleanup INT TERM
+
+# 启动 Django 后端 (前台)
+python3 manage.py runserver 0.0.0.0:8000 --noreload &
 BACKEND_PID=$!
 
-sleep 2
-
+# 启动 Vue 前端 (前台)
 cd frontend
-npm run dev
+npm run dev &
+FRONTEND_PID=$!
 cd ..
 
-# Kill backend when frontend stops
-wait $BACKEND_PID
-echo
+# 等待任一进程退出
+wait -n $BACKEND_PID $FRONTEND_PID 2>/dev/null || wait $BACKEND_PID $FRONTEND_PID
 
-# Start Django in background
-python3 manage.py runserver 0.0.0.0:8000 &
-DJANGO_PID=$!
-
-# Trap to kill Django when script exits
-trap "kill $DJANGO_PID 2>/dev/null" EXIT
-
-# Start Vue frontend in foreground
-cd frontend
-npm run dev
+echo "A server process exited. Stopping all..."
+cleanup
