@@ -268,29 +268,10 @@
           </template>
 
           <!-- 截图缩略图 -->
-          <template v-if="executionDetail.screenshots && executionDetail.screenshots.length">
-            <h4 style="margin: 16px 0 8px">截图</h4>
-            <div class="screenshot-grid">
-              <div
-                v-for="(src, idx) in executionDetail.screenshots"
-                :key="idx"
-                class="screenshot-thumb"
-                @click="handlePreviewImage('/api/executions/screenshots/?path=' + encodeURIComponent(src))"
-              >
-                <el-image
-                  :src="'/api/executions/screenshots/?path=' + encodeURIComponent(src)"
-                  fit="cover"
-                  style="width: 100%; height: 100px"
-                >
-                  <template #error>
-                    <div style="display: flex; align-items: center; justify-content: center; height: 100px; color: #c0c4cc">
-                      <span>加载失败</span>
-                    </div>
-                  </template>
-                </el-image>
-              </div>
-            </div>
-          </template>
+          <ScreenshotGallery
+            :screenshots="executionDetail.screenshots"
+            :show-title="true"
+          />
 
           <!-- Agent 原始响应 -->
           <template v-if="executionDetail.agent_response && executionDetail.agent_response.response_text">
@@ -333,6 +314,7 @@ import {
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AgentRefineDialog from './AgentRefineDialog.vue'
+import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 
 const route = useRoute()
 const projectId = route.params.id
@@ -679,21 +661,6 @@ onMounted(loadData)
   overflow-y: auto;
   background-color: #fafafa;
   cursor: default;
-}
-.screenshot-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 8px;
-}
-.screenshot-thumb {
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
-  overflow: hidden;
-  cursor: pointer;
-  transition: border-color 0.2s;
-}
-.screenshot-thumb:hover {
-  border-color: #409eff;
 }
 .agent-response-box {
   background-color: #f6f8fa;

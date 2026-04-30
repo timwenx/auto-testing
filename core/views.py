@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import mimetypes
+from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse, FileResponse, Http404
 from django.db.models import Count, Q
 from rest_framework import generics, status
@@ -59,6 +60,52 @@ def _create_screenshot_records(record, step_logs, screenshot_paths):
                 )
             except Exception as e:
                 logger.warning("创建 Screenshot 记录失败: %s", e)
+
+
+def _save_agent_result(record, result):
+    """将 Agent 执行结果保存到 ExecutionRecord（统一回调）"""
+    record.status = result['status']
+    record.log = result['log']
+    record.error_message = result['error_message']
+    record.duration = result['duration']
+    try:
+        script_data = json.loads(result.get('script', '{}'))
+        record.tool_calls_count = len(script_data.get('tool_calls', []))
+    except (json.JSONDecodeError, TypeError):
+        pass
+    record.step_logs = result.get('step_logs', [])
+    record.screenshots = result.get('screenshots', [])
+    record.agent_response = result.get('agent_response', {})
+    record.save()
+    _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
+
+
+def _save_script_result(record, result):
+    """将 Script 执行结果保存到 ExecutionRecord"""
+    record.status = result['status']
+    record.log = result['log']
+    record.error_message = result['error_message']
+    record.duration = result['duration']
+    record.save()
+
+
+def _submit_agent_task(task_fn):
+    """用 ThreadPoolExecutor 提交 Agent 异步任务"""
+    try:
+        max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
+    except (ValueError, TypeError):
+        max_workers = 2
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    executor.submit(task_fn)
+
+
+def _get_ai_model():
+    """获取当前 AI 模型名称，失败返回空字符串"""
+    from .ai_engine import _get_model
+    try:
+        return _get_model()
+    except Exception:
+        return ''
 
 
 # ─── 项目 ───
@@ -196,11 +243,7 @@ def execute_testcase(request, testcase_id):
 
     # 异步执行
     def _on_complete(tc, result):
-        record.status = result['status']
-        record.log = result['log']
-        record.error_message = result['error_message']
-        record.duration = result['duration']
-        record.save()
+        _save_script_result(record, result)
         tc.status = result['status']
         tc.save(update_fields=['status'])
 
@@ -243,11 +286,7 @@ def execute_project(request, project_id):
 
         def _make_callback(r, t):
             def _on_complete(_tc, result):
-                r.status = result['status']
-                r.log = result['log']
-                r.error_message = result['error_message']
-                r.duration = result['duration']
-                r.save()
+                _save_script_result(r, result)
                 t.status = result['status']
                 t.save(update_fields=['status'])
             return _on_complete
@@ -276,59 +315,25 @@ def execute_testcase_agent(request, testcase_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    from .ai_engine import _get_model
-    try:
-        ai_model = _get_model()
-    except Exception:
-        ai_model = ''
-
     # 创建执行记录
     record = ExecutionRecord.objects.create(
         project=testcase.project,
         testcase=testcase,
         status='running',
         execution_mode='agent',
-        ai_model=ai_model,
+        ai_model=_get_ai_model(),
     )
     testcase.status = 'running'
     testcase.save(update_fields=['status'])
 
-    # 异步执行
-    def _on_complete(tc, result):
-        record.status = result['status']
-        record.log = result['log']
-        record.error_message = result['error_message']
-        record.duration = result['duration']
-        # 从 script 字段解析 tool_calls_count
-        try:
-            import json
-            script_data = json.loads(result.get('script', '{}'))
-            record.tool_calls_count = len(script_data.get('tool_calls', []))
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # 保存 Agent 结构化数据
-        record.step_logs = result.get('step_logs', [])
-        record.screenshots = result.get('screenshots', [])
-        record.agent_response = result.get('agent_response', {})
-        record.save()
-        # 创建持久化 Screenshot 记录
-        _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
-        tc.status = result['status']
-        tc.save(update_fields=['status'])
-
     def _agent_task():
         result = execution_engine.execute_testcase_with_agent(testcase, base_url)
-        _on_complete(testcase, result)
+        _save_agent_result(record, result)
+        testcase.status = result['status']
+        testcase.save(update_fields=['status'])
         return result
 
-    from concurrent.futures import ThreadPoolExecutor
-    from .models import SystemSetting
-    try:
-        max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
-    except (ValueError, TypeError):
-        max_workers = 2
-    executor = ThreadPoolExecutor(max_workers=max_workers)
-    executor.submit(_agent_task)
+    _submit_agent_task(_agent_task)
 
     return Response(
         ExecutionRecordSerializer(record).data,
@@ -357,12 +362,7 @@ def execute_project_agent(request, project_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    from .ai_engine import _get_model
-    try:
-        ai_model = _get_model()
-    except Exception:
-        ai_model = ''
-
+    ai_model = _get_ai_model()
     records = []
     for tc in testcases:
         record = ExecutionRecord.objects.create(
@@ -375,46 +375,16 @@ def execute_project_agent(request, project_id):
         tc.status = 'running'
         tc.save(update_fields=['status'])
 
-        def _make_callback(r, t):
-            def _on_complete(result):
-                r.status = result['status']
-                r.log = result['log']
-                r.error_message = result['error_message']
-                r.duration = result['duration']
-                try:
-                    import json
-                    script_data = json.loads(result.get('script', '{}'))
-                    r.tool_calls_count = len(script_data.get('tool_calls', []))
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                # 保存 Agent 结构化数据
-                r.step_logs = result.get('step_logs', [])
-                r.screenshots = result.get('screenshots', [])
-                r.agent_response = result.get('agent_response', {})
-                r.save()
-                # 创建持久化 Screenshot 记录
-                _create_screenshot_records(r, result.get('step_logs', []), result.get('screenshots', []))
-                t.status = result['status']
-                t.save(update_fields=['status'])
-            return _on_complete
-
-        def _make_task(t, callback):
+        def _make_task(r, t):
             def _agent_task():
                 result = execution_engine.execute_testcase_with_agent(t, project.base_url)
-                callback(result)
+                _save_agent_result(r, result)
+                t.status = result['status']
+                t.save(update_fields=['status'])
                 return result
             return _agent_task
 
-        from concurrent.futures import ThreadPoolExecutor
-        from .models import SystemSetting
-        try:
-            max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
-        except (ValueError, TypeError):
-            max_workers = 2
-
-        # 每个用例独立 executor，避免 Agent 模式下过多并发
-        executor = ThreadPoolExecutor(max_workers=max_workers)
-        executor.submit(_make_task(tc, _make_callback(record, tc)))
+        _submit_agent_task(_make_task(record, tc))
         records.append(record)
 
     return Response(
@@ -825,65 +795,32 @@ def agent_execute(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    from .ai_engine import _get_model
-    try:
-        ai_model = _get_model()
-    except Exception:
-        ai_model = ''
-
     # 创建执行记录
     record = ExecutionRecord.objects.create(
         project=testcase.project,
         testcase=testcase,
         status='running',
         execution_mode=execution_mode,
-        ai_model=ai_model,
+        ai_model=_get_ai_model(),
     )
     testcase.status = 'running'
     testcase.save(update_fields=['status'])
 
     # ── Agent 模式 ──
     if execution_mode == 'agent':
-        def _on_complete(tc, result):
-            record.status = result['status']
-            record.log = result['log']
-            record.error_message = result['error_message']
-            record.duration = result['duration']
-            try:
-                script_data = json.loads(result.get('script', '{}'))
-                record.tool_calls_count = len(script_data.get('tool_calls', []))
-            except (json.JSONDecodeError, TypeError):
-                pass
-            record.step_logs = result.get('step_logs', [])
-            record.screenshots = result.get('screenshots', [])
-            record.agent_response = result.get('agent_response', {})
-            record.save()
-            # 创建持久化 Screenshot 记录
-            _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
-            tc.status = result['status']
-            tc.save(update_fields=['status'])
-
         def _agent_task():
             result = execution_engine.execute_testcase_with_agent(testcase, base_url)
-            _on_complete(testcase, result)
+            _save_agent_result(record, result)
+            testcase.status = result['status']
+            testcase.save(update_fields=['status'])
             return result
 
-        from concurrent.futures import ThreadPoolExecutor
-        try:
-            max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
-        except (ValueError, TypeError):
-            max_workers = 2
-        executor = ThreadPoolExecutor(max_workers=max_workers)
-        executor.submit(_agent_task)
+        _submit_agent_task(_agent_task)
 
     # ── Script 模式 ──
     else:
         def _on_complete_script(tc, result):
-            record.status = result['status']
-            record.log = result['log']
-            record.error_message = result['error_message']
-            record.duration = result['duration']
-            record.save()
+            _save_script_result(record, result)
             tc.status = result['status']
             tc.save(update_fields=['status'])
 

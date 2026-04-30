@@ -2,12 +2,15 @@
 Unit tests for core views, models, and serializers.
 """
 import json
+import os
+import tempfile
 from unittest import mock
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Project, TestCase as TC_Model, ExecutionRecord, AIConversation, SystemSetting
+from .models import Project, TestCase as TC_Model, ExecutionRecord, AIConversation, SystemSetting, Screenshot
+from .execution_engine import _strip_markdown_code_fences
 
 
 class ProjectAPITest(TestCase):
@@ -586,7 +589,7 @@ class AgentExecuteTest(TestCase):
         }
         resp = self.client.post(
             '/api/agent/execute/',
-            {'testcase_id': self.tc.id},
+            {'testcase_id': self.tc.id, 'execution_mode': 'agent'},
             format='json',
         )
         self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
@@ -758,3 +761,333 @@ class ScreenshotEndpointTest(TestCase):
         finally:
             import os
             os.unlink(temp_path)
+
+
+# ─── Round 2: 执行引擎工具函数测试 ───
+
+
+class StripMarkdownCodeFencesTest(TestCase):
+    """_strip_markdown_code_fences 测试"""
+
+    def test_strips_python_fence(self):
+        code = '```python\nprint("hello")\n```'
+        self.assertEqual(_strip_markdown_code_fences(code), 'print("hello")')
+
+    def test_strips_js_fence(self):
+        code = '```javascript\nconsole.log("hi")\n```'
+        self.assertEqual(_strip_markdown_code_fences(code), 'console.log("hi")')
+
+    def test_strips_py_fence(self):
+        code = '```py\nx = 1\n```'
+        self.assertEqual(_strip_markdown_code_fences(code), 'x = 1')
+
+    def test_strips_plain_fence(self):
+        code = '```\nraw code\n```'
+        self.assertEqual(_strip_markdown_code_fences(code), 'raw code')
+
+    def test_no_fence_returns_original(self):
+        code = 'print("hello")'
+        self.assertEqual(_strip_markdown_code_fences(code), code)
+
+    def test_empty_string(self):
+        self.assertEqual(_strip_markdown_code_fences(''), '')
+
+    def test_none_input(self):
+        self.assertIsNone(_strip_markdown_code_fences(None))
+
+    def test_malformed_fence_start_only(self):
+        code = '```python\nprint("hello")'
+        self.assertEqual(_strip_markdown_code_fences(code), 'print("hello")')
+
+    def test_multiline_code(self):
+        code = '```python\ndef foo():\n    return 42\n\nfoo()\n```'
+        expected = 'def foo():\n    return 42\n\nfoo()'
+        self.assertEqual(_strip_markdown_code_fences(code), expected)
+
+    def test_extra_whitespace_around_fence(self):
+        code = '  ```python\nx = 1\n```  \n  '
+        self.assertEqual(_strip_markdown_code_fences(code), 'x = 1')
+
+
+# ─── Round 2: 模型属性与 __str__ 测试 ───
+
+
+class ProjectModelPropertiesTest(TestCase):
+    """Project 模型属性测试"""
+
+    def test_str_representation(self):
+        p = Project.objects.create(name='我的项目')
+        self.assertEqual(str(p), '我的项目')
+
+    def test_testcase_count_empty(self):
+        p = Project.objects.create(name='空项目')
+        self.assertEqual(p.testcase_count, 0)
+
+    def test_last_execution_none_when_empty(self):
+        p = Project.objects.create(name='P')
+        self.assertIsNone(p.last_execution)
+
+    def test_last_execution_returns_latest(self):
+        p = Project.objects.create(name='P', base_url='https://a.com')
+        tc = TC_Model.objects.create(project=p, name='TC', steps='s', expected_result='r')
+        r1 = ExecutionRecord.objects.create(project=p, testcase=tc, status='passed')
+        # Force different created_at to ensure deterministic ordering
+        from django.utils import timezone
+        from datetime import timedelta
+        r1.created_at = timezone.now() - timedelta(seconds=10)
+        r1.save(update_fields=['created_at'])
+        ExecutionRecord.objects.create(project=p, testcase=tc, status='failed')
+        self.assertEqual(p.last_execution.status, 'failed')
+
+
+class ExecutionRecordModelTest(TestCase):
+    """ExecutionRecord 模型测试"""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='P', base_url='https://a.com')
+        self.tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='r')
+
+    def test_str_with_testcase(self):
+        record = ExecutionRecord.objects.create(project=self.project, testcase=self.tc, status='passed')
+        result = str(record)
+        self.assertIn('TC', result)
+        self.assertIn('passed', result)
+
+    def test_str_without_testcase(self):
+        record = ExecutionRecord.objects.create(project=self.project, status='failed')
+        result = str(record)
+        self.assertIn('批量执行', result)
+
+    def test_default_values(self):
+        record = ExecutionRecord.objects.create(project=self.project, testcase=self.tc)
+        self.assertEqual(record.status, 'pending')
+        self.assertEqual(record.execution_mode, 'script')
+        self.assertEqual(record.tool_calls_count, 0)
+        self.assertEqual(record.screenshots, [])
+        self.assertEqual(record.step_logs, [])
+        self.assertEqual(record.agent_response, {})
+
+    def test_execution_mode_choices(self):
+        r1 = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, execution_mode='agent'
+        )
+        self.assertEqual(r1.execution_mode, 'agent')
+
+
+class ScreenshotModelTest(TestCase):
+    """Screenshot 模型测试"""
+
+    def test_str_representation(self):
+        p = Project.objects.create(name='P', base_url='https://a.com')
+        tc = TC_Model.objects.create(project=p, name='TC', steps='s', expected_result='r')
+        record = ExecutionRecord.objects.create(project=p, testcase=tc, status='passed')
+        ss = Screenshot.objects.create(execution=record, step_num=3, action='点击按钮')
+        result = str(ss)
+        self.assertIn('3', result)
+
+    def test_str_no_step_num(self):
+        p = Project.objects.create(name='P', base_url='https://a.com')
+        tc = TC_Model.objects.create(project=p, name='TC', steps='s', expected_result='r')
+        record = ExecutionRecord.objects.create(project=p, testcase=tc, status='passed')
+        ss = Screenshot.objects.create(execution=record, action='截图')
+        self.assertIn('?', str(ss))
+
+
+# ─── Round 2: 视图辅助函数测试 ───
+
+
+class SaveAgentResultHelperTest(TestCase):
+    """_save_agent_result 辅助函数测试"""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='P', base_url='https://a.com')
+        self.tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='r')
+        self.record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='running', execution_mode='agent'
+        )
+
+    def test_saves_basic_fields(self):
+        result = {
+            'status': 'passed', 'log': 'ok', 'error_message': '', 'duration': 5.2,
+            'script': '{}',
+            'step_logs': [{'step_num': 1, 'action': '打开页面'}],
+            'screenshots': [], 'agent_response': {'response_text': '通过'},
+        }
+        from .views import _save_agent_result
+        _save_agent_result(self.record, result)
+        self.record.refresh_from_db()
+        self.assertEqual(self.record.status, 'passed')
+        self.assertEqual(self.record.log, 'ok')
+        self.assertEqual(self.record.duration, 5.2)
+        self.assertEqual(self.record.step_logs, [{'step_num': 1, 'action': '打开页面'}])
+        self.assertEqual(self.record.agent_response, {'response_text': '通过'})
+
+    def test_parses_tool_calls_count(self):
+        script_data = json.dumps({'tool_calls': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]})
+        result = {
+            'status': 'passed', 'log': '', 'error_message': '', 'duration': 1,
+            'script': script_data, 'step_logs': [], 'screenshots': [], 'agent_response': {},
+        }
+        from .views import _save_agent_result
+        _save_agent_result(self.record, result)
+        self.record.refresh_from_db()
+        self.assertEqual(self.record.tool_calls_count, 3)
+
+    def test_handles_invalid_script_json(self):
+        result = {
+            'status': 'failed', 'log': '', 'error_message': 'err', 'duration': 0,
+            'script': 'not-json', 'step_logs': [], 'screenshots': [], 'agent_response': {},
+        }
+        from .views import _save_agent_result
+        _save_agent_result(self.record, result)
+        self.record.refresh_from_db()
+        self.assertEqual(self.record.tool_calls_count, 0)
+
+    def test_handles_missing_optional_fields(self):
+        result = {'status': 'error', 'log': '', 'error_message': 'crash', 'duration': 0}
+        from .views import _save_agent_result
+        _save_agent_result(self.record, result)
+        self.record.refresh_from_db()
+        self.assertEqual(self.record.status, 'error')
+        self.assertEqual(self.record.step_logs, [])
+        self.assertEqual(self.record.screenshots, [])
+
+
+class SaveScriptResultHelperTest(TestCase):
+    """_save_script_result 辅助函数测试"""
+
+    def test_saves_basic_fields(self):
+        p = Project.objects.create(name='P', base_url='https://a.com')
+        tc = TC_Model.objects.create(project=p, name='TC', steps='s', expected_result='r')
+        record = ExecutionRecord.objects.create(project=p, testcase=tc, status='running')
+        result = {'status': 'passed', 'log': 'ok', 'error_message': '', 'duration': 3.1}
+        from .views import _save_script_result
+        _save_script_result(record, result)
+        record.refresh_from_db()
+        self.assertEqual(record.status, 'passed')
+        self.assertEqual(record.log, 'ok')
+        self.assertEqual(record.duration, 3.1)
+
+
+class CreateScreenshotRecordsHelperTest(TestCase):
+    """_create_screenshot_records 辅助函数测试"""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='P', base_url='https://a.com')
+        self.tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='r')
+        self.record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='passed'
+        )
+
+    @mock.patch('core.views.os.path.isfile', return_value=True)
+    def test_creates_records_from_paths(self, mock_isfile):
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            tmp_path = f.name
+        try:
+            step_logs = [{'screenshot_path': tmp_path, 'action': '截图'}]
+            from .views import _create_screenshot_records
+            _create_screenshot_records(self.record, step_logs, [tmp_path])
+            self.assertEqual(Screenshot.objects.filter(execution=self.record).count(), 1)
+        finally:
+            os.unlink(tmp_path)
+
+    @mock.patch('core.views.os.path.isfile', return_value=False)
+    def test_skips_nonexistent_files(self, mock_isfile):
+        from .views import _create_screenshot_records
+        _create_screenshot_records(self.record, [], ['/fake/path.png'])
+        self.assertEqual(Screenshot.objects.filter(execution=self.record).count(), 0)
+
+
+# ─── Round 2: Agent 执行端点扩展测试 ───
+
+
+class AgentExecuteExtendedTest(TestCase):
+    """Agent 执行端点扩展测试 — 覆盖 execution_mode 分支"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='r',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='claude-sonnet-4-20250514')
+    def test_default_mode_uses_agent(self, mock_model, mock_submit):
+        """默认 execution_mode 从 SystemSetting 读取"""
+        SystemSetting.objects.create(key='default_execution_mode', value='agent')
+        resp = self.client.post('/api/agent/execute/', {'testcase_id': self.tc.id}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(resp.data['execution_mode'], 'agent')
+        mock_submit.assert_called_once()
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='claude-sonnet-4-20250514')
+    def test_explicit_script_mode_skips_agent(self, mock_model, mock_submit):
+        resp = self.client.post(
+            '/api/agent/execute/',
+            {'testcase_id': self.tc.id, 'execution_mode': 'script'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(resp.data['execution_mode'], 'script')
+        mock_submit.assert_not_called()
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='claude-sonnet-4-20250514')
+    def test_explicit_agent_mode_submits_task(self, mock_model, mock_submit):
+        resp = self.client.post(
+            '/api/agent/execute/',
+            {'testcase_id': self.tc.id, 'execution_mode': 'agent'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(resp.data['execution_mode'], 'agent')
+        mock_submit.assert_called_once()
+
+    def test_execution_record_has_correct_mode(self):
+        """创建的 ExecutionRecord 的 execution_mode 应与请求一致"""
+        with mock.patch('core.views._submit_agent_task'), \
+             mock.patch('core.views._get_ai_model', return_value='test-model'):
+            self.client.post(
+                '/api/agent/execute/',
+                {'testcase_id': self.tc.id, 'execution_mode': 'agent'},
+                format='json',
+            )
+        record = ExecutionRecord.objects.filter(testcase=self.tc).first()
+        self.assertIsNotNone(record)
+        self.assertEqual(record.execution_mode, 'agent')
+        self.assertEqual(record.ai_model, 'test-model')
+
+
+# ─── Round 2: 批量执行端点测试 ───
+
+
+class ExecuteAllEndpointTest(TestCase):
+    """批量执行端点测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='P', base_url='https://example.com')
+
+    @mock.patch('core.execution_engine.execute_testcase_async')
+    def test_execute_all_creates_records(self, mock_exec):
+        TC_Model.objects.create(project=self.project, name='A', steps='s', expected_result='r', status='draft')
+        TC_Model.objects.create(project=self.project, name='B', steps='s', expected_result='r', status='ready')
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        # resp.data may be a ReturnList (list) — handle both
+        results = resp.data if isinstance(resp.data, list) else resp.data.get('results', resp.data)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(mock_exec.call_count, 2)
+
+    def test_execute_all_no_url(self):
+        self.project.base_url = ''
+        self.project.save()
+        TC_Model.objects.create(project=self.project, name='A', steps='s', expected_result='r')
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_execute_all_no_testcases(self):
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
