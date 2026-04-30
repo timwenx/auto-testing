@@ -34,9 +34,24 @@
 
     <!-- 实时模式 -->
     <div v-else class="observer-body">
-      <!-- 左侧：浏览器截图流 -->
+      <!-- 左侧：浏览器截图流 / 历史截图画廊 -->
       <div class="observer-left" :class="{ 'pip-hidden': pipMode }">
+        <!-- 已完成执行：展示截图画廊 -->
+        <div v-if="isTerminalStatus" class="completed-view">
+          <BrowserView
+            :frame-src="currentFrame"
+            :execution-status="executionInfo?.status || 'idle'"
+            :pip="pipMode"
+            @refresh="connect"
+            @toggle-pip="pipMode = !pipMode"
+          />
+          <div v-if="screenshots.length > 0" class="gallery-section">
+            <ScreenshotGallery :screenshots="screenshots" :show-title="true" />
+          </div>
+        </div>
+        <!-- 进行中执行：实时浏览器画面 -->
         <BrowserView
+          v-else
           :frame-src="currentFrame"
           :execution-status="status === 'running' ? 'running' : (executionInfo?.status || 'idle')"
           :pip="pipMode"
@@ -94,6 +109,7 @@ import ExecutionStats from '../components/ExecutionStats.vue'
 import ToolDetailPanel from '../components/ToolDetailPanel.vue'
 import BrowserView from '../components/BrowserView.vue'
 import ExecutionReplay from '../components/ExecutionReplay.vue'
+import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 import { VideoPlay, Monitor } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -102,10 +118,13 @@ const executionId = computed(() => parseInt(route.params.id))
 
 // 回放模式
 const replayMode = ref(false)
-const canReplay = computed(() => {
-  const terminalStatuses = ['completed', 'passed', 'failed', 'error']
-  return executionInfo.value && terminalStatuses.includes(executionInfo.value.status)
-})
+
+// 终态判断
+const TERMINAL_STATUSES = ['completed', 'passed', 'failed', 'error']
+const isTerminalStatus = computed(() =>
+  executionInfo.value && TERMINAL_STATUSES.includes(executionInfo.value.status)
+)
+const canReplay = computed(() => isTerminalStatus.value)
 
 function enterReplay() {
   replayMode.value = true
@@ -122,6 +141,7 @@ function exitReplay() {
 
 // 执行信息
 const executionInfo = ref(null)
+const screenshots = ref([])  // 截图画廊数据
 
 // Observer composable
 const { steps, currentFrame, stats, status, error, connect, disconnect } = useExecutionObserver(executionId)
@@ -226,19 +246,37 @@ onMounted(async () => {
     executionInfo.value = data
   } catch (e) {
     console.error('Failed to load execution info:', e)
-  }
-
-  // 如果路由查询参数包含 replay=true，直接进入回放模式
-  if (route.query.replay === 'true') {
-    replayMode.value = true
     return
   }
 
+  // 分支 1: ?replay=true → 直接进入回放模式，不建连
+  if (route.query.replay === 'true') {
+    replayMode.value = true
+    // 回放模式仍需加载步骤数据供回放组件使用
+    await _loadStepData()
+    return
+  }
+
+  // 分支 2: 已完成执行 → REST 拉取全部数据，不建 WS 连接
+  if (TERMINAL_STATUSES.includes(executionInfo.value?.status)) {
+    status.value = 'completed'
+    await _loadStepData()
+    return
+  }
+
+  // 分支 3: 进行中执行 → 先 REST 拉取已持久化步骤，再建 WS 连接
+  await _loadStepData()
+  connect()
+})
+
+/**
+ * 加载步骤数据（REST 回填）
+ * 利用 Task 1 的实时步骤持久化，断线重连后也能获取完整数据
+ */
+async function _loadStepData() {
   try {
-    // 加载已有的步骤（REST 回填）
     const { data } = await getExecutionSteps(executionId.value)
     if (data.step_logs && data.step_logs.length > 0) {
-      // 如果已经有步骤数据（可能已完成或页面刷新），预填充
       steps.value = data.step_logs.map(step => ({
         ...step,
         state: 'completed',
@@ -251,15 +289,20 @@ onMounted(async () => {
     }
     stats.totalSteps = data.step_logs?.length || 0
     lastRestepCount.value = data.step_logs?.length || 0
+
+    // 加载截图数据（用于已完成执行的截图画廊）
+    if (data.screenshots && data.screenshots.length > 0) {
+      screenshots.value = data.screenshots
+    } else {
+      // 从 step_logs 中提取截图路径作为 fallback
+      screenshots.value = (data.step_logs || [])
+        .map(s => s.screenshot_path)
+        .filter(Boolean)
+    }
   } catch (e) {
     console.error('Failed to load execution steps:', e)
   }
-
-  // 如果执行仍在运行，建立 WebSocket 连接
-  if (executionInfo.value?.status === 'running') {
-    connect()
-  }
-})
+}
 </script>
 
 <style scoped>
@@ -330,5 +373,20 @@ onMounted(async () => {
   flex: 1;
   overflow-y: auto;
   padding: 12px 0;
+}
+
+.completed-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.gallery-section {
+  flex-shrink: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 </style>
