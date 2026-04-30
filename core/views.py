@@ -200,16 +200,31 @@ def serve_screenshot(request):
         return Response({'error': '不允许访问该路径'}, status=status.HTTP_403_FORBIDDEN)
 
     # 安全检查 3: 验证路径确实存在于某个 ExecutionRecord 或 Screenshot 记录中
-    exists_in_db = ExecutionRecord.objects.filter(
-        Q(screenshots__contains=file_path) |
-        Q(screenshot_path=file_path)
-    ).exists()
+    # 先检查索引查询（O(1)），再回退到 JSON 字段扫描（O(N)）
+    exists_in_db = (
+        ExecutionRecord.objects.filter(screenshot_path=file_path).exists()
+        or Screenshot.objects.filter(image=file_path).exists()
+    )
+
     if not exists_in_db:
-        exists_in_db = ExecutionRecord.objects.filter(
-            step_logs__icontains=file_path
-        ).exists()
+        # 注意：SQLite 不支持 JSONField 的 contains 查询，需在 Python 层过滤
+        # 这是兜底检查，仅当前面索引查询未命中时执行
+        exists_in_db = any(
+            file_path in (record.screenshots or [])
+            for record in ExecutionRecord.objects.only('screenshots')
+            if record.screenshots
+        )
+
     if not exists_in_db:
-        exists_in_db = Screenshot.objects.filter(image=file_path).exists()
+        # 最后检查 step_logs 中是否包含该路径
+        for record in ExecutionRecord.objects.only('step_logs'):
+            if record.step_logs:
+                for step in record.step_logs:
+                    if isinstance(step, dict) and file_path in str(step):
+                        exists_in_db = True
+                        break
+            if exists_in_db:
+                break
     if not exists_in_db:
         return Response({'error': '未找到关联的执行记录'}, status=status.HTTP_404_NOT_FOUND)
 

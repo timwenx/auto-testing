@@ -30,7 +30,8 @@ export function useExecutionObserver(executionId) {
   const RECONNECT_BASE_DELAY = 1000
 
   function _getWsUrl() {
-    const id = typeof executionId === 'function' ? executionId() : executionId
+    // executionId 可能是 Vue ref/computed 或普通值
+    const id = executionId.value !== undefined ? executionId.value : executionId
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${protocol}//${window.location.host}/ws/execution/${id}/`
   }
