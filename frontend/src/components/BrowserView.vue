@@ -43,7 +43,7 @@ const props = defineProps({
   frameSrc: { type: String, default: null },
   pip: { type: Boolean, default: false },
   executionStatus: { type: String, default: 'idle' },
-  phase: { type: String, default: null },
+  phase: { type: [String, Object], default: null },
 })
 
 defineEmits(['refresh', 'toggle-pip'])
@@ -98,8 +98,17 @@ const placeholderText = computed(() => {
     return '执行异常'
   }
   // 有阶段信息时优先显示阶段描述
-  if (props.phase && PHASE_TEXT[props.phase]) {
-    return PHASE_TEXT[props.phase]
+  if (props.phase) {
+    const phaseKey = typeof props.phase === 'object' ? props.phase.phase : props.phase
+    const phaseData = typeof props.phase === 'object' ? props.phase : {}
+    if (PHASE_TEXT[phaseKey]) {
+      // executing_step 阶段显示步骤编号和工具名
+      if (phaseKey === 'executing_step' && phaseData.step_num) {
+        const toolName = phaseData.tool_name ? `: ${phaseData.tool_name}` : ''
+        return `正在执行步骤 ${phaseData.step_num}${toolName}...`
+      }
+      return PHASE_TEXT[phaseKey]
+    }
   }
   if (execStatus === 'running') {
     return '等待浏览器启动...'
