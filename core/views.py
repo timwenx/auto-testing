@@ -757,12 +757,16 @@ def agent_confirm(request):
 def agent_execute(request):
     """
     POST /api/agent/execute
-    Agent 驱动执行单个测试用例（包装 execute_testcase_agent 逻辑）
+    执行单个测试用例。支持 script/agent 两种模式。
+    若请求中未指定 execution_mode，则使用系统设置 default_execution_mode。
     """
     serializer = AgentExecuteRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     testcase_id = serializer.validated_data['testcase_id']
+    execution_mode = serializer.validated_data.get('execution_mode')
+    if not execution_mode:
+        execution_mode = SystemSetting.get('default_execution_mode', 'script').strip().lower()
 
     try:
         testcase = TestCase.objects.select_related('project').get(pk=testcase_id)
@@ -787,49 +791,63 @@ def agent_execute(request):
         project=testcase.project,
         testcase=testcase,
         status='running',
-        execution_mode='agent',
+        execution_mode=execution_mode,
         ai_model=ai_model,
     )
     testcase.status = 'running'
     testcase.save(update_fields=['status'])
 
-    # 异步执行
-    def _on_complete(tc, result):
-        record.status = result['status']
-        record.log = result['log']
-        record.error_message = result['error_message']
-        record.duration = result['duration']
+    # ── Agent 模式 ──
+    if execution_mode == 'agent':
+        def _on_complete(tc, result):
+            record.status = result['status']
+            record.log = result['log']
+            record.error_message = result['error_message']
+            record.duration = result['duration']
+            try:
+                script_data = json.loads(result.get('script', '{}'))
+                record.tool_calls_count = len(script_data.get('tool_calls', []))
+            except (json.JSONDecodeError, TypeError):
+                pass
+            record.step_logs = result.get('step_logs', [])
+            record.screenshots = result.get('screenshots', [])
+            record.agent_response = result.get('agent_response', {})
+            record.save()
+            tc.status = result['status']
+            tc.save(update_fields=['status'])
+
+        def _agent_task():
+            result = execution_engine.execute_testcase_with_agent(testcase, base_url)
+            _on_complete(testcase, result)
+            return result
+
+        from concurrent.futures import ThreadPoolExecutor
         try:
-            script_data = json.loads(result.get('script', '{}'))
-            record.tool_calls_count = len(script_data.get('tool_calls', []))
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # 保存 Agent 结构化数据
-        record.step_logs = result.get('step_logs', [])
-        record.screenshots = result.get('screenshots', [])
-        record.agent_response = result.get('agent_response', {})
-        record.save()
-        tc.status = result['status']
-        tc.save(update_fields=['status'])
+            max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
+        except (ValueError, TypeError):
+            max_workers = 2
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        executor.submit(_agent_task)
 
-    def _agent_task():
-        result = execution_engine.execute_testcase_with_agent(testcase, base_url)
-        _on_complete(testcase, result)
-        return result
+    # ── Script 模式 ──
+    else:
+        def _on_complete_script(tc, result):
+            record.status = result['status']
+            record.log = result['log']
+            record.error_message = result['error_message']
+            record.duration = result['duration']
+            record.save()
+            tc.status = result['status']
+            tc.save(update_fields=['status'])
 
-    from concurrent.futures import ThreadPoolExecutor
-    try:
-        max_workers = min(int(SystemSetting.get('max_workers', '3')), 2)
-    except (ValueError, TypeError):
-        max_workers = 2
-    executor = ThreadPoolExecutor(max_workers=max_workers)
-    executor.submit(_agent_task)
+        execution_engine.execute_testcase_async(testcase, base_url, callback=_on_complete_script)
 
     return Response({
         'test_run_id': record.id,
         'testcase_id': testcase.id,
         'status': 'running',
-        'message': 'Agent 执行已提交',
+        'execution_mode': execution_mode,
+        'message': f'{"Agent" if execution_mode == "agent" else "Script"} 执行已提交',
     }, status=status.HTTP_202_ACCEPTED)
 
 

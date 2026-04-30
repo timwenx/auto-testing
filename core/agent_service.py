@@ -348,8 +348,11 @@ class AgentRunner:
         logger.info("[Agent] 初始化 Playwright 浏览器")
         try:
             from playwright.sync_api import sync_playwright
+            from .models import SystemSetting
+            headless_str = SystemSetting.get('agent_headless', 'true')
+            headless = headless_str.strip().lower() in ('true', '1', 'yes')
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=True)
+            self._browser = self._playwright.chromium.launch(headless=headless)
             self._page = self._browser.new_page()
             context['page'] = self._page
             self._browser_used = True
