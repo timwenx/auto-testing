@@ -841,6 +841,7 @@ def execution_latest_frame(request, pk):
 
     from django.http import HttpResponse
     response = HttpResponse(jpeg_bytes, content_type='image/jpeg')
+    response['Content-Length'] = len(jpeg_bytes)
     response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     response['X-Frame-Timestamp'] = str(ts or '')
     return response

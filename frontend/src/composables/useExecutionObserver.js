@@ -258,7 +258,7 @@ export function useExecutionObserver(executionId) {
   // ── 公开方法 ──
 
   function connect() {
-    if (ws && ws.readyState === WebSocket.OPEN) return
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
     reconnectAttempts = 0
     _connectWs()
   }

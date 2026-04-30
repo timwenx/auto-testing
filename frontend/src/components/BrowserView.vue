@@ -4,11 +4,12 @@
     <div class="frame-wrapper">
       <transition name="fade" mode="out-in">
         <img
-          v-if="frameSrc"
+          v-if="frameSrc && !imgError"
           :key="frameKey"
           :src="frameSrc"
           alt="Browser frame"
           class="browser-frame"
+          @error="imgError = true"
         />
         <div v-else class="frame-placeholder">
           <el-icon :size="32" :color="placeholderIconColor" :class="{ 'is-loading': placeholderLoading }"><Loading /></el-icon>
@@ -50,13 +51,16 @@ defineEmits(['refresh', 'toggle-pip'])
 const frameCount = ref(0)
 const frameKey = computed(() => `frame-${frameCount.value}`)
 
+// 图片加载失败时回退到占位符
+const imgError = ref(false)
+
 // FPS 统计
 const fps = ref(0)
-let lastFpsTime = Date.now()
 let frameTimestamps = []
 
 watch(() => props.frameSrc, () => {
   if (!props.frameSrc) return
+  imgError.value = false
   frameCount.value++
 
   // FPS 计算
