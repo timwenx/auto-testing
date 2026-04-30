@@ -23,6 +23,9 @@ Thumbs.db
 # Build output
 backend/static/dist/
 
+# Media files (runtime screenshots)
+media/
+
 # Git repos (cloned by repo_service)
 repos/
 .claudepotter/
