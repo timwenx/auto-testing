@@ -7,7 +7,7 @@
  *   disconnect() // 断开连接
  */
 import { ref, reactive, onUnmounted } from 'vue'
-import { getExecutionSteps } from '../api'
+import { getExecutionSteps, getExecution } from '../api'
 
 export function useExecutionObserver(executionId) {
   // ── 响应式状态 ──
@@ -83,6 +83,82 @@ export function useExecutionObserver(executionId) {
     }
   }
 
+  // ── Stale 检测 — WebSocket 断线后 REST 轮询兜底 ──
+  let stalePollTimer = null
+  const STALE_THRESHOLD = 10000   // 断线超过此时间(ms)后启用 REST 轮询
+  const STALE_POLL_INTERVAL = 3000 // REST 轮询间隔 (ms)
+  let _lastDisconnectTime = 0      // 上次 WebSocket 断开的时间戳
+
+  function _startStalePoll() {
+    if (stalePollTimer) return
+    stalePollTimer = setInterval(async () => {
+      // WebSocket 已重连成功，停止轮询
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        _stopStalePoll()
+        return
+      }
+      try {
+        const id = executionId.value !== undefined ? executionId.value : executionId
+        const { data } = await getExecutionSteps(id)
+
+        // 合并新步骤
+        if (data.step_logs && data.step_logs.length > 0) {
+          for (const step of data.step_logs) {
+            const exists = steps.value.some(
+              s => s.step_num === step.step_num && s.state === 'completed'
+            )
+            if (!exists) {
+              steps.value.push({ ...step, state: 'completed', duration_ms: step.duration_ms || 0 })
+            }
+          }
+          stats.totalSteps = data.step_logs.length
+        }
+
+        // 同步 token 统计
+        if (data.agent_response?.input_tokens) {
+          stats.inputTokens = data.agent_response.input_tokens
+          stats.outputTokens = data.agent_response.output_tokens
+        }
+        if (data.duration) {
+          stats.duration = data.duration
+        }
+
+        // 检测执行是否已结束
+        if (data.status && data.status !== 'running') {
+          _stopStalePoll()
+          status.value = 'completed'
+          _stopFramePolling()
+          // 通过 REST 同步最终 executionInfo
+          _syncExecutionInfo()
+        }
+      } catch (e) {
+        console.warn('[Observer] Stale poll failed:', e)
+      }
+    }, STALE_POLL_INTERVAL)
+  }
+
+  function _stopStalePoll() {
+    if (stalePollTimer) {
+      clearInterval(stalePollTimer)
+      stalePollTimer = null
+    }
+  }
+
+  /**
+   * 通过 REST 同步最新的 executionInfo（duration、status 等）。
+   * 返回数据供调用方使用。
+   */
+  async function _syncExecutionInfo() {
+    try {
+      const id = executionId.value !== undefined ? executionId.value : executionId
+      const { data } = await getExecution(id)
+      return data
+    } catch (e) {
+      console.warn('[Observer] Failed to sync execution info:', e)
+      return null
+    }
+  }
+
   function _getWsUrl() {
     // executionId 可能是 Vue ref/computed 或普通值
     const id = executionId.value !== undefined ? executionId.value : executionId
@@ -121,6 +197,7 @@ export function useExecutionObserver(executionId) {
       reconnectAttempts = 0
       error.value = null
       _startPing()
+      _stopStalePoll()
       // 注意：不在这里设置 status = 'connected'，
       // 等 connection_established 事件到来后根据 execution_status 决定
     }
@@ -141,6 +218,16 @@ export function useExecutionObserver(executionId) {
       if (event.code === 1000) return
 
       ws = null
+      _lastDisconnectTime = Date.now()
+
+      // 启动 stale 检测：延迟 STALE_THRESHOLD 后检查是否仍在断线状态
+      // 如果仍在断线，开始 REST 轮询兜底
+      setTimeout(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          _startStalePoll()
+        }
+      }, STALE_THRESHOLD)
+
       _scheduleReconnect()
     }
 
@@ -158,7 +245,11 @@ export function useExecutionObserver(executionId) {
         if (execStatus && execStatus !== 'running') {
           status.value = 'completed'
           // 执行已结束，主动拉取最终数据并关闭连接
-          _fetchFinalDataAndClose()
+          _fetchFinalDataAndClose().then(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.close(1000, 'Execution already completed')
+            }
+          })
         } else {
           status.value = 'connected'
           // 执行可能已在运行中，启动帧轮询兜底
@@ -258,14 +349,19 @@ export function useExecutionObserver(executionId) {
   async function _fetchFinalDataAndClose() {
     const id = executionId.value !== undefined ? executionId.value : executionId
     _stopFramePolling()
+    _stopStalePoll()
     try {
-      const { data } = await getExecutionSteps(id)
+      const [stepsRes, infoRes] = await Promise.all([
+        getExecutionSteps(id),
+        getExecution(id),
+      ])
+      const data = stepsRes.data
       if (data.step_logs && data.step_logs.length > 0) {
         // 合并 REST 返回的步骤（避免与 WebSocket 实时步骤重复）
         for (const step of data.step_logs) {
           const exists = steps.value.some(s => s.step_num === step.step_num && s.state === 'completed')
           if (!exists) {
-            steps.value.push({ ...step, state: 'completed', duration_ms: 0 })
+            steps.value.push({ ...step, state: 'completed', duration_ms: step.duration_ms || 0 })
           }
         }
       }
@@ -277,12 +373,11 @@ export function useExecutionObserver(executionId) {
       if (data.duration) {
         stats.duration = data.duration
       }
+      // 返回最新的 executionInfo 供调用方同步
+      return infoRes.data || null
     } catch (e) {
       console.warn('[Observer] Failed to fetch final execution data:', e)
-    }
-    // 关闭 WebSocket
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.close(1000, 'Execution already completed')
+      return null
     }
   }
 
@@ -300,6 +395,7 @@ export function useExecutionObserver(executionId) {
       reconnectTimer = null
     }
     _stopPing()
+    _stopStalePoll()
     _stopFramePolling()
     if (ws) {
       ws.close(1000, 'Manual disconnect')
