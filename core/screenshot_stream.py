@@ -21,6 +21,7 @@ Watchdog 模式:
     工具执行结束后自动退出。
 """
 import logging
+import os
 import threading
 import time
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL = 0.5  # 500ms
 DEFAULT_QUALITY = 40    # JPEG quality (lower = smaller file)
 WATCHDOG_INTERVAL = 2.0  # watchdog 截图间隔（秒）
+DEFAULT_PERSIST_INTERVAL = 3.0  # 自动截图持久化间隔（秒）
 
 # 模块级实时帧缓存 — {execution_id: (timestamp, jpeg_bytes)}
 # 只保留每执行的最新一帧，stop() 时清除对应条目。
@@ -60,26 +62,34 @@ class ScreenshotStream:
     maybe_capture()，每隔一定时间对 page 截图并通过 WebSocket 推送轻量通知。
     """
 
-    def __init__(self, interval=None, quality=None):
+    def __init__(self, interval=None, quality=None, persist_interval=None, persist_enabled=True):
         self.interval = interval or DEFAULT_INTERVAL
         self.quality = quality or DEFAULT_QUALITY
+        self.persist_interval = persist_interval or DEFAULT_PERSIST_INTERVAL
+        self.persist_enabled = persist_enabled
         self._page = None
         self._execution_id = None
+        self._project_id = None
         self._last_capture_time = 0
+        self._last_persist_time = 0
+        self._persist_counter = 0
 
-    def start(self, page, execution_id):
+    def start(self, page, execution_id, project_id=None):
         """
         启动截图流。
 
         Args:
             page: Playwright Page 实例
             execution_id: 执行记录 ID
+            project_id: 项目 ID（用于持久化截图目录）
         """
         self._page = page
         self._execution_id = execution_id
+        self._project_id = project_id
         self._last_capture_time = time.time()
-        logger.info("[ScreenshotStream] Started for execution %s (interval=%.1fs)",
-                     execution_id, self.interval)
+        self._last_persist_time = time.time()
+        logger.info("[ScreenshotStream] Started for execution %s (interval=%.1fs, persist_interval=%.1fs)",
+                     execution_id, self.interval, self.persist_interval)
 
     def stop(self):
         """停止截图流并清理帧缓存"""
@@ -100,6 +110,8 @@ class ScreenshotStream:
         """
         在 Playwright 所在线程中调用。如果距上次截图已超过 interval，
         则执行截图，暂存到 _latest_frames，并通过 WS 发送轻量通知。
+        如果 persist_enabled 且距上次持久化超过 persist_interval，
+        则将截图保存到磁盘并创建 Screenshot 记录。
         """
         if not self._page or self._page.is_closed():
             return
@@ -128,10 +140,53 @@ class ScreenshotStream:
             _emit_step_event(self._execution_id, 'browser_frame', {
                 'ts': round(now * 1000),  # 毫秒时间戳，前端用作 cache-buster
             })
+
+            # 定时持久化截图到磁盘
+            if (self.persist_enabled and self._project_id
+                    and now - self._last_persist_time >= self.persist_interval):
+                self._persist_screenshot(screenshot_bytes, now)
+
         except Exception as e:
             # 截图错误不应中断 Agent 执行，但必须以 WARNING 级别可见
             logger.warning("[ScreenshotStream] Screenshot failed for execution %s: %s",
                            self._execution_id, e)
+
+    def _persist_screenshot(self, jpeg_bytes, timestamp):
+        """将截图保存到磁盘并创建 Screenshot 数据库记录"""
+        try:
+            from django.conf import settings as django_settings
+            from .models import Screenshot
+
+            self._last_persist_time = timestamp
+            self._persist_counter += 1
+
+            # 构建保存路径：media/screenshots/{project_id}/{execution_id}/
+            media_root = str(django_settings.MEDIA_ROOT)
+            save_dir = os.path.join(
+                media_root, 'screenshots',
+                str(self._project_id), str(self._execution_id),
+            )
+            os.makedirs(save_dir, exist_ok=True)
+
+            filename = f"auto_{int(timestamp * 1000)}.jpg"
+            file_path = os.path.join(save_dir, filename)
+
+            with open(file_path, 'wb') as f:
+                f.write(jpeg_bytes)
+
+            # 创建数据库记录（auto_captured=True, step_num 留空）
+            relative_path = os.path.relpath(file_path, media_root)
+            Screenshot.objects.create(
+                execution_id=self._execution_id,
+                image=relative_path,
+                auto_captured=True,
+                action='自动截图',
+            )
+
+            logger.info("[ScreenshotStream] Persisted auto screenshot #%d for execution %s: %s",
+                        self._persist_counter, self._execution_id, file_path)
+        except Exception as e:
+            logger.warning("[ScreenshotStream] Failed to persist screenshot: %s", e)
 
 
 # ══════════════════════════════════════════════════════════════════

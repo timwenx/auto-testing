@@ -160,6 +160,7 @@ class Screenshot(models.Model):
     image = models.FileField('截图文件', upload_to=_screenshot_upload_path)
     step_num = models.IntegerField('步骤序号', null=True, blank=True)
     action = models.CharField('操作描述', max_length=200, blank=True, default='')
+    auto_captured = models.BooleanField('自动截图', default=False, help_text='是否为定时自动截图（非工具触发）')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
