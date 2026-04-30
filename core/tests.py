@@ -1471,8 +1471,8 @@ class ScreenshotStreamRunTest(TestCase):
         call_args = mock_emit.call_args[0]
         self.assertEqual(call_args[0], 10)
         self.assertEqual(call_args[1], 'browser_frame')
-        self.assertIn('image', call_args[2])
-        self.assertTrue(call_args[2]['image'].startswith('data:image/jpeg;base64,'))
+        self.assertIn('ts', call_args[2])
+        self.assertIsInstance(call_args[2]['ts'], (int, float))
 
     @mock.patch('core.event_emitter._emit_step_event')
     def test_maybe_capture_skips_closed_page(self, mock_emit):
@@ -1535,6 +1535,7 @@ class ExecutionConsumerTest(TestCase):
         }
         consumer.channel_layer = mock.MagicMock()
         consumer.channel_name = 'test-channel'
+        consumer.execution_id = execution_id
         return consumer
 
     @mock.patch('core.consumers.async_to_sync')

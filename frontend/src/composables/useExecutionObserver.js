@@ -12,7 +12,7 @@ import { getExecutionSteps } from '../api'
 export function useExecutionObserver(executionId) {
   // ── 响应式状态 ──
   const steps = ref([])                // 步骤列表
-  const currentFrame = ref(null)       // 当前截图帧 (data URL)
+  const currentFrame = ref(null)       // 当前截图帧 (HTTP URL)
   const stats = reactive({
     inputTokens: 0,
     outputTokens: 0,
@@ -22,6 +22,39 @@ export function useExecutionObserver(executionId) {
   })
   const status = ref('idle')           // idle | connecting | connected | running | completed | error
   const error = ref(null)
+
+  // ── 帧轮询（HTTP fallback） ──
+  let lastFrameTime = 0               // 上次收到 browser_frame 事件的 Date.now()（ms）
+  let framePollTimer = null
+  const FRAME_POLL_INTERVAL = 2000    // 轮询间隔 (ms)
+  const FRAME_POLL_THRESHOLD = 2000   // 多久没收到 browser_frame 后启用轮询 (ms)
+
+  function _getFrameUrl(ts) {
+    const id = executionId.value !== undefined ? executionId.value : executionId
+    return `/api/executions/${id}/latest_frame/?t=${ts || Date.now()}`
+  }
+
+  function _startFramePolling() {
+    if (framePollTimer) return
+    framePollTimer = setInterval(() => {
+      // 如果执行已结束，停止轮询
+      if (status.value !== 'running') {
+        _stopFramePolling()
+        return
+      }
+      // 如果最近收到过 WS 通知，不需要轮询
+      if (Date.now() - lastFrameTime < FRAME_POLL_THRESHOLD) return
+      // 设置新 URL 触发浏览器重新加载图片（cache-busting）
+      currentFrame.value = _getFrameUrl(Date.now())
+    }, FRAME_POLL_INTERVAL)
+  }
+
+  function _stopFramePolling() {
+    if (framePollTimer) {
+      clearInterval(framePollTimer)
+      framePollTimer = null
+    }
+  }
 
   // ── WebSocket 管理 ──
   let ws = null
@@ -106,12 +139,15 @@ export function useExecutionObserver(executionId) {
           _fetchFinalDataAndClose()
         } else {
           status.value = 'connected'
+          // 执行可能已在运行中，启动帧轮询兜底
+          _startFramePolling()
         }
         break
       }
 
       case 'step_start':
         status.value = 'running'
+        _startFramePolling()
         steps.value.push({
           step_num: data.step_num,
           action: data.action || '',
@@ -163,11 +199,14 @@ export function useExecutionObserver(executionId) {
         break
 
       case 'browser_frame':
-        currentFrame.value = data.image || null
+        // 轻量通知（仅时间戳），通过 HTTP 拉取实际图片
+        lastFrameTime = Date.now()
+        currentFrame.value = _getFrameUrl(data.ts || Date.now())
         break
 
       case 'execution_end':
         status.value = 'completed'
+        _stopFramePolling()
         stats.totalSteps = data.total_steps || steps.value.length
         stats.inputTokens = data.input_tokens || 0
         stats.outputTokens = data.output_tokens || 0
@@ -187,6 +226,7 @@ export function useExecutionObserver(executionId) {
    */
   async function _fetchFinalDataAndClose() {
     const id = executionId.value !== undefined ? executionId.value : executionId
+    _stopFramePolling()
     try {
       const { data } = await getExecutionSteps(id)
       if (data.step_logs && data.step_logs.length > 0) {
@@ -228,6 +268,7 @@ export function useExecutionObserver(executionId) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    _stopFramePolling()
     if (ws) {
       ws.close(1000, 'Manual disconnect')
       ws = null

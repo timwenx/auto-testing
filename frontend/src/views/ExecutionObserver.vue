@@ -15,7 +15,7 @@
       <div class="observer-left" :class="{ 'pip-hidden': pipMode }">
         <BrowserView
           :frame-src="currentFrame"
-          :execution-status="executionInfo?.status || 'idle'"
+          :execution-status="status === 'running' ? 'running' : (executionInfo?.status || 'idle')"
           :pip="pipMode"
           @refresh="connect"
           @toggle-pip="pipMode = !pipMode"
