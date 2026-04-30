@@ -29,6 +29,8 @@ export function useExecutionObserver(executionId) {
   let framePollTimer = null
   const FRAME_POLL_INTERVAL = 2000    // 轮询间隔 (ms)
   const FRAME_POLL_THRESHOLD = 2000   // 多久没收到 browser_frame 后启用轮询 (ms)
+  const FRAME_DEBOUNCE_MS = 500       // 帧更新 debounce 间隔（ms）
+  let lastFrameUpdateTime = 0         // 上次帧更新的 Date.now()（ms）
 
   function _getFrameUrl(ts) {
     const id = executionId.value !== undefined ? executionId.value : executionId
@@ -361,16 +363,18 @@ export function useExecutionObserver(executionId) {
         break
 
       case 'browser_frame':
-        // 轻量通知（仅时间戳），通过 HTTP 拉取实际图片
+        // 轻量通知（仅时间戳），通过 HTTP 拉取实际图片（debounce 500ms）
         lastFrameTime = Date.now()
+        if (Date.now() - lastFrameUpdateTime < FRAME_DEBOUNCE_MS) break
+        lastFrameUpdateTime = Date.now()
         currentFrame.value = _getFrameUrl(data.ts || Date.now())
         break
 
       case 'frame_heartbeat':
-        // Watchdog 在浏览器工具执行期间发送的心跳通知
-        // 此时主线程可能已捕获新帧，通过 HTTP 拉取最新截图
+        // Watchdog 在浏览器工具执行期间发送的心跳通知（debounce 500ms）
         lastFrameTime = Date.now()
-        if (status.value === 'running') {
+        if (status.value === 'running' && Date.now() - lastFrameUpdateTime >= FRAME_DEBOUNCE_MS) {
+          lastFrameUpdateTime = Date.now()
           currentFrame.value = _getFrameUrl(Date.now())
         }
         break
