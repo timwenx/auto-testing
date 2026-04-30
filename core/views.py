@@ -384,7 +384,7 @@ def serve_screenshot(request):
     # 返回文件
     content_type = mimetypes.guess_type(abs_path)[0] or 'image/png'
     try:
-        return FileResponse(open(abs_path, 'rb'), content_type=content_type)
+        return FileResponse(open(abs_path, 'rb'), content_type=content_type, close=True)
     except IOError as e:
         logger.error("Failed to read screenshot file: %s", e)
         raise Http404("无法读取截图文件")
@@ -985,12 +985,13 @@ def agent_execute(request):
 
 # ─── 系统 ───
 
-@api_view(['GET'])
+@api_view(['GET', 'HEAD'])
 def execution_latest_frame(request, pk):
     """
-    GET /api/executions/<id>/latest_frame/
+    GET/HEAD /api/executions/<id>/latest_frame/
     返回指定执行的最新浏览器截图帧（JPEG）。
     实时帧从内存缓存读取，无数据库查询。
+    HEAD 方法用于前端验证帧可用性，不传输图片数据。
     """
     from .screenshot_stream import get_latest_frame
     ts, jpeg_bytes = get_latest_frame(pk)

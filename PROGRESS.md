@@ -148,3 +148,20 @@ All 6 tasks fully implemented and verified:
 - `frontend/src/composables/useFrameObserver.js` — New file
 - `frontend/src/composables/useExecutionObserver.js` — Removed frame handling
 - `frontend/src/views/ExecutionObserver.vue` — Dual-channel integration
+
+## Round 2/3 — Quality improvements and test coverage (Dual WS channels plan)
+
+### Issues Found and Fixed
+
+1. **`_emit_frame_event` missing execution_id guard** (`event_emitter.py`): Added `if not execution_id` check to prevent sending to `frame_None` group
+2. **`_emit_step_event` explicit execution_id guard** (`event_emitter.py`): Added explicit check (previously only worked implicitly via loop=None in tests)
+3. **`set_asgi_event_loop` redundant overwrites** (`event_emitter.py`): Identity check to skip redundant writes when both consumers connect
+4. **`serve_screenshot` file handle leak** (`views.py`): Added `close=True` to `FileResponse`
+
+### New Tests
+- `EmitFrameEventTest` (7 tests) — dispatch, heartbeat, guards, error handling
+- `FrameConsumerTest` (9 tests) — connect/disconnect, event forwarding, ping/pong
+
+### Status
+- All 164 tests pass (148 original + 16 new)
+- Commit pending

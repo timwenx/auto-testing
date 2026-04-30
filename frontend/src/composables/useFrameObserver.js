@@ -30,11 +30,21 @@ export function useFrameObserver(executionId) {
 
   function _startFramePolling() {
     if (framePollTimer) return
-    framePollTimer = setInterval(() => {
+    framePollTimer = setInterval(async () => {
       // 如果最近收到过 WS 通知，不需要轮询
       if (Date.now() - lastFrameTime < FRAME_POLL_THRESHOLD) return
-      // 设置新 URL 触发浏览器重新加载图片（cache-busting）
-      currentFrame.value = _getFrameUrl(Date.now())
+      try {
+        // 先用 HEAD 请求验证帧可用（轻量，不传输图片数据）
+        const id = executionId.value !== undefined ? executionId.value : executionId
+        const response = await fetch(`/api/executions/${id}/latest_frame/?t=${Date.now()}`, { method: 'HEAD' })
+        if (response.ok) {
+          currentFrame.value = _getFrameUrl(Date.now())
+        } else {
+          console.debug('[FrameObserver] Frame poll skipped, status:', response.status)
+        }
+      } catch (e) {
+        console.debug('[FrameObserver] Frame poll failed:', e.message)
+      }
     }, FRAME_POLL_INTERVAL)
   }
 

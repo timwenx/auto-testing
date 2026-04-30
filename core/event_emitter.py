@@ -23,6 +23,9 @@ _asgi_event_loop = None
 def set_asgi_event_loop(loop):
     """由 WebSocket consumer 调用，保存 ASGI 事件循环引用。"""
     global _asgi_event_loop
+    # 避免重复设置同一个 loop（减少日志噪音和竞态窗口）
+    if _asgi_event_loop is loop:
+        return
     _asgi_event_loop = loop
     logger.debug("[EventEmitter] ASGI event loop captured: %s", loop)
 
@@ -49,6 +52,10 @@ def _emit_step_event(execution_id, event_type, data):
     通过 asyncio.run_coroutine_threadsafe 调度到 ASGI 事件循环。
     推送失败只 log 不影响 Agent 主流程。
     """
+    if not execution_id:
+        logger.debug("[EventEmitter] No execution_id for step event, skipping")
+        return
+
     if not _is_loop_usable():
         logger.debug("[EventEmitter] ASGI event loop not available, skipping step event "
                      "type=%s execution=%s", event_type, execution_id)
@@ -90,6 +97,10 @@ def _emit_frame_event(execution_id, event_type, data):
     通过 asyncio.run_coroutine_threadsafe 调度到 ASGI 事件循环。
     推送失败只 log 不影响 Agent 主流程。
     """
+    if not execution_id:
+        logger.debug("[EventEmitter] No execution_id for frame event, skipping")
+        return
+
     if not _is_loop_usable():
         logger.debug("[EventEmitter] ASGI event loop not available, skipping frame event "
                      "type=%s execution=%s", event_type, execution_id)
