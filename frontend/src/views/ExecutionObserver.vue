@@ -125,7 +125,9 @@ watch(status, async (newStatus, oldStatus) => {
     } else if (newStatus === 'completed') {
       // 如果 composable 检测到执行已结束（通过 connection_established 或 execution_end），
       // 更新 executionInfo 的状态以触发 BrowserView 显示"执行已完成"
-      if (executionInfo.value.status === 'running') {
+      // 只在尚未达到终态时更新（允许 running / connected → completed）
+      const terminalStatuses = ['completed', 'passed', 'failed', 'error']
+      if (!terminalStatuses.includes(executionInfo.value.status)) {
         executionInfo.value = { ...executionInfo.value, status: 'completed' }
       }
     }

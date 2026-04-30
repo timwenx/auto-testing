@@ -87,7 +87,10 @@ const placeholderText = computed(() => {
   if (execStatus === 'running') {
     return '等待浏览器启动...'
   }
-  if (execStatus === 'connecting' || execStatus === 'idle') {
+  if (execStatus === 'connected') {
+    return '已连接，等待执行...'
+  }
+  if (execStatus === 'idle' || execStatus === 'connecting') {
     return '连接中...'
   }
   return '等待中...'
