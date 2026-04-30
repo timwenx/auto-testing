@@ -60,8 +60,28 @@ export function useExecutionObserver(executionId) {
   let ws = null
   let reconnectAttempts = 0
   let reconnectTimer = null
+  let pingTimer = null
   const MAX_RECONNECT_ATTEMPTS = 5
   const RECONNECT_BASE_DELAY = 1000
+  const PING_INTERVAL = 20000    // 前端 ping 间隔 (ms)
+
+  // ── 心跳 / Ping 管理 ──
+
+  function _startPing() {
+    _stopPing()
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }))
+      }
+    }, PING_INTERVAL)
+  }
+
+  function _stopPing() {
+    if (pingTimer) {
+      clearInterval(pingTimer)
+      pingTimer = null
+    }
+  }
 
   function _getWsUrl() {
     // executionId 可能是 Vue ref/computed 或普通值
@@ -100,6 +120,7 @@ export function useExecutionObserver(executionId) {
     ws.onopen = () => {
       reconnectAttempts = 0
       error.value = null
+      _startPing()
       // 注意：不在这里设置 status = 'connected'，
       // 等 connection_established 事件到来后根据 execution_status 决定
     }
@@ -114,6 +135,7 @@ export function useExecutionObserver(executionId) {
     }
 
     ws.onclose = (event) => {
+      _stopPing()
       // 正常关闭（执行结束）不重连
       if (status.value === 'completed') return
       if (event.code === 1000) return
@@ -207,6 +229,7 @@ export function useExecutionObserver(executionId) {
       case 'execution_end':
         status.value = 'completed'
         _stopFramePolling()
+        _stopPing()
         stats.totalSteps = data.total_steps || steps.value.length
         stats.inputTokens = data.input_tokens || 0
         stats.outputTokens = data.output_tokens || 0
@@ -214,6 +237,14 @@ export function useExecutionObserver(executionId) {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.close(1000, 'Execution completed')
         }
+        break
+
+      case 'heartbeat':
+        // 服务端心跳，连接仍然活跃，无需处理
+        break
+
+      case 'pong':
+        // 服务端回复 ping，连接仍然活跃，无需处理
         break
 
       default:
@@ -268,6 +299,7 @@ export function useExecutionObserver(executionId) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    _stopPing()
     _stopFramePolling()
     if (ws) {
       ws.close(1000, 'Manual disconnect')
