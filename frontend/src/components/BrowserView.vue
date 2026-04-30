@@ -11,9 +11,8 @@
           class="browser-frame"
         />
         <div v-else class="frame-placeholder">
-          <el-icon :size="32" color="var(--el-text-color-placeholder)" class="is-loading"><Loading /></el-icon>
-          <span v-if="connected">等待浏览器启动...</span>
-          <span v-else>连接中...</span>
+          <el-icon :size="32" :color="placeholderIconColor" :class="{ 'is-loading': placeholderLoading }"><Loading /></el-icon>
+          <span>{{ placeholderText }}</span>
         </div>
       </transition>
     </div>
@@ -41,8 +40,8 @@ import { Loading, Refresh, CopyDocument } from '@element-plus/icons-vue'
 
 const props = defineProps({
   frameSrc: { type: String, default: null },
-  connected: { type: Boolean, default: false },
   pip: { type: Boolean, default: false },
+  executionStatus: { type: String, default: 'idle' },
 })
 
 defineEmits(['refresh', 'toggle-pip'])
@@ -72,6 +71,38 @@ watch(() => props.frameSrc, () => {
 const fpsDisplay = computed(() => {
   if (fps.value <= 0) return ''
   return `${fps.value} fps`
+})
+
+const placeholderText = computed(() => {
+  const execStatus = props.executionStatus
+  if (execStatus === 'completed' || execStatus === 'passed') {
+    return '执行已完成'
+  }
+  if (execStatus === 'failed') {
+    return '执行失败'
+  }
+  if (execStatus === 'error') {
+    return '执行异常'
+  }
+  if (execStatus === 'running') {
+    return '等待浏览器启动...'
+  }
+  if (execStatus === 'connecting' || execStatus === 'idle') {
+    return '连接中...'
+  }
+  return '等待中...'
+})
+
+const placeholderLoading = computed(() => {
+  const execStatus = props.executionStatus
+  return execStatus !== 'completed' && execStatus !== 'passed' && execStatus !== 'failed' && execStatus !== 'error'
+})
+
+const placeholderIconColor = computed(() => {
+  const execStatus = props.executionStatus
+  if (execStatus === 'completed' || execStatus === 'passed') return 'var(--el-color-success)'
+  if (execStatus === 'failed' || execStatus === 'error') return 'var(--el-color-danger)'
+  return 'var(--el-text-color-placeholder)'
 })
 </script>
 

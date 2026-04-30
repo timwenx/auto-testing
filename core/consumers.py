@@ -48,10 +48,20 @@ class ExecutionConsumer(WebsocketConsumer):
             self.channel_name,
         )
 
-        # 发送连接确认
+        # 查询当前执行状态，一并发送给客户端
+        execution_status = 'unknown'
+        try:
+            from .models import ExecutionRecord
+            record = ExecutionRecord.objects.get(pk=self.execution_id)
+            execution_status = record.status
+        except Exception:
+            pass
+
+        # 发送连接确认（含当前执行状态）
         self.send(text_data=json.dumps({
             'type': 'connection_established',
             'execution_id': self.execution_id,
+            'execution_status': execution_status,
         }))
 
     def disconnect(self, close_code):

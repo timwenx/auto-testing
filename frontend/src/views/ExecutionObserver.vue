@@ -15,7 +15,7 @@
       <div class="observer-left" :class="{ 'pip-hidden': pipMode }">
         <BrowserView
           :frame-src="currentFrame"
-          :connected="status === 'connected' || status === 'running' || status === 'completed'"
+          :execution-status="executionInfo?.status || 'idle'"
           :pip="pipMode"
           @refresh="connect"
           @toggle-pip="pipMode = !pipMode"
@@ -118,6 +118,19 @@ function goBack() {
 
 // 断线重连后 REST 补齐：当 WebSocket 重新连接时，拉取步骤补齐中间丢失的
 watch(status, async (newStatus, oldStatus) => {
+  // 同步 composable 状态到 executionInfo.status
+  if (executionInfo.value) {
+    if (newStatus === 'running') {
+      executionInfo.value.status = 'running'
+    } else if (newStatus === 'completed') {
+      // 如果 composable 检测到执行已结束（通过 connection_established 或 execution_end），
+      // 更新 executionInfo 的状态以触发 BrowserView 显示"执行已完成"
+      if (executionInfo.value.status === 'running') {
+        executionInfo.value = { ...executionInfo.value, status: 'completed' }
+      }
+    }
+  }
+
   if (newStatus === 'connected' && oldStatus !== 'idle' && oldStatus !== 'connecting') {
     try {
       const { data } = await getExecutionSteps(executionId.value)
