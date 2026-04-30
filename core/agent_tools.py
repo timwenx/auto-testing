@@ -263,16 +263,28 @@ def _execute_browser_get_text(input_dict, context):
 
 
 def _execute_browser_screenshot(input_dict, context):
-    """对当前页面截图"""
+    """对当前页面截图，保存到 media/screenshots/ 持久化目录"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
     save_path = input_dict.get('save_path', '')
     try:
         if not save_path:
-            import tempfile
-            fd, save_path = tempfile.mkstemp(suffix='.png', prefix='agent_screenshot_')
-            os.close(fd)
+            from django.conf import settings as django_settings
+            project_id = context.get('project_id', 'unknown')
+            testcase_id = context.get('testcase_id', 'unknown')
+            # 递增截图计数器
+            counter = context.get('screenshot_counter', 0) + 1
+            context['screenshot_counter'] = counter
+            # 保存到 media/screenshots/{project_id}/{testcase_id}/
+            screenshot_dir = os.path.join(
+                str(django_settings.MEDIA_ROOT),
+                'screenshots',
+                str(project_id),
+                str(testcase_id),
+            )
+            os.makedirs(screenshot_dir, exist_ok=True)
+            save_path = os.path.join(screenshot_dir, f'step_{counter}.png')
         page.screenshot(path=save_path, full_page=True)
         context['last_screenshot'] = save_path
         return f"截图已保存: {save_path}"

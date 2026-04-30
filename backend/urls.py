@@ -11,6 +11,10 @@ urlpatterns = [
     path('api/', include('core.urls')),
 ]
 
+# 开发环境：serve media 文件
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
 # 生产环境：serve 前端静态文件
 if not settings.DEBUG:
     dist_dir = os.path.join(settings.BASE_DIR, 'backend', 'static', 'dist')

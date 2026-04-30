@@ -8,7 +8,7 @@ from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot
 from .serializers import (
     ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
@@ -20,6 +20,45 @@ from . import ai_engine
 from . import execution_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _create_screenshot_records(record, step_logs, screenshot_paths):
+    """从执行结果创建持久化 Screenshot 记录"""
+    # 先按 screenshot_paths（有序）创建记录
+    path_set = set()
+    for i, path in enumerate(screenshot_paths, 1):
+        if not path or not os.path.isfile(path):
+            continue
+        # 找到对应的 step 描述
+        action = ''
+        for step in step_logs:
+            if step.get('screenshot_path') == path:
+                action = step.get('action', '')
+                break
+        try:
+            Screenshot.objects.create(
+                execution=record,
+                image=path,  # FileField 可以接受绝对路径
+                step_num=i,
+                action=action,
+            )
+            path_set.add(path)
+        except Exception as e:
+            logger.warning("创建 Screenshot 记录失败: %s", e)
+
+    # 补充 step_logs 中有 screenshot_path 但不在 screenshot_paths 里的
+    for step in step_logs:
+        sp = step.get('screenshot_path', '')
+        if sp and sp not in path_set and os.path.isfile(sp):
+            try:
+                Screenshot.objects.create(
+                    execution=record,
+                    image=sp,
+                    step_num=step.get('step_num'),
+                    action=step.get('action', ''),
+                )
+            except Exception as e:
+                logger.warning("创建 Screenshot 记录失败: %s", e)
 
 
 # ─── 项目 ───
@@ -103,25 +142,27 @@ def serve_screenshot(request):
     if not os.path.isfile(abs_path):
         raise Http404("截图文件不存在")
 
-    # 安全检查 2: 只允许访问临时目录或项目下的文件
+    # 安全检查 2: 只允许访问临时目录或 media 目录下的文件
     import tempfile
+    from django.conf import settings as django_settings
     allowed_prefixes = [
         tempfile.gettempdir(),
-        os.path.realpath(os.path.join(os.path.dirname(__file__), '..', 'media')),
+        os.path.realpath(str(django_settings.MEDIA_ROOT)),
     ]
     if not any(abs_path.startswith(prefix) for prefix in allowed_prefixes):
         return Response({'error': '不允许访问该路径'}, status=status.HTTP_403_FORBIDDEN)
 
-    # 安全检查 3: 验证路径确实存在于某个 ExecutionRecord 中
+    # 安全检查 3: 验证路径确实存在于某个 ExecutionRecord 或 Screenshot 记录中
     exists_in_db = ExecutionRecord.objects.filter(
         Q(screenshots__contains=file_path) |
         Q(screenshot_path=file_path)
     ).exists()
     if not exists_in_db:
-        # 也检查 step_logs 中的 screenshot_path
         exists_in_db = ExecutionRecord.objects.filter(
             step_logs__icontains=file_path
         ).exists()
+    if not exists_in_db:
+        exists_in_db = Screenshot.objects.filter(image=file_path).exists()
     if not exists_in_db:
         return Response({'error': '未找到关联的执行记录'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -270,6 +311,8 @@ def execute_testcase_agent(request, testcase_id):
         record.screenshots = result.get('screenshots', [])
         record.agent_response = result.get('agent_response', {})
         record.save()
+        # 创建持久化 Screenshot 记录
+        _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
         tc.status = result['status']
         tc.save(update_fields=['status'])
 
@@ -349,6 +392,8 @@ def execute_project_agent(request, project_id):
                 r.screenshots = result.get('screenshots', [])
                 r.agent_response = result.get('agent_response', {})
                 r.save()
+                # 创建持久化 Screenshot 记录
+                _create_screenshot_records(r, result.get('step_logs', []), result.get('screenshots', []))
                 t.status = result['status']
                 t.save(update_fields=['status'])
             return _on_complete
@@ -813,6 +858,8 @@ def agent_execute(request):
             record.screenshots = result.get('screenshots', [])
             record.agent_response = result.get('agent_response', {})
             record.save()
+            # 创建持久化 Screenshot 记录
+            _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
             tc.status = result['status']
             tc.save(update_fields=['status'])
 
