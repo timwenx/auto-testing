@@ -1350,6 +1350,93 @@ class EmitStepEventTest(TestCase):
         mock_get_layer.assert_called_once()
 
 
+class EmitFrameEventTest(TestCase):
+    """Tests for event_emitter._emit_frame_event."""
+
+    def setUp(self):
+        import core.event_emitter as ee
+        ee._asgi_event_loop = None
+
+    @mock.patch('asyncio.run_coroutine_threadsafe')
+    @mock.patch('channels.layers.get_channel_layer')
+    def test_emit_calls_group_send(self, mock_get_layer, mock_run_coro):
+        """正常推送帧事件到 frame channel group"""
+        import core.event_emitter as ee
+        from .event_emitter import _emit_frame_event
+        mock_layer = mock.MagicMock()
+        mock_get_layer.return_value = mock_layer
+        mock_loop = mock.MagicMock()
+        mock_loop.is_running.return_value = True
+        ee._asgi_event_loop = mock_loop
+        mock_future = mock.MagicMock()
+        mock_run_coro.return_value = mock_future
+
+        _emit_frame_event(42, 'browser_frame', {'ts': 1234567890})
+
+        mock_get_layer.assert_called_once()
+        mock_run_coro.assert_called_once()
+        self.assertEqual(mock_run_coro.call_args[0][1], mock_loop)
+
+    @mock.patch('asyncio.run_coroutine_threadsafe')
+    @mock.patch('channels.layers.get_channel_layer')
+    def test_emit_frame_heartbeat(self, mock_get_layer, mock_run_coro):
+        """frame_heartbeat 事件也通过 frame 通道推送"""
+        import core.event_emitter as ee
+        from .event_emitter import _emit_frame_event
+        mock_layer = mock.MagicMock()
+        mock_get_layer.return_value = mock_layer
+        mock_loop = mock.MagicMock()
+        mock_loop.is_running.return_value = True
+        ee._asgi_event_loop = mock_loop
+        mock_run_coro.return_value = mock.MagicMock()
+
+        _emit_frame_event(10, 'frame_heartbeat', {'ts': 9876543210})
+
+        mock_get_layer.assert_called_once()
+        mock_run_coro.assert_called_once()
+
+    def test_emit_skips_when_no_execution_id(self):
+        """execution_id 为 None 时跳过帧推送"""
+        from .event_emitter import _emit_frame_event
+        with mock.patch('channels.layers.get_channel_layer') as mock_get:
+            _emit_frame_event(None, 'browser_frame', {'ts': 123})
+            mock_get.assert_not_called()
+
+    def test_emit_skips_when_zero_execution_id(self):
+        """execution_id 为 0 时跳过帧推送"""
+        from .event_emitter import _emit_frame_event
+        with mock.patch('channels.layers.get_channel_layer') as mock_get:
+            _emit_frame_event(0, 'browser_frame', {'ts': 123})
+            mock_get.assert_not_called()
+
+    @mock.patch('channels.layers.get_channel_layer', return_value=None)
+    def test_emit_handles_none_channel_layer(self, mock_get):
+        """channel_layer 为 None 时静默跳过"""
+        import core.event_emitter as ee
+        from .event_emitter import _emit_frame_event
+        mock_loop = mock.MagicMock()
+        ee._asgi_event_loop = mock_loop
+        # 不应抛出异常
+        _emit_frame_event(1, 'browser_frame', {'ts': 123})
+
+    @mock.patch('channels.layers.get_channel_layer', side_effect=Exception('boom'))
+    def test_emit_handles_exception_silently(self, mock_get):
+        """推送异常时静默失败，不中断主流程"""
+        import core.event_emitter as ee
+        from .event_emitter import _emit_frame_event
+        mock_loop = mock.MagicMock()
+        ee._asgi_event_loop = mock_loop
+        # 不应抛出异常
+        _emit_frame_event(1, 'browser_frame', {'ts': 123})
+
+    def test_emit_skips_when_loop_not_usable(self):
+        """ASGI 事件循环不可用时跳过帧推送"""
+        from .event_emitter import _emit_frame_event
+        with mock.patch('channels.layers.get_channel_layer') as mock_get:
+            _emit_frame_event(1, 'browser_frame', {'ts': 123})
+            mock_get.assert_not_called()
+
+
 # ══════════════════════════════════════════════════════════════════
 # agent_service 辅助函数测试
 # ══════════════════════════════════════════════════════════════════
@@ -1781,3 +1868,131 @@ class ExecutionConsumerTest(TestCase):
         consumer = self._make_consumer()
         consumer.receive(text_data='hello')
         # 不应抛出异常
+
+
+class FrameConsumerTest(TestCase):
+    """Tests for consumers.FrameConsumer via Channels test utilities."""
+
+    def _make_consumer(self, execution_id=1):
+        """创建并初始化 FrameConsumer 实例"""
+        from .consumers import FrameConsumer
+        consumer = FrameConsumer()
+        consumer.scope = {
+            'url_route': {'kwargs': {'execution_id': execution_id}},
+            'type': 'websocket',
+        }
+        consumer.channel_layer = mock.MagicMock()
+        consumer.channel_name = 'test-frame-channel'
+        consumer.execution_id = execution_id
+        return consumer
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_connect_sets_frame_group_name(self, mock_async_to_sync):
+        """connect() 设置 frame_{id} group"""
+        consumer = self._make_consumer(execution_id=42)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+
+        consumer.connect()
+
+        self.assertEqual(consumer.group_name, 'frame_42')
+        self.assertEqual(consumer.execution_id, 42)
+        consumer.accept.assert_called_once()
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_connect_sends_connection_established(self, mock_async_to_sync):
+        """connect() 发送 connection_established 事件"""
+        consumer = self._make_consumer(execution_id=7)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+
+        consumer.connect()
+
+        sent_data = json.loads(consumer.send.call_args[1]['text_data'])
+        self.assertEqual(sent_data['type'], 'connection_established')
+        self.assertEqual(sent_data['execution_id'], 7)
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_connect_calls_group_add(self, mock_async_to_sync):
+        """connect() 将 channel 加入 frame group"""
+        consumer = self._make_consumer(execution_id=5)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+
+        consumer.connect()
+
+        mock_async_to_sync.assert_called_with(consumer.channel_layer.group_add)
+        mock_async_to_sync.return_value.assert_called_with(
+            'frame_5', 'test-frame-channel',
+        )
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_disconnect_calls_group_discard(self, mock_async_to_sync):
+        """disconnect() 将 channel 从 frame group 移除"""
+        consumer = self._make_consumer(execution_id=3)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+        consumer.connect()
+
+        mock_async_to_sync.reset_mock()
+
+        consumer.disconnect(1000)
+
+        mock_async_to_sync.assert_called_with(consumer.channel_layer.group_discard)
+        mock_async_to_sync.return_value.assert_called_with(
+            'frame_3', 'test-frame-channel',
+        )
+
+    def test_disconnect_safe_without_group_name(self):
+        """disconnect() 在未 connect 的情况下不报错"""
+        consumer = self._make_consumer(execution_id=1)
+        consumer.disconnect(1000)
+
+    def test_frame_event_forwards_browser_frame(self):
+        """frame_event handler 将 browser_frame 数据转发给客户端"""
+        consumer = self._make_consumer()
+        consumer.send = mock.MagicMock()
+
+        event_data = {
+            'type': 'browser_frame',
+            'ts': 1234567890,
+        }
+        consumer.frame_event({'data': event_data})
+
+        sent = json.loads(consumer.send.call_args[1]['text_data'])
+        self.assertEqual(sent['type'], 'browser_frame')
+        self.assertEqual(sent['ts'], 1234567890)
+
+    def test_frame_event_forwards_frame_heartbeat(self):
+        """frame_event handler 将 frame_heartbeat 数据转发给客户端"""
+        consumer = self._make_consumer()
+        consumer.send = mock.MagicMock()
+
+        event_data = {
+            'type': 'frame_heartbeat',
+            'ts': 9876543210,
+        }
+        consumer.frame_event({'data': event_data})
+
+        sent = json.loads(consumer.send.call_args[1]['text_data'])
+        self.assertEqual(sent['type'], 'frame_heartbeat')
+
+    def test_receive_ping_responds_pong(self):
+        """receive() 处理 ping 消息并回复 pong"""
+        consumer = self._make_consumer()
+        consumer.send = mock.MagicMock()
+
+        consumer.receive(text_data=json.dumps({'type': 'ping'}))
+
+        sent = json.loads(consumer.send.call_args[1]['text_data'])
+        self.assertEqual(sent['type'], 'pong')
+        self.assertIn('timestamp', sent)
+
+    def test_receive_invalid_json_ignored(self):
+        """receive() 忽略无效 JSON 消息"""
+        consumer = self._make_consumer()
+        consumer.send = mock.MagicMock()
+
+        consumer.receive(text_data='not json')
+        # 不应抛出异常，不应发送任何消息
+        consumer.send.assert_not_called()
