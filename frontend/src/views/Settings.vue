@@ -10,13 +10,13 @@
           <el-input v-model="settings.anthropic_api_key" placeholder="sk-ant-..." type="password" show-password />
           <div class="form-hint">Anthropic API Key，用于 AI 生成和分析测试用例</div>
         </el-form-item>
+        <el-form-item label="API URL">
+          <el-input v-model="settings.anthropic_base_url" placeholder="https://api.anthropic.com（留空使用默认）" />
+          <div class="form-hint">Anthropic API 地址，支持自定义代理或兼容端点</div>
+        </el-form-item>
         <el-form-item label="AI 模型">
-          <el-select v-model="settings.anthropic_model" filterable allow-create placeholder="选择模型">
-            <el-option label="Claude Sonnet 4" value="claude-sonnet-4-20250514" />
-            <el-option label="Claude Opus 4" value="claude-opus-4-20250514" />
-            <el-option label="Claude Haiku 3.5" value="claude-3-5-haiku-20241022" />
-          </el-select>
-          <div class="form-hint">选择 AI 模型，也可手动输入自定义模型名</div>
+          <el-input v-model="settings.anthropic_model" placeholder="claude-sonnet-4-20250514" />
+          <div class="form-hint">输入模型名称，如 claude-sonnet-4-20250514、claude-opus-4-20250514</div>
         </el-form-item>
         <el-divider content-position="left">执行引擎</el-divider>
         <el-form-item label="最大并发数">
@@ -63,6 +63,7 @@ import { ElMessage } from 'element-plus'
 
 const defaultSettings = {
   anthropic_api_key: '',
+  anthropic_base_url: '',
   anthropic_model: 'claude-sonnet-4-20250514',
   max_workers: 3,
   execution_timeout: 120,
@@ -81,6 +82,7 @@ const loadSettings = async () => {
     // 后端返回 {key: value} 字典
     settings.value = {
       anthropic_api_key: data.anthropic_api_key ?? defaultSettings.anthropic_api_key,
+      anthropic_base_url: data.anthropic_base_url ?? defaultSettings.anthropic_base_url,
       anthropic_model: data.anthropic_model ?? defaultSettings.anthropic_model,
       max_workers: parseInt(data.max_workers) || defaultSettings.max_workers,
       execution_timeout: parseInt(data.execution_timeout) || defaultSettings.execution_timeout,
@@ -98,6 +100,7 @@ const handleSave = async () => {
   try {
     await updateSettings({
       anthropic_api_key: String(settings.value.anthropic_api_key),
+      anthropic_base_url: String(settings.value.anthropic_base_url),
       anthropic_model: String(settings.value.anthropic_model),
       max_workers: String(settings.value.max_workers),
       execution_timeout: String(settings.value.execution_timeout),
@@ -116,6 +119,7 @@ const handleReset = async () => {
   try {
     await updateSettings({
       anthropic_api_key: defaultSettings.anthropic_api_key,
+      anthropic_base_url: defaultSettings.anthropic_base_url,
       anthropic_model: defaultSettings.anthropic_model,
       max_workers: String(defaultSettings.max_workers),
       execution_timeout: String(defaultSettings.execution_timeout),
