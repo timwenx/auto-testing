@@ -1,7 +1,20 @@
 @echo off
+setlocal
+
 echo === MyTest Frontend ===
-cd frontend
-echo 安装前端依赖...
+pushd "%~dp0frontend"
+if errorlevel 1 (
+	echo [ERROR] Failed to enter frontend directory.
+	exit /b 1
+)
+
+echo Installing frontend dependencies...
 call npm install
-echo 启动开发服务器 (http://localhost:3000)...
+if errorlevel 1 (
+	echo [WARN] npm install failed, continuing...
+)
+
+echo Starting dev server (http://localhost:3000)...
 call npm run dev
+
+popd
