@@ -173,63 +173,164 @@ def serve_screenshot(request):
     """
     GET /api/executions/screenshots/?path=<filepath>
     安全地提供 Agent 执行过程中生成的截图文件。
-    仅允许访问已记录在 ExecutionRecord.screenshots 或 step_logs 中的路径。
+    
+    支持的路径格式：
+    1. 简单文件名（如 "step1.png"）-> 从 media/screenshots/ 目录查找
+    2. 相对路径（如 "screenshots/step1.png"）-> 从 media/ 根目录查找
+    3. 绝对路径 -> 必须在允许的目录中（media 或 temp）
+    4. 来自 ExecutionRecord.screenshots 或 step_logs 的任何格式
+    
+    Mac/Linux 友好的路径处理，支持符号链接。
     """
+    import tempfile
+    from django.conf import settings as django_settings
+    
     file_path = request.query_params.get('path', '').strip()
     if not file_path:
         return Response({'error': '缺少 path 参数'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 规范化路径，防止目录遍历
-    try:
-        abs_path = os.path.realpath(file_path)
-    except (ValueError, TypeError):
-        return Response({'error': '无效路径'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # 安全检查 1: 文件必须存在且是文件
-    if not os.path.isfile(abs_path):
+    media_root = str(django_settings.MEDIA_ROOT)
+    temp_dir = tempfile.gettempdir()
+    
+    # 智能路径解析：尝试多个位置
+    potential_paths = []
+    
+    # 1. 直接尝试绝对路径
+    potential_paths.append(file_path)
+    
+    # 2. 如果是相对路径，尝试在多个目录下查找
+    if not os.path.isabs(file_path):
+        # 尝试 media 目录
+        potential_paths.append(os.path.join(media_root, file_path))
+        
+        # 特殊情况：如果不含目录分隔符，尝试多个子目录
+        if '/' not in file_path and '\\' not in file_path:
+            potential_paths.append(os.path.join(media_root, 'screenshots', file_path))
+        
+        # 尝试项目根目录下的 images 子目录
+        project_root = os.path.dirname(media_root)
+        potential_paths.append(os.path.join(project_root, 'images', file_path))
+    
+    # 3. 从当前工作目录开始查找
+    potential_paths.append(os.path.abspath(file_path))
+    
+    abs_path = None
+    for candidate in potential_paths:
+        try:
+            candidate_abs = os.path.abspath(candidate)
+            if os.path.isfile(candidate_abs):
+                abs_path = candidate_abs
+                break
+        except (ValueError, TypeError):
+            continue
+    
+    if not abs_path:
+        logger.warning("Screenshot file not found in any location: file_path=%s, tried=%s", file_path, potential_paths)
         raise Http404("截图文件不存在")
 
-    # 安全检查 2: 只允许访问临时目录或 media 目录下的文件
-    import tempfile
-    from django.conf import settings as django_settings
+    # 安全检查：只允许访问临时目录、media 目录或 images 目录下的文件
+    abs_path_real = os.path.realpath(abs_path)
+    media_root_real = os.path.realpath(media_root)
+    project_root = os.path.dirname(media_root)
+    images_dir = os.path.join(project_root, 'images')
+    images_dir_real = os.path.realpath(images_dir)
+    
     allowed_prefixes = [
-        tempfile.gettempdir(),
-        os.path.realpath(str(django_settings.MEDIA_ROOT)),
+        media_root,
+        media_root_real,
+        os.path.abspath(media_root),
+        images_dir,
+        images_dir_real,
+        os.path.abspath(images_dir),
+        temp_dir,
+        os.path.realpath(temp_dir),
+        os.path.abspath(temp_dir),
     ]
-    if not any(abs_path.startswith(prefix) for prefix in allowed_prefixes):
+    
+    # Mac 特殊处理：/var/folders 等临时目录
+    if temp_dir.startswith('/var/folders'):
+        allowed_prefixes.append('/private' + temp_dir if not temp_dir.startswith('/private') else temp_dir)
+    
+    allowed_prefixes_real = [os.path.realpath(p) for p in allowed_prefixes]
+    
+    path_allowed = (
+        any(abs_path.startswith(prefix + '/') or abs_path == prefix for prefix in allowed_prefixes) or
+        any(abs_path_real.startswith(prefix + '/') or abs_path_real == prefix for prefix in allowed_prefixes_real)
+    )
+    
+    if not path_allowed:
+        logger.warning(
+            "Screenshot access denied: path=%s, abs_path=%s, abs_path_real=%s, allowed_prefixes=%s",
+            file_path, abs_path, abs_path_real, allowed_prefixes_real
+        )
         return Response({'error': '不允许访问该路径'}, status=status.HTTP_403_FORBIDDEN)
 
-    # 安全检查 3: 验证路径确实存在于某个 ExecutionRecord 或 Screenshot 记录中
-    # 先检查索引查询（O(1)），再回退到 JSON 字段扫描（O(N)）
+    # 验证路径确实存在于某个 ExecutionRecord 或 Screenshot 记录中
+    def normalize_for_comparison(path):
+        """标准化路径以便比较，支持多种格式"""
+        try:
+            return os.path.realpath(os.path.abspath(path))
+        except:
+            return path
+    
+    normalized_req_path = normalize_for_comparison(file_path)
+    normalized_abs_path = normalize_for_comparison(abs_path)
+    
+    # 检查是否存在于数据库记录中
     exists_in_db = (
         ExecutionRecord.objects.filter(screenshot_path=file_path).exists()
+        or ExecutionRecord.objects.filter(screenshot_path=abs_path).exists()
+        or ExecutionRecord.objects.filter(screenshot_path=abs_path_real).exists()
         or Screenshot.objects.filter(image=file_path).exists()
+        or Screenshot.objects.filter(image=abs_path).exists()
     )
 
     if not exists_in_db:
-        # 注意：SQLite 不支持 JSONField 的 contains 查询，需在 Python 层过滤
-        # 这是兜底检查，仅当前面索引查询未命中时执行
-        exists_in_db = any(
-            file_path in (record.screenshots or [])
-            for record in ExecutionRecord.objects.only('screenshots')
-            if record.screenshots
-        )
+        # 检查 screenshots JSON 字段（用多种格式比较）
+        for record in ExecutionRecord.objects.only('screenshots'):
+            if not record.screenshots:
+                continue
+            for screenshot_path in record.screenshots:
+                if (screenshot_path == file_path or 
+                    screenshot_path == abs_path or
+                    normalize_for_comparison(screenshot_path) == normalized_req_path or
+                    normalize_for_comparison(screenshot_path) == normalized_abs_path):
+                    exists_in_db = True
+                    break
+            if exists_in_db:
+                break
 
     if not exists_in_db:
-        # 最后检查 step_logs 中是否包含该路径
+        # 检查 step_logs 中的 screenshot_path
         for record in ExecutionRecord.objects.only('step_logs'):
-            if record.step_logs:
-                for step in record.step_logs:
-                    if isinstance(step, dict) and file_path in str(step):
+            if not record.step_logs:
+                continue
+            for step in record.step_logs:
+                if isinstance(step, dict):
+                    sp = step.get('screenshot_path', '')
+                    if (sp == file_path or 
+                        sp == abs_path or
+                        normalize_for_comparison(sp) == normalized_req_path or
+                        normalize_for_comparison(sp) == normalized_abs_path):
                         exists_in_db = True
                         break
             if exists_in_db:
                 break
+    
     if not exists_in_db:
+        logger.warning(
+            "Screenshot not found in DB records: file_path=%s, abs_path=%s",
+            file_path, abs_path
+        )
         return Response({'error': '未找到关联的执行记录'}, status=status.HTTP_404_NOT_FOUND)
 
+    # 返回文件
     content_type = mimetypes.guess_type(abs_path)[0] or 'image/png'
-    return FileResponse(open(abs_path, 'rb'), content_type=content_type)
+    try:
+        return FileResponse(open(abs_path, 'rb'), content_type=content_type)
+    except IOError as e:
+        logger.error("Failed to read screenshot file: %s", e)
+        raise Http404("无法读取截图文件")
 
 
 @api_view(['POST'])
