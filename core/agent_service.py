@@ -292,15 +292,16 @@ class AgentRunner:
 
         try:
             record = self._execution_record
-            # 读取当前 step_logs 并追加新步骤
+            # 先在当前线程更新 ORM 对象的内存状态，
+            # 确保下一次 _persist_step 调用（同一 Agent 线程）能读到最新列表。
             current_logs = list(record.step_logs or [])
             current_logs.append(step)
+            record.step_logs = current_logs
+            record.tool_calls_count = len(current_logs)
 
             def _save_step():
                 """在独立线程中执行 DB 写入，避免 Playwright 事件循环触发 Django async-safety 检查"""
                 try:
-                    record.step_logs = current_logs
-                    record.tool_calls_count = len(current_logs)
                     record.save(update_fields=['step_logs', 'tool_calls_count'])
                 except Exception as exc:
                     logger.warning("[Agent] 步骤持久化写入失败 (step %d): %s", step_num, exc)
