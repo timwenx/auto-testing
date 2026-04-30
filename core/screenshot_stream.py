@@ -14,6 +14,11 @@
     maybe_capture() 将 JPEG bytes 暂存在模块级字典 _latest_frames 中，
     同时通过 WebSocket 只发送轻量时间戳通知（<100 bytes）。
     前端收到通知后通过 HTTP GET /api/executions/<id>/latest_frame/ 拉取图片。
+
+Watchdog 模式:
+    _run_with_frame_watchdog() 在浏览器工具执行期间启动一个后台线程，
+    定期调用 maybe_capture() 保持截图流不断流。后台线程使用 daemon 模式，
+    工具执行结束后自动退出。
 """
 import logging
 import threading
@@ -24,6 +29,7 @@ logger = logging.getLogger(__name__)
 # 默认配置
 DEFAULT_INTERVAL = 0.5  # 500ms
 DEFAULT_QUALITY = 40    # JPEG quality (lower = smaller file)
+WATCHDOG_INTERVAL = 2.0  # watchdog 截图间隔（秒）
 
 # 模块级实时帧缓存 — {execution_id: (timestamp, jpeg_bytes)}
 # 只保留每执行的最新一帧，stop() 时清除对应条目。
@@ -126,3 +132,75 @@ class ScreenshotStream:
             # 截图错误不应中断 Agent 执行，但必须以 WARNING 级别可见
             logger.warning("[ScreenshotStream] Screenshot failed for execution %s: %s",
                            self._execution_id, e)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Watchdog — 工具执行期间后台截图
+# ══════════════════════════════════════════════════════════════════
+
+class _FrameWatchdog:
+    """
+    后台截图 watchdog — 在浏览器工具执行期间以固定间隔调用
+    ScreenshotStream.maybe_capture()，确保长耗时操作期间截图流不会中断。
+
+    注意: Playwright sync API 使用进程间 IPC（pipe），page.screenshot()
+    调用不依赖 Python 绿程(greenlet)绑定，因此可以从后台线程安全调用。
+    """
+
+    def __init__(self, screenshot_stream, interval=None):
+        self._stream = screenshot_stream
+        self._interval = interval or WATCHDOG_INTERVAL
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        """启动后台截图线程"""
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name='frame-watchdog',
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        """停止后台截图线程"""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=3)
+            self._thread = None
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                self._stream.maybe_capture()
+            except Exception as e:
+                logger.warning("[FrameWatchdog] 截图异常: %s", e)
+            # 等待间隔或 stop 信号
+            self._stop_event.wait(timeout=self._interval)
+
+
+def run_with_frame_watchdog(screenshot_stream, fn):
+    """
+    在执行 fn() 期间启动后台截图 watchdog，确保长耗时的浏览器操作
+    期间截图流不会中断。
+
+    用法:
+        result = run_with_frame_watchdog(self._screenshot_stream, lambda: executor(input, context))
+
+    Args:
+        screenshot_stream: ScreenshotStream 实例（可为 None）
+        fn: 要执行的函数（无参数，返回结果）
+
+    Returns:
+        fn() 的返回值
+    """
+    if not screenshot_stream or not screenshot_stream.is_running():
+        return fn()
+
+    watchdog = _FrameWatchdog(screenshot_stream)
+    watchdog.start()
+    try:
+        return fn()
+    finally:
+        watchdog.stop()
