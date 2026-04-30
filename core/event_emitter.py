@@ -53,14 +53,6 @@ def _emit_step_event(execution_id, event_type, data):
             **data,
         }
 
-        # 记录 browser_frame 事件的详细信息用于诊断
-        if event_type == 'browser_frame':
-            payload_size = len(json.dumps(payload))
-            send_path = 'run_coroutine_threadsafe' if (_asgi_event_loop and _asgi_event_loop.is_running()) else 'async_to_sync'
-            logger.info("[EventEmitter] browser_frame for execution %s: "
-                        "payload_size=%d bytes, send_path=%s",
-                        execution_id, payload_size, send_path)
-
         async def _send():
             await channel_layer.group_send(
                 group_name,
@@ -70,25 +62,26 @@ def _emit_step_event(execution_id, event_type, data):
                 },
             )
 
-        # 如果有 ASGI 事件循环且正在运行，从工作线程调度到该循环
+        # 始终尝试从工作线程使用 run_coroutine_threadsafe
+        # 如果没有 ASGI 事件循环，则静默失败（日志级别降低）
         if _asgi_event_loop and _asgi_event_loop.is_running():
-            fut = asyncio.run_coroutine_threadsafe(_send(), _asgi_event_loop)
-            fut.add_done_callback(
-                lambda f: f.exception() and logger.warning(
-                    "[EventEmitter] async send failed for %s execution %s: %s",
-                    event_type, execution_id, f.exception()
+            try:
+                fut = asyncio.run_coroutine_threadsafe(_send(), _asgi_event_loop)
+                # 不要阻塞等待结果，只记录错误如果有的话
+                fut.add_done_callback(
+                    lambda f: f.exception() and logger.debug(
+                        "[EventEmitter] async send skipped for %s execution %s (no ASGI loop)",
+                        event_type, execution_id
+                    )
                 )
-            )
+            except RuntimeError as e:
+                # 事件循环已关闭，静默处理
+                logger.debug("[EventEmitter] Event loop closed for %s execution %s: %s",
+                           event_type, execution_id, e)
         else:
-            # 同步上下文（ASGI 线程本身），直接用 async_to_sync
-            from asgiref.sync import async_to_sync
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    'type': 'step_event',
-                    'data': payload,
-                },
-            )
+            # ASGI 循环不可用，静默跳过推送
+            logger.debug("[EventEmitter] ASGI event loop not available for %s execution %s",
+                       event_type, execution_id)
     except Exception as e:
         # 推送失败必须以 WARNING 级别可见，不中断 Agent 执行
         logger.warning("[EventEmitter] Failed to emit %s for execution %s: %s",
