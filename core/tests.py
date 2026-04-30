@@ -4,6 +4,7 @@ Unit tests for core views, models, and serializers.
 import json
 import os
 import tempfile
+import threading
 from unittest import mock
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -1242,3 +1243,388 @@ class ExtractScreenshotsTest(TestCase):
         paths = _extract_screenshots(agent_result)
         self.assertEqual(len(paths), 1)
         self.assertEqual(paths[0], '/tmp/test.png')
+
+
+# ══════════════════════════════════════════════════════════════════
+# event_emitter 测试
+# ══════════════════════════════════════════════════════════════════
+
+class EmitStepEventTest(TestCase):
+    """Tests for event_emitter._emit_step_event."""
+
+    def setUp(self):
+        # 重置全局状态，防止测试间干扰
+        import core.event_emitter as ee
+        ee._asgi_event_loop = None
+
+    @mock.patch('asgiref.sync.async_to_sync')
+    @mock.patch('channels.layers.get_channel_layer')
+    def test_emit_calls_group_send(self, mock_get_layer, mock_async_to_sync):
+        """正常推送事件到 channel group"""
+        from .event_emitter import _emit_step_event
+        mock_layer = mock.MagicMock()
+        mock_get_layer.return_value = mock_layer
+        mock_sync_fn = mock.MagicMock()
+        mock_async_to_sync.return_value = mock_sync_fn
+
+        _emit_step_event(42, 'step_complete', {'step_num': 1, 'action': 'browser_click'})
+
+        mock_get_layer.assert_called_once()
+        mock_async_to_sync.assert_called_once_with(mock_layer.group_send)
+
+    @mock.patch('asgiref.sync.async_to_sync')
+    @mock.patch('channels.layers.get_channel_layer')
+    def test_emit_group_name(self, mock_get_layer, mock_async_to_sync):
+        """验证 group name 格式"""
+        from .event_emitter import _emit_step_event
+        mock_layer = mock.MagicMock()
+        mock_get_layer.return_value = mock_layer
+        mock_sync_fn = mock.MagicMock()
+        mock_async_to_sync.return_value = mock_sync_fn
+
+        _emit_step_event(99, 'execution_end', {'status': 'completed'})
+
+        # group_send 通过 async_to_sync 包装后，被调用时参数为 (group_name, payload)
+        call_args = mock_sync_fn.call_args
+        self.assertEqual(call_args[0][0], 'execution_99')
+
+    def test_emit_skips_when_no_execution_id(self):
+        """execution_id 为 None 时跳过推送"""
+        from .event_emitter import _emit_step_event
+        with mock.patch('channels.layers.get_channel_layer') as mock_get:
+            _emit_step_event(None, 'step_start', {'action': 'test'})
+            mock_get.assert_not_called()
+
+    def test_emit_skips_when_zero_execution_id(self):
+        """execution_id 为 0 时跳过推送"""
+        from .event_emitter import _emit_step_event
+        with mock.patch('channels.layers.get_channel_layer') as mock_get:
+            _emit_step_event(0, 'step_start', {'action': 'test'})
+            mock_get.assert_not_called()
+
+    @mock.patch('channels.layers.get_channel_layer', return_value=None)
+    def test_emit_handles_none_channel_layer(self, mock_get):
+        """channel_layer 为 None 时静默跳过"""
+        from .event_emitter import _emit_step_event
+        # 不应抛出异常
+        _emit_step_event(1, 'step_start', {'action': 'test'})
+
+    @mock.patch('channels.layers.get_channel_layer', side_effect=Exception('boom'))
+    def test_emit_handles_exception_silently(self, mock_get):
+        """推送异常时静默失败，不中断主流程"""
+        from .event_emitter import _emit_step_event
+        # 不应抛出异常
+        _emit_step_event(1, 'step_start', {'action': 'test'})
+
+    @mock.patch('asgiref.sync.async_to_sync')
+    @mock.patch('channels.layers.get_channel_layer')
+    def test_emit_payload_format(self, mock_get_layer, mock_async_to_sync):
+        """验证推送数据包含 type 和 timestamp"""
+        from .event_emitter import _emit_step_event
+        mock_layer = mock.MagicMock()
+        mock_get_layer.return_value = mock_layer
+        mock_sync_fn = mock.MagicMock()
+        mock_async_to_sync.return_value = mock_sync_fn
+
+        _emit_step_event(1, 'step_complete', {'step_num': 3, 'action': 'browser_fill'})
+
+        # async_to_sync(group_send) 被调用时参数为 (group_name, payload)
+        payload = mock_sync_fn.call_args[0][1]
+        self.assertEqual(payload['type'], 'step_event')
+        self.assertIn('data', payload)
+        self.assertEqual(payload['data']['type'], 'step_complete')
+        self.assertEqual(payload['data']['step_num'], 3)
+        self.assertIn('timestamp', payload['data'])
+
+
+# ══════════════════════════════════════════════════════════════════
+# agent_service 辅助函数测试
+# ══════════════════════════════════════════════════════════════════
+
+class ExtractTargetTest(TestCase):
+    """Tests for agent_service._extract_target."""
+
+    def test_browser_navigate(self):
+        from .agent_service import _extract_target
+        result = _extract_target('browser_navigate', {'url': 'https://example.com'})
+        self.assertEqual(result, 'https://example.com')
+
+    def test_browser_click(self):
+        from .agent_service import _extract_target
+        result = _extract_target('browser_click', {'selector': '#btn'})
+        self.assertEqual(result, '#btn')
+
+    def test_browser_fill(self):
+        from .agent_service import _extract_target
+        result = _extract_target('browser_fill', {'selector': 'input[name=email]'})
+        self.assertEqual(result, 'input[name=email]')
+
+    def test_browser_screenshot(self):
+        from .agent_service import _extract_target
+        result = _extract_target('browser_screenshot', {})
+        self.assertEqual(result, 'screenshot')
+
+    def test_report_result(self):
+        from .agent_service import _extract_target
+        result = _extract_target('report_result', {'summary': 'All tests passed'})
+        self.assertEqual(result, 'All tests passed')
+
+    def test_list_files(self):
+        from .agent_service import _extract_target
+        result = _extract_target('list_files', {'path': '/src'})
+        self.assertEqual(result, '/src')
+
+    def test_read_file(self):
+        from .agent_service import _extract_target
+        result = _extract_target('read_file', {'file_path': '/src/index.js'})
+        self.assertEqual(result, '/src/index.js')
+
+    def test_search_code(self):
+        from .agent_service import _extract_target
+        result = _extract_target('search_code', {'query': 'login'})
+        self.assertEqual(result, 'login')
+
+    def test_unknown_tool(self):
+        from .agent_service import _extract_target
+        result = _extract_target('unknown_tool', {'foo': 'bar'})
+        self.assertEqual(result, '')
+
+    def test_non_dict_input(self):
+        from .agent_service import _extract_target
+        result = _extract_target('browser_click', 'not a dict')
+        self.assertEqual(result, '')
+
+    def test_missing_key(self):
+        from .agent_service import _extract_target
+        result = _extract_target('browser_click', {})
+        self.assertEqual(result, '')
+
+
+# ══════════════════════════════════════════════════════════════════
+# ScreenshotStream 测试
+# ══════════════════════════════════════════════════════════════════
+
+class ScreenshotStreamTest(TestCase):
+    """Tests for screenshot_stream.ScreenshotStream lifecycle."""
+
+    def test_initial_state(self):
+        """新建 stream 默认未运行"""
+        from .screenshot_stream import ScreenshotStream
+        stream = ScreenshotStream()
+        self.assertFalse(stream.is_running())
+        self.assertIsNone(stream._page)
+        self.assertIsNone(stream._execution_id)
+
+    def test_start_sets_page_and_execution_id(self):
+        """start() 存储 page 和 execution_id"""
+        from .screenshot_stream import ScreenshotStream
+        mock_page = mock.MagicMock()
+        stream = ScreenshotStream()
+
+        stream.start(mock_page, 42)
+
+        self.assertEqual(stream._page, mock_page)
+        self.assertEqual(stream._execution_id, 42)
+        self.assertTrue(stream.is_running())
+        self.assertGreater(stream._last_capture_time, 0)
+
+    def test_stop_before_start_is_safe(self):
+        """未启动就 stop() 不报错"""
+        from .screenshot_stream import ScreenshotStream
+        stream = ScreenshotStream()
+        stream.stop()  # 不应抛出异常
+
+    def test_start_then_stop_clears_refs(self):
+        """start 后 stop 清理引用"""
+        from .screenshot_stream import ScreenshotStream
+        mock_page = mock.MagicMock()
+        stream = ScreenshotStream()
+
+        stream.start(mock_page, 5)
+        self.assertTrue(stream.is_running())
+
+        stream.stop()
+        self.assertFalse(stream.is_running())
+        self.assertIsNone(stream._page)
+        self.assertIsNone(stream._execution_id)
+
+
+class ScreenshotStreamRunTest(TestCase):
+    """Tests for ScreenshotStream.maybe_capture (unit-level)."""
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_maybe_capture_emits_browser_frame(self, mock_emit):
+        """maybe_capture 在间隔到达时截图并推送事件"""
+        from .screenshot_stream import ScreenshotStream
+        stream = ScreenshotStream(interval=0, quality=50)
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = False
+        mock_page.screenshot.return_value = b'\xff\xd8fake_jpeg'
+        stream.start(mock_page, 10)
+        # 设置 last_capture_time 为过去，确保间隔已过
+        stream._last_capture_time = 0
+
+        stream.maybe_capture()
+
+        mock_page.screenshot.assert_called_once_with(type='jpeg', quality=50)
+        mock_emit.assert_called_once()
+        call_args = mock_emit.call_args[0]
+        self.assertEqual(call_args[0], 10)
+        self.assertEqual(call_args[1], 'browser_frame')
+        self.assertIn('image', call_args[2])
+        self.assertTrue(call_args[2]['image'].startswith('data:image/jpeg;base64,'))
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_maybe_capture_skips_closed_page(self, mock_emit):
+        """page.is_closed() 为 True 时不截图"""
+        from .screenshot_stream import ScreenshotStream
+        stream = ScreenshotStream(interval=0)
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = True
+        stream.start(mock_page, 10)
+
+        stream.maybe_capture()
+
+        mock_page.screenshot.assert_not_called()
+        mock_emit.assert_not_called()
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_maybe_capture_skips_within_interval(self, mock_emit):
+        """间隔内重复调用不截图"""
+        from .screenshot_stream import ScreenshotStream
+        stream = ScreenshotStream(interval=999)  # 很长的间隔
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = False
+        stream.start(mock_page, 10)
+
+        stream.maybe_capture()
+
+        mock_page.screenshot.assert_not_called()
+        mock_emit.assert_not_called()
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_maybe_capture_handles_screenshot_error(self, mock_emit):
+        """截图异常时静默失败，不中断主流程"""
+        from .screenshot_stream import ScreenshotStream
+        stream = ScreenshotStream(interval=0)
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = False
+        mock_page.screenshot.side_effect = Exception('browser crash')
+        stream.start(mock_page, 10)
+        stream._last_capture_time = 0
+
+        # 不应抛出异常
+        stream.maybe_capture()
+        mock_emit.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════
+# ExecutionConsumer 测试
+# ══════════════════════════════════════════════════════════════════
+
+class ExecutionConsumerTest(TestCase):
+    """Tests for consumers.ExecutionConsumer via Channels test utilities."""
+
+    def _make_consumer(self, execution_id=1):
+        """创建并初始化 consumer 实例"""
+        from .consumers import ExecutionConsumer
+        consumer = ExecutionConsumer()
+        consumer.scope = {
+            'url_route': {'kwargs': {'execution_id': execution_id}},
+            'type': 'websocket',
+        }
+        consumer.channel_layer = mock.MagicMock()
+        consumer.channel_name = 'test-channel'
+        return consumer
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_connect_sets_group_name(self, mock_async_to_sync):
+        """connect() 设置 group_name 和 execution_id"""
+        consumer = self._make_consumer(execution_id=42)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+
+        consumer.connect()
+
+        self.assertEqual(consumer.group_name, 'execution_42')
+        self.assertEqual(consumer.execution_id, 42)
+        consumer.accept.assert_called_once()
+        consumer.send.assert_called_once()
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_connect_sends_connection_established(self, mock_async_to_sync):
+        """connect() 发送 connection_established 事件"""
+        consumer = self._make_consumer(execution_id=7)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+
+        consumer.connect()
+
+        sent_data = json.loads(consumer.send.call_args[1]['text_data'])
+        self.assertEqual(sent_data['type'], 'connection_established')
+        self.assertEqual(sent_data['execution_id'], 7)
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_connect_calls_group_add(self, mock_async_to_sync):
+        """connect() 将 channel 加入 group"""
+        consumer = self._make_consumer(execution_id=5)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+
+        consumer.connect()
+
+        # async_to_sync(channel_layer.group_add) 被调用
+        mock_async_to_sync.assert_called_with(consumer.channel_layer.group_add)
+        # 返回的 sync 函数被调用时参数为 (group_name, channel_name)
+        mock_async_to_sync.return_value.assert_called_with(
+            'execution_5', 'test-channel',
+        )
+
+    @mock.patch('core.consumers.async_to_sync')
+    def test_disconnect_calls_group_discard(self, mock_async_to_sync):
+        """disconnect() 将 channel 从 group 移除"""
+        consumer = self._make_consumer(execution_id=3)
+        consumer.accept = mock.MagicMock()
+        consumer.send = mock.MagicMock()
+        consumer.connect()
+
+        # 重置 mock 以隔离 connect 和 disconnect 的调用
+        mock_async_to_sync.reset_mock()
+
+        consumer.disconnect(1000)
+
+        mock_async_to_sync.assert_called_with(consumer.channel_layer.group_discard)
+        mock_async_to_sync.return_value.assert_called_with(
+            'execution_3', 'test-channel',
+        )
+
+    def test_disconnect_safe_without_group_name(self):
+        """disconnect() 在未 connect 的情况下不报错"""
+        consumer = self._make_consumer(execution_id=1)
+        # 不调用 connect()，直接 disconnect
+        consumer.disconnect(1000)
+        # 不应抛出异常
+
+    def test_step_event_forwards_data(self):
+        """step_event handler 将 data 转发给 WebSocket 客户端"""
+        consumer = self._make_consumer()
+        consumer.send = mock.MagicMock()
+
+        event_data = {
+            'type': 'step_complete',
+            'step_num': 3,
+            'action': 'browser_click',
+            'target': '#btn',
+            'timestamp': '2025-01-01T00:00:00',
+        }
+        consumer.step_event({'data': event_data})
+
+        sent = json.loads(consumer.send.call_args[1]['text_data'])
+        self.assertEqual(sent['type'], 'step_complete')
+        self.assertEqual(sent['step_num'], 3)
+
+    def test_receive_is_noop(self):
+        """receive() 是预留扩展，不报错"""
+        consumer = self._make_consumer()
+        consumer.receive(text_data='hello')
+        # 不应抛出异常

@@ -1,15 +1,17 @@
 """
-截图流服务 — 独立守护线程，定期对 Playwright page 截图并通过 WebSocket 推送。
+截图流服务 — 同线程轮询模型，在 Agent 的 Playwright 线程中定期截图并推送。
 
 用法:
     stream = ScreenshotStream()
     stream.start(page, execution_id)
-    ...
+    ...  # 在 Agent 循环中定期调用 stream.maybe_capture()
     stream.stop()
+
+注意: 不能从独立线程调用 page.screenshot()，因为 Playwright sync API
+      的 greenlet 绑定在初始化线程上，跨线程调用会导致 greenlet.error。
 """
 import base64
 import logging
-import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -21,17 +23,16 @@ DEFAULT_QUALITY = 60    # JPEG quality
 
 class ScreenshotStream:
     """
-    在守护线程中以固定间隔对 Playwright page 执行截图，
-    编码为 base64 data URL 后通过 event_emitter 推送到 WebSocket。
+    同线程轮询截图 — 在 Agent 主循环（Playwright 所在线程）中调用
+    maybe_capture()，每隔一定时间对 page 截图并通过 WebSocket 推送。
     """
 
     def __init__(self, interval=None, quality=None):
         self.interval = interval or DEFAULT_INTERVAL
         self.quality = quality or DEFAULT_QUALITY
-        self._thread = None
-        self._stop_event = threading.Event()
         self._page = None
         self._execution_id = None
+        self._last_capture_time = 0
 
     def start(self, page, execution_id):
         """
@@ -41,55 +42,47 @@ class ScreenshotStream:
             page: Playwright Page 实例
             execution_id: 执行记录 ID
         """
-        if self._thread and self._thread.is_alive():
-            logger.warning("[ScreenshotStream] Already running, stop first")
-            return
-
         self._page = page
         self._execution_id = execution_id
-        self._stop_event.clear()
-
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f'screenshot-stream-{execution_id}',
-            daemon=True,
-        )
-        self._thread.start()
+        self._last_capture_time = time.time()
         logger.info("[ScreenshotStream] Started for execution %s (interval=%.1fs)",
                      execution_id, self.interval)
 
     def stop(self):
         """停止截图流"""
-        self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=self.interval * 3)
         self._page = None
         self._execution_id = None
         logger.info("[ScreenshotStream] Stopped")
 
     def is_running(self):
         """检查截图流是否正在运行"""
-        return self._thread is not None and self._thread.is_alive()
+        return self._page is not None
 
-    def _run(self):
-        """守护线程主循环"""
-        from .event_emitter import _emit_step_event
+    def maybe_capture(self):
+        """
+        在 Playwright 所在线程中调用。如果距上次截图已超过 interval，
+        则执行截图并通过 event_emitter 推送。
+        """
+        if not self._page or self._page.is_closed():
+            return
 
-        while not self._stop_event.is_set():
-            try:
-                if self._page and not self._page.is_closed():
-                    screenshot_bytes = self._page.screenshot(
-                        type='jpeg',
-                        quality=self.quality,
-                    )
-                    b64_str = base64.b64encode(screenshot_bytes).decode('ascii')
-                    data_url = f'data:image/jpeg;base64,{b64_str}'
+        now = time.time()
+        if now - self._last_capture_time < self.interval:
+            return
 
-                    _emit_step_event(self._execution_id, 'browser_frame', {
-                        'image': data_url,
-                    })
-            except Exception as e:
-                # 静默失败 — 截图错误不应中断 Agent 执行
-                logger.debug("[ScreenshotStream] Screenshot failed: %s", e)
+        self._last_capture_time = now
+        try:
+            screenshot_bytes = self._page.screenshot(
+                type='jpeg',
+                quality=self.quality,
+            )
+            b64_str = base64.b64encode(screenshot_bytes).decode('ascii')
+            data_url = f'data:image/jpeg;base64,{b64_str}'
 
-            self._stop_event.wait(self.interval)
+            from .event_emitter import _emit_step_event
+            _emit_step_event(self._execution_id, 'browser_frame', {
+                'image': data_url,
+            })
+        except Exception as e:
+            # 静默失败 — 截图错误不应中断 Agent 执行
+            logger.debug("[ScreenshotStream] Screenshot failed: %s", e)

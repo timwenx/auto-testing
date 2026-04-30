@@ -11,6 +11,7 @@ refine_testcase_with_agent — 无工具的单用例对话式调整。
 """
 import json
 import logging
+import sys
 import time
 
 from .agent_tools import get_tool_schemas, get_tool_executor, get_browser_tool_names
@@ -281,6 +282,10 @@ class AgentRunner:
                 turn += 1
                 logger.info("[Agent] Turn %d/%d", turn, max_turns)
 
+                # 同线程截图轮询（浏览器已打开时）
+                if self._screenshot_stream:
+                    self._screenshot_stream.maybe_capture()
+
                 # 调用 Claude API
                 response = client.messages.create(
                     model=model,
@@ -374,6 +379,10 @@ class AgentRunner:
                             'duration_ms': duration_ms,
                         })
 
+                    # 同线程截图轮询（每个工具调用之后）
+                    if self._screenshot_stream:
+                        self._screenshot_stream.maybe_capture()
+
                     tool_results.append({
                         'type': 'tool_result',
                         'tool_use_id': tool_use.id,
@@ -415,15 +424,30 @@ class AgentRunner:
 
         logger.info("[Agent] 初始化 Playwright 浏览器")
         try:
+            import asyncio
             from playwright.sync_api import sync_playwright
             from .models import SystemSetting
-            headless_str = SystemSetting.get('agent_headless', 'true')
-            headless = headless_str.strip().lower() in ('true', '1', 'yes')
-            self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=headless)
-            self._page = self._browser.new_page()
-            context['page'] = self._page
-            self._browser_used = True
+
+            # Windows 上 Django 使用 SelectorEventLoop，但 Playwright 需要
+            # ProactorEventLoop 才能创建子进程（启动浏览器进程）。
+            # 临时切换策略，Playwright 创建完自己的事件循环后即可恢复。
+            restore_policy = None
+            if sys.platform == 'win32':
+                restore_policy = asyncio.get_event_loop_policy()
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+            try:
+                headless_str = SystemSetting.get('agent_headless', 'true')
+                headless = headless_str.strip().lower() in ('true', '1', 'yes')
+                self._playwright = sync_playwright().start()
+                self._browser = self._playwright.chromium.launch(headless=headless)
+                self._page = self._browser.new_page()
+                context['page'] = self._page
+                self._browser_used = True
+            finally:
+                if restore_policy is not None:
+                    asyncio.set_event_loop_policy(restore_policy)
+
         except Exception as e:
             logger.error("[Agent] 浏览器初始化失败: %s", e)
             raise RuntimeError(f"Playwright 浏览器初始化失败: {e}")
