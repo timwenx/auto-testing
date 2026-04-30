@@ -13,6 +13,9 @@ export default defineConfig({
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
+        // 禁用代理超时，防止长时间无消息时连接被断开
+        timeout: 0,
+        proxyTimeout: 0,
       },
     },
   },
