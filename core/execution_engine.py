@@ -271,6 +271,7 @@ def _build_step_logs(agent_result: dict) -> list:
             'result': output[:300],  # 截断避免过大
             'screenshot_path': screenshot_path,
             'timestamp': call.get('timestamp', ''),
+            'duration_ms': call.get('duration_ms', 0),
         }
         steps.append(step)
 

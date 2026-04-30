@@ -364,18 +364,19 @@ class AgentRunner:
                             logger.exception("[Agent] 工具执行异常: %s", tool_name)
                             result_text = f"Error: {e}"
 
-                    # 记录日志
+                    # 记录日志（含 duration_ms 用于回放计时）
+                    duration_ms = int((time.time() - step_start_time) * 1000)
                     self._tool_calls_log.append({
                         'turn': turn,
                         'tool': tool_name,
                         'input': tool_input,
                         'output': result_text[:500],  # 截断避免日志过大
                         'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                        'duration_ms': duration_ms,
                     })
 
                     # 推送步骤完成事件
                     if self.execution_id:
-                        duration_ms = int((time.time() - step_start_time) * 1000)
                         screenshot_path = ''
                         if '截图已保存:' in (result_text or ''):
                             screenshot_path = result_text.split('截图已保存:')[-1].strip()
