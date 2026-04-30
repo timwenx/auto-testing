@@ -231,6 +231,7 @@ class AgentRunner:
         self._playwright = None
         self._browser = None
         self._page = None
+        self._screenshot_stream = None
         # 执行日志
         self._tool_calls_log = []
         self._total_input_tokens = 0
@@ -427,8 +428,25 @@ class AgentRunner:
             logger.error("[Agent] 浏览器初始化失败: %s", e)
             raise RuntimeError(f"Playwright 浏览器初始化失败: {e}")
 
+        # 启动截图流（Phase 2 — 实时浏览器画面推送）
+        if self.execution_id:
+            try:
+                from .screenshot_stream import ScreenshotStream
+                self._screenshot_stream = ScreenshotStream()
+                self._screenshot_stream.start(self._page, self.execution_id)
+            except Exception as e:
+                logger.warning("[Agent] 截图流启动失败（非致命）: %s", e)
+
     def _cleanup_browser(self, context):
         """清理浏览器资源"""
+        # 先停止截图流（在关闭 page 之前）
+        if self._screenshot_stream:
+            try:
+                self._screenshot_stream.stop()
+            except Exception as e:
+                logger.warning("[Agent] 停止截图流失败: %s", e)
+            self._screenshot_stream = None
+
         if not self._browser_used:
             return
 

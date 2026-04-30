@@ -48,8 +48,13 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="执行时间" width="170" />
-        <el-table-column label="操作" min-width="180" fixed="right">
+        <el-table-column label="操作" min-width="220" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'running'"
+              size="small" text type="primary"
+              @click="navigateToObserver(row.id)"
+            >观察</el-button>
             <el-button size="small" text type="primary" @click="showDetail(row)">详情</el-button>
             <el-button size="small" text type="warning" @click="showLog(row)">日志</el-button>
             <el-button size="small" text type="success" @click="handleAnalyze(row)">AI 分析</el-button>
@@ -61,6 +66,11 @@
     <!-- 详情弹窗 -->
     <el-dialog v-model="showDetailDialog" title="执行详情" width="800px" top="5vh">
       <template v-if="detailRecord">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;" v-if="detailRecord.status === 'running'">
+          <el-button type="primary" size="small" @click="navigateToObserver(detailRecord.id); showDetailDialog = false">
+            <el-icon><Monitor /></el-icon> 观察执行
+          </el-button>
+        </div>
         <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
           <el-descriptions-item label="用例">{{ detailRecord.testcase_name || '-' }}</el-descriptions-item>
           <el-descriptions-item label="模式">
@@ -173,9 +183,13 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { getExecutions, getProjects, aiAnalyzeResult } from '../api'
 import { ElMessage } from 'element-plus'
+import { Monitor } from '@element-plus/icons-vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
+
+const router = useRouter()
 
 const POLL_INTERVAL = 5000
 
@@ -262,6 +276,10 @@ const showDetail = (row) => {
 const showLog = (row) => {
   logRecord.value = row
   showLogDialog.value = true
+}
+
+const navigateToObserver = (id) => {
+  router.push({ name: 'ExecutionObserver', params: { id } })
 }
 
 const handleAnalyze = async (row) => {
