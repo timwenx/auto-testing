@@ -350,7 +350,16 @@ class AgentRunner:
                         result_text = f"Error: 未知工具 '{tool_name}'"
                     else:
                         try:
-                            result_text = executor(tool_input, context)
+                            if tool_name in browser_tool_names and self._screenshot_stream:
+                                # 浏览器工具：在后台 watchdog 线程定期截图，
+                                # 确保长耗时操作（如 page.goto 30s）期间截图流不断流
+                                from .screenshot_stream import run_with_frame_watchdog
+                                result_text = run_with_frame_watchdog(
+                                    self._screenshot_stream,
+                                    lambda: executor(tool_input, context),
+                                )
+                            else:
+                                result_text = executor(tool_input, context)
                         except Exception as e:
                             logger.exception("[Agent] 工具执行异常: %s", tool_name)
                             result_text = f"Error: {e}"
