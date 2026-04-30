@@ -68,6 +68,22 @@ def _save_agent_result(record, result):
     step_logs 和 tool_calls_count 已通过 AgentRunner._persist_step() 实时写入，
     此处只更新最终状态、耗时、日志等字段。
     """
+    # step_logs 已通过 AgentRunner._persist_step() 实时写入 DB（tool_calls_count 也已更新）；
+    # 但仍在此处兜底写入，以兼容直接调用 _save_agent_result 的场景（如单元测试、script 模式）。
+    if result.get('step_logs'):
+        record.step_logs = result['step_logs']
+
+    # tool_calls_count 兜底：若 _persist_step 已设置则保留，否则从 step_logs / script 推断。
+    if record.tool_calls_count == 0:
+        count = len(result.get('step_logs', []))
+        if count == 0:
+            try:
+                script_data = json.loads(result.get('script', '{}'))
+                count = len(script_data.get('tool_calls', []))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        record.tool_calls_count = count
+
     record.status = result['status']
     record.log = result['log']
     record.error_message = result['error_message']
@@ -76,6 +92,7 @@ def _save_agent_result(record, result):
     record.agent_response = result.get('agent_response', {})
     record.save(update_fields=[
         'status', 'log', 'error_message', 'duration', 'screenshots', 'agent_response',
+        'step_logs', 'tool_calls_count',
     ])
     _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
 
@@ -297,6 +314,16 @@ def serve_screenshot(request):
         or Screenshot.objects.filter(image=file_path).exists()
         or Screenshot.objects.filter(image=abs_path).exists()
     )
+
+    # auto_captured 截图的 Screenshot.image 存储的是 media_root 相对路径
+    if not exists_in_db:
+        try:
+            from django.conf import settings as django_settings
+            media_root = str(django_settings.MEDIA_ROOT)
+            relative_to_media = os.path.relpath(abs_path_real, media_root)
+            exists_in_db = Screenshot.objects.filter(image=relative_to_media).exists()
+        except (ValueError, Exception):
+            pass
 
     if not exists_in_db:
         # 检查 screenshots JSON 字段（用多种格式比较）
