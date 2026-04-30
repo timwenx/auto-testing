@@ -142,10 +142,19 @@ watch(status, async (newStatus, oldStatus) => {
         for (const step of restSteps) {
           const exists = steps.value.some(s => s.step_num === step.step_num && s.state === 'completed')
           if (!exists) {
-            steps.value.push({ ...step, state: 'completed', duration_ms: 0 })
+            steps.value.push({ ...step, state: 'completed', duration_ms: step.duration_ms || 0 })
           }
         }
         lastRestepCount.value = data.step_logs.length
+      }
+      // 同步 executionInfo（duration、status 等可能在断线期间变化）
+      try {
+        const { data: infoData } = await getExecution(executionId.value)
+        if (infoData) {
+          executionInfo.value = infoData
+        }
+      } catch (e) {
+        console.warn('Failed to sync execution info after reconnect:', e)
       }
       // 如果执行已完成，直接加载完整结果并关闭 WebSocket
       if (data.status !== 'running') {
