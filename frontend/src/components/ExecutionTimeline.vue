@@ -22,7 +22,7 @@
           <!-- 普通步骤 -->
           <template v-else>
             <div class="step-header">
-              <span class="step-icon">{{ getStepIcon(step.action) }}</span>
+              <span class="step-icon">{{ getStepIcon(_getToolName(step)) }}</span>
               <span class="step-action">{{ getStepLabel(step) }}</span>
               <el-tag v-if="step.state === 'running'" size="small" type="primary" effect="plain" class="step-status-tag">
                 执行中
@@ -72,24 +72,35 @@ const ICON_MAP = {
   report_result: '📊',
 }
 
+// 获取工具的原始名称（优先 tool_name，兼容旧数据）
+function _getToolName(step) {
+  return step.tool_name || step.action || ''
+}
+
 function getStepIcon(action) {
   return ICON_MAP[action] || '⚙️'
 }
 
 function getStepLabel(step) {
-  if (step.action === 'browser_fill' && step.target) {
+  const toolName = _getToolName(step)
+  // 如果 action 已经是人类可读格式（来自实时持久化），直接使用
+  if (step.tool_name && step.action !== step.tool_name) {
+    return step.action
+  }
+  // 否则从原始工具名生成标签（兼容旧数据或 WS 实时事件）
+  if (toolName === 'browser_fill' && step.target) {
     return `填写 ${step.target}`
   }
-  if (step.action === 'browser_navigate') {
+  if (toolName === 'browser_navigate') {
     return `导航到 ${step.target || ''}`
   }
-  if (step.action === 'browser_click') {
+  if (toolName === 'browser_click') {
     return `点击 ${step.target || ''}`
   }
-  if (step.action === 'browser_screenshot') {
+  if (toolName === 'browser_screenshot') {
     return '截图'
   }
-  if (step.action === 'report_result') {
+  if (toolName === 'report_result') {
     return `报告结果: ${step.target || ''}`
   }
   return step.action || '未知操作'

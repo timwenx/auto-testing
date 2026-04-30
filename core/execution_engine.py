@@ -234,7 +234,13 @@ def _format_agent_log(agent_result: dict) -> str:
 
 
 def _build_step_logs(agent_result: dict) -> list:
-    """将 tool_calls_log 转换为结构化的 step_logs 格式"""
+    """将 tool_calls_log 转换为结构化的 step_logs 格式（legacy fallback）。
+
+    注意：主链路中步骤已通过 AgentRunner._persist_step() 实时写入 DB。
+    此函数仅用于 execute_testcase_with_agent() 的返回值构建。
+    """
+    from .agent_service import format_step_action, _extract_target, _extract_screenshot_path
+
     steps = []
     tool_calls = agent_result.get('tool_calls_log', [])
     for i, call in enumerate(tool_calls, 1):
@@ -242,34 +248,13 @@ def _build_step_logs(agent_result: dict) -> list:
         tool_input = call.get('input', {})
         output = call.get('output', '')
 
-        # 提取关键信息
-        action = tool_name
-        target = ''
-        screenshot_path = ''
-        if tool_name == 'browser_navigate':
-            target = tool_input.get('url', '')
-        elif tool_name == 'browser_click':
-            target = tool_input.get('selector', '')
-        elif tool_name == 'browser_fill':
-            target = tool_input.get('selector', '')
-            action = f"填写 {tool_input.get('value', '')[:30]}"
-        elif tool_name == 'browser_screenshot':
-            action = '截图'
-            # 从 output 中提取截图路径
-            if '截图已保存:' in output:
-                screenshot_path = output.split('截图已保存:')[-1].strip()
-        elif tool_name == 'browser_get_text':
-            target = tool_input.get('selector', '')
-        elif tool_name == 'report_result':
-            action = f"报告结果: {tool_input.get('status', '')}"
-            target = tool_input.get('summary', '')
-
         step = {
             'step_num': i,
-            'action': action,
-            'target': target,
-            'result': output[:300],  # 截断避免过大
-            'screenshot_path': screenshot_path,
+            'action': format_step_action(tool_name, tool_input),
+            'tool_name': tool_name,
+            'target': _extract_target(tool_name, tool_input),
+            'result': output[:300],
+            'screenshot_path': _extract_screenshot_path(output),
             'timestamp': call.get('timestamp', ''),
             'duration_ms': call.get('duration_ms', 0),
         }
@@ -334,9 +319,23 @@ def execute_testcase_with_agent(testcase, base_url: str, execution_id=None) -> d
         )
         messages = [{"role": "user", "content": user_message}]
 
+        # 加载 ExecutionRecord 用于实时步骤持久化
+        execution_record = None
+        if execution_id:
+            from .models import ExecutionRecord
+            try:
+                execution_record = ExecutionRecord.objects.get(pk=execution_id)
+            except ExecutionRecord.DoesNotExist:
+                logger.warning("ExecutionRecord %s not found, steps won't be persisted in real-time", execution_id)
+
         # 执行 Agent
         start = time.time()
-        runner = AgentRunner(project=project, testcase_id=testcase.pk, execution_id=execution_id)
+        runner = AgentRunner(
+            project=project,
+            testcase_id=testcase.pk,
+            execution_id=execution_id,
+            execution_record=execution_record,
+        )
         agent_result = runner.run(
             system_prompt=system_prompt,
             messages=messages,
@@ -345,8 +344,6 @@ def execute_testcase_with_agent(testcase, base_url: str, execution_id=None) -> d
         duration = time.time() - start
 
         # 解析 report_result（如果 Agent 调用了的话）
-        # report_result 的结果存在 context['report_result'] 里，但 context 是 run 的局部变量
-        # 所以我们需要从 response_text 中提取，或者从 tool_calls_log 中找
         status = 'passed'
         log = _format_agent_log(agent_result)
 
@@ -363,7 +360,8 @@ def execute_testcase_with_agent(testcase, base_url: str, execution_id=None) -> d
             details = report.get('details', '')
             log = f"[Agent 结果] {summary}\n{details}\n\n{log}"
 
-        # 构建结构化数据
+        # 步骤已通过 AgentRunner._persist_step() 实时写入 DB
+        # 此处仍构建 step_logs 作为返回值的一部分（用于 _save_agent_result 中的 _create_screenshot_records）
         step_logs = _build_step_logs(agent_result)
         screenshots = _extract_screenshots(agent_result)
 

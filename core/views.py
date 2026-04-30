@@ -63,20 +63,20 @@ def _create_screenshot_records(record, step_logs, screenshot_paths):
 
 
 def _save_agent_result(record, result):
-    """将 Agent 执行结果保存到 ExecutionRecord（统一回调）"""
+    """将 Agent 执行结果保存到 ExecutionRecord（统一回调）。
+
+    step_logs 和 tool_calls_count 已通过 AgentRunner._persist_step() 实时写入，
+    此处只更新最终状态、耗时、日志等字段。
+    """
     record.status = result['status']
     record.log = result['log']
     record.error_message = result['error_message']
     record.duration = result['duration']
-    try:
-        script_data = json.loads(result.get('script', '{}'))
-        record.tool_calls_count = len(script_data.get('tool_calls', []))
-    except (json.JSONDecodeError, TypeError):
-        pass
-    record.step_logs = result.get('step_logs', [])
     record.screenshots = result.get('screenshots', [])
     record.agent_response = result.get('agent_response', {})
-    record.save()
+    record.save(update_fields=[
+        'status', 'log', 'error_message', 'duration', 'screenshots', 'agent_response',
+    ])
     _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
 
     # 兜底推送 execution_end 事件 — 确保即使 AgentRunner 的推送丢失，
