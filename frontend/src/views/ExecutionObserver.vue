@@ -4,13 +4,36 @@
     <div class="observer-header">
       <el-page-header @back="goBack">
         <template #content>
-          <span class="header-title">执行观察面板</span>
+          <span class="header-title">{{ replayMode ? '执行回放' : '执行观察面板' }}</span>
           <el-tag :type="statusTagType" size="small" class="header-status">{{ statusLabel }}</el-tag>
         </template>
       </el-page-header>
+      <div class="header-actions">
+        <el-button
+          v-if="canReplay && !replayMode"
+          size="small"
+          type="primary"
+          @click="enterReplay"
+        >
+          <el-icon><VideoPlay /></el-icon>
+          回放
+        </el-button>
+        <el-button
+          v-if="replayMode"
+          size="small"
+          @click="exitReplay"
+        >
+          <el-icon><Monitor /></el-icon>
+          实时模式
+        </el-button>
+      </div>
     </div>
 
-    <div class="observer-body">
+    <!-- 回放模式 -->
+    <ExecutionReplay v-if="replayMode" :execution-id="executionId" />
+
+    <!-- 实时模式 -->
+    <div v-else class="observer-body">
       <!-- 左侧：浏览器截图流 -->
       <div class="observer-left" :class="{ 'pip-hidden': pipMode }">
         <BrowserView
@@ -70,10 +93,32 @@ import ExecutionTimeline from '../components/ExecutionTimeline.vue'
 import ExecutionStats from '../components/ExecutionStats.vue'
 import ToolDetailPanel from '../components/ToolDetailPanel.vue'
 import BrowserView from '../components/BrowserView.vue'
+import ExecutionReplay from '../components/ExecutionReplay.vue'
+import { VideoPlay, Monitor } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const executionId = computed(() => parseInt(route.params.id))
+
+// 回放模式
+const replayMode = ref(false)
+const canReplay = computed(() => {
+  const terminalStatuses = ['completed', 'passed', 'failed', 'error']
+  return executionInfo.value && terminalStatuses.includes(executionInfo.value.status)
+})
+
+function enterReplay() {
+  replayMode.value = true
+  disconnect()
+}
+
+function exitReplay() {
+  replayMode.value = false
+  // 如果执行仍在运行，重新连接
+  if (executionInfo.value?.status === 'running') {
+    connect()
+  }
+}
 
 // 执行信息
 const executionInfo = ref(null)
@@ -94,11 +139,13 @@ const selectedStep = computed(() => {
 
 // 状态标签
 const statusTagType = computed(() => {
+  if (replayMode.value) return 'warning'
   const map = { connecting: 'warning', connected: 'info', running: 'primary', completed: 'success', error: 'danger' }
   return map[status.value] || 'info'
 })
 
 const statusLabel = computed(() => {
+  if (replayMode.value) return '回放中'
   const map = { idle: '空闲', connecting: '连接中', connected: '已连接', running: '执行中', completed: '已完成', error: '错误' }
   return map[status.value] || status.value
 })
@@ -181,6 +228,12 @@ onMounted(async () => {
     console.error('Failed to load execution info:', e)
   }
 
+  // 如果路由查询参数包含 replay=true，直接进入回放模式
+  if (route.query.replay === 'true') {
+    replayMode.value = true
+    return
+  }
+
   try {
     // 加载已有的步骤（REST 回填）
     const { data } = await getExecutionSteps(executionId.value)
@@ -189,7 +242,7 @@ onMounted(async () => {
       steps.value = data.step_logs.map(step => ({
         ...step,
         state: 'completed',
-        duration_ms: 0,
+        duration_ms: step.duration_ms || 0,
       }))
     }
     if (data.agent_response?.input_tokens) {
@@ -221,6 +274,9 @@ onMounted(async () => {
   padding: 12px 20px;
   border-bottom: 1px solid var(--el-border-color-lighter);
   background: var(--el-bg-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .header-title {
@@ -230,6 +286,12 @@ onMounted(async () => {
 
 .header-status {
   margin-left: 12px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .observer-body {

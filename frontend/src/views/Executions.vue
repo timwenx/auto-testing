@@ -55,6 +55,11 @@
               size="small" text type="primary"
               @click="navigateToObserver(row.id)"
             >观察</el-button>
+            <el-button
+              v-if="row.execution_mode === 'agent' && isTerminalStatus(row.status)"
+              size="small" text type="warning"
+              @click="navigateToReplay(row.id)"
+            >回放</el-button>
             <el-button size="small" text type="primary" @click="showDetail(row)">详情</el-button>
             <el-button size="small" text type="warning" @click="showLog(row)">日志</el-button>
             <el-button size="small" text type="success" @click="handleAnalyze(row)">AI 分析</el-button>
@@ -66,9 +71,12 @@
     <!-- 详情弹窗 -->
     <el-dialog v-model="showDetailDialog" title="执行详情" width="800px" top="5vh">
       <template v-if="detailRecord">
-        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;" v-if="detailRecord.status === 'running'">
-          <el-button type="primary" size="small" @click="navigateToObserver(detailRecord.id); showDetailDialog = false">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; gap: 8px;" v-if="detailRecord.status === 'running' || (detailRecord.execution_mode === 'agent' && isTerminalStatus(detailRecord.status))">
+          <el-button v-if="detailRecord.status === 'running'" type="primary" size="small" @click="navigateToObserver(detailRecord.id); showDetailDialog = false">
             <el-icon><Monitor /></el-icon> 观察执行
+          </el-button>
+          <el-button v-if="detailRecord.execution_mode === 'agent' && isTerminalStatus(detailRecord.status)" type="warning" size="small" @click="navigateToReplay(detailRecord.id); showDetailDialog = false">
+            <el-icon><VideoPlay /></el-icon> 回放
           </el-button>
         </div>
         <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
@@ -186,7 +194,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getExecutions, getProjects, aiAnalyzeResult } from '../api'
 import { ElMessage } from 'element-plus'
-import { Monitor } from '@element-plus/icons-vue'
+import { Monitor, VideoPlay } from '@element-plus/icons-vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 
 const router = useRouter()
@@ -281,6 +289,12 @@ const showLog = (row) => {
 const navigateToObserver = (id) => {
   router.push({ name: 'ExecutionObserver', params: { id } })
 }
+
+const navigateToReplay = (id) => {
+  router.push({ name: 'ExecutionObserver', params: { id }, query: { replay: 'true' } })
+}
+
+const isTerminalStatus = (s) => ['passed', 'failed', 'error'].includes(s)
 
 const handleAnalyze = async (row) => {
   analysis.value = null
