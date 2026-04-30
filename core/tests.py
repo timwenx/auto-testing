@@ -1518,9 +1518,148 @@ class ScreenshotStreamRunTest(TestCase):
         mock_emit.assert_not_called()
 
 
-# ══════════════════════════════════════════════════════════════════
-# ExecutionConsumer 测试
-# ══════════════════════════════════════════════════════════════════
+class GetLatestFrameTest(TestCase):
+    """Tests for screenshot_stream.get_latest_frame and cache behavior."""
+
+    def setUp(self):
+        from .screenshot_stream import _latest_frames, _frames_lock
+        self._frames = _latest_frames
+        self._lock = _frames_lock
+        # 清理全局字典避免测试间污染
+        with self._lock:
+            self._frames.clear()
+
+    def tearDown(self):
+        with self._lock:
+            self._frames.clear()
+
+    def test_returns_none_for_missing_key(self):
+        """无缓存帧时返回 (None, None)"""
+        from .screenshot_stream import get_latest_frame
+        ts, jpeg = get_latest_frame(999)
+        self.assertIsNone(ts)
+        self.assertIsNone(jpeg)
+
+    def test_returns_cached_frame(self):
+        """有缓存帧时返回 (timestamp, jpeg_bytes)"""
+        from .screenshot_stream import get_latest_frame
+        fake_jpeg = b'\xff\xd8fake_jpeg_data'
+        with self._lock:
+            self._frames[42] = (1234567890.0, fake_jpeg)
+
+        ts, jpeg = get_latest_frame(42)
+        self.assertEqual(ts, 1234567890.0)
+        self.assertEqual(jpeg, fake_jpeg)
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_maybe_capture_populates_cache(self, mock_emit):
+        """maybe_capture() 成功后 _latest_frames 中有对应条目"""
+        from .screenshot_stream import ScreenshotStream, get_latest_frame
+        stream = ScreenshotStream(interval=0, quality=50)
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = False
+        mock_page.screenshot.return_value = b'\xff\xd8jpeg_data'
+        stream.start(mock_page, 77)
+        stream._last_capture_time = 0
+
+        stream.maybe_capture()
+
+        ts, jpeg = get_latest_frame(77)
+        self.assertIsNotNone(ts)
+        self.assertEqual(jpeg, b'\xff\xd8jpeg_data')
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_repeated_capture_overwrites_cache(self, mock_emit):
+        """多次 maybe_capture() 只保留最新帧"""
+        from .screenshot_stream import ScreenshotStream, get_latest_frame
+        stream = ScreenshotStream(interval=0, quality=50)
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = False
+        mock_page.screenshot.side_effect = [b'frame_1', b'frame_2']
+        stream.start(mock_page, 88)
+        stream._last_capture_time = 0
+
+        stream.maybe_capture()
+        stream._last_capture_time = 0  # 重置间隔
+
+        _, jpeg1 = get_latest_frame(88)
+        self.assertEqual(jpeg1, b'frame_1')
+
+        stream.maybe_capture()
+        _, jpeg2 = get_latest_frame(88)
+        self.assertEqual(jpeg2, b'frame_2')
+
+    @mock.patch('core.event_emitter._emit_step_event')
+    def test_stop_clears_cache(self, mock_emit):
+        """stop() 清除 _latest_frames 中对应 execution_id 的条目"""
+        from .screenshot_stream import ScreenshotStream, get_latest_frame
+        stream = ScreenshotStream(interval=0, quality=50)
+        mock_page = mock.MagicMock()
+        mock_page.is_closed.return_value = False
+        mock_page.screenshot.return_value = b'\xff\xd8jpeg'
+        stream.start(mock_page, 55)
+        stream._last_capture_time = 0
+
+        stream.maybe_capture()
+        ts, jpeg = get_latest_frame(55)
+        self.assertIsNotNone(jpeg)
+
+        stream.stop()
+        ts2, jpeg2 = get_latest_frame(55)
+        self.assertIsNone(ts2)
+        self.assertIsNone(jpeg2)
+
+
+class LatestFrameEndpointTest(TestCase):
+    """Tests for GET /api/executions/<id>/latest_frame/."""
+
+    def setUp(self):
+        from .screenshot_stream import _latest_frames, _frames_lock
+        self._frames = _latest_frames
+        self._lock = _frames_lock
+        with self._lock:
+            self._frames.clear()
+
+    def tearDown(self):
+        with self._lock:
+            self._frames.clear()
+
+    def test_returns_jpeg_when_frame_exists(self):
+        """有缓存帧时返回 200 + image/jpeg + 正确 headers"""
+        fake_jpeg = b'\xff\xd8\xff\xe0fake_jpeg_bytes'
+        with self._lock:
+            self._frames[1] = (1700000000.0, fake_jpeg)
+
+        response = self.client.get('/api/executions/1/latest_frame/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'image/jpeg')
+        self.assertEqual(response.content, fake_jpeg)
+        self.assertEqual(response['Content-Length'], str(len(fake_jpeg)))
+        self.assertIn('no-cache', response['Cache-Control'])
+        self.assertEqual(response['X-Frame-Timestamp'], '1700000000.0')
+
+    def test_returns_404_when_no_frame(self):
+        """无缓存帧时返回 404"""
+        response = self.client.get('/api/executions/999/latest_frame/')
+
+        self.assertEqual(response.status_code, 404)
+        data = response.json()
+        self.assertIn('error', data)
+
+    def test_different_executions_isolated(self):
+        """不同 execution_id 的帧缓存互相隔离"""
+        with self._lock:
+            self._frames[10] = (1000.0, b'frame_10')
+            self._frames[20] = (2000.0, b'frame_20')
+
+        resp10 = self.client.get('/api/executions/10/latest_frame/')
+        resp20 = self.client.get('/api/executions/20/latest_frame/')
+
+        self.assertEqual(resp10.content, b'frame_10')
+        self.assertEqual(resp20.content, b'frame_20')
+        self.assertEqual(resp10['X-Frame-Timestamp'], '1000.0')
+        self.assertEqual(resp20['X-Frame-Timestamp'], '2000.0')
 
 class ExecutionConsumerTest(TestCase):
     """Tests for consumers.ExecutionConsumer via Channels test utilities."""

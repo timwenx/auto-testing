@@ -41,7 +41,8 @@ def get_latest_frame(execution_id):
     Returns:
         (timestamp, jpeg_bytes) 元组，若无帧则返回 (None, None)
     """
-    entry = _latest_frames.get(execution_id)
+    with _frames_lock:
+        entry = _latest_frames.get(execution_id)
     if entry:
         return entry
     return None, None

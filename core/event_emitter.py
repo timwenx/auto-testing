@@ -72,7 +72,13 @@ def _emit_step_event(execution_id, event_type, data):
 
         # 如果有 ASGI 事件循环且正在运行，从工作线程调度到该循环
         if _asgi_event_loop and _asgi_event_loop.is_running():
-            asyncio.run_coroutine_threadsafe(_send(), _asgi_event_loop)
+            fut = asyncio.run_coroutine_threadsafe(_send(), _asgi_event_loop)
+            fut.add_done_callback(
+                lambda f: f.exception() and logger.warning(
+                    "[EventEmitter] async send failed for %s execution %s: %s",
+                    event_type, execution_id, f.exception()
+                )
+            )
         else:
             # 同步上下文（ASGI 线程本身），直接用 async_to_sync
             from asgiref.sync import async_to_sync
