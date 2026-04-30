@@ -140,21 +140,22 @@ class ScreenshotStream:
 
 class _FrameWatchdog:
     """
-    后台截图 watchdog — 在浏览器工具执行期间以固定间隔调用
-    ScreenshotStream.maybe_capture()，确保长耗时操作期间截图流不会中断。
+    后台通知 watchdog — 在浏览器工具执行期间发送心跳通知，
+    告知前端定期轮询截图。不直接调用 Playwright API（避免线程问题）。
 
-    注意: Playwright sync API 使用进程间 IPC（pipe），page.screenshot()
-    调用不依赖 Python 绿程(greenlet)绑定，因此可以从后台线程安全调用。
+    注意：Playwright sync API 的 greenlet 绑定是线程本地的，
+    从后台线程调用 page.screenshot() 会导致 greenlet.error。
+    因此采用"通知 + 前端轮询"模式替代后台截图。
     """
 
-    def __init__(self, screenshot_stream, interval=None):
-        self._stream = screenshot_stream
+    def __init__(self, execution_id, interval=None):
+        self._execution_id = execution_id
         self._interval = interval or WATCHDOG_INTERVAL
         self._stop_event = threading.Event()
         self._thread = None
 
     def start(self):
-        """启动后台截图线程"""
+        """启动后台心跳线程"""
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run,
@@ -164,41 +165,52 @@ class _FrameWatchdog:
         self._thread.start()
 
     def stop(self):
-        """停止后台截图线程"""
+        """停止后台心跳线程"""
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=3)
             self._thread = None
 
     def _run(self):
+        """定期发送心跳通知，促使前端轮询截图"""
         while not self._stop_event.is_set():
             try:
-                self._stream.maybe_capture()
+                # 只发送轻量通知，不调用 Playwright API
+                from .event_emitter import _emit_step_event
+                _emit_step_event(self._execution_id, 'frame_heartbeat', {
+                    'ts': round(time.time() * 1000),
+                })
+                logger.debug("[FrameWatchdog] 发送心跳通知 execution_id=%s", self._execution_id)
             except Exception as e:
-                logger.warning("[FrameWatchdog] 截图异常: %s", e)
+                logger.warning("[FrameWatchdog] 心跳异常: %s", e)
             # 等待间隔或 stop 信号
             self._stop_event.wait(timeout=self._interval)
 
 
-def run_with_frame_watchdog(screenshot_stream, fn):
+
+def run_with_frame_watchdog(execution_id, fn):
     """
-    在执行 fn() 期间启动后台截图 watchdog，确保长耗时的浏览器操作
-    期间截图流不会中断。
+    在执行 fn() 期间启动后台心跳 watchdog，确保长耗时的浏览器操作
+    期间前端能定期轮询截图。
 
     用法:
-        result = run_with_frame_watchdog(self._screenshot_stream, lambda: executor(input, context))
+        result = run_with_frame_watchdog(execution_id, lambda: executor(input, context))
 
     Args:
-        screenshot_stream: ScreenshotStream 实例（可为 None）
+        execution_id: 执行记录 ID（用于发送通知）
         fn: 要执行的函数（无参数，返回结果）
 
     Returns:
         fn() 的返回值
+
+    注意：
+        后台线程只发送轻量通知，不调用 Playwright API。
+        这避免了 greenlet 线程绑定错误。前端接收通知后自行轮询截图。
     """
-    if not screenshot_stream or not screenshot_stream.is_running():
+    if not execution_id:
         return fn()
 
-    watchdog = _FrameWatchdog(screenshot_stream)
+    watchdog = _FrameWatchdog(execution_id)
     watchdog.start()
     try:
         return fn()

@@ -283,7 +283,7 @@ def serve_screenshot(request):
         """标准化路径以便比较，支持多种格式"""
         try:
             return os.path.realpath(os.path.abspath(path))
-        except:
+        except Exception:
             return path
     
     normalized_req_path = normalize_for_comparison(file_path)

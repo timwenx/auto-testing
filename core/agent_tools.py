@@ -39,6 +39,17 @@ def _execute_read_file(input_dict, context):
     project = context['project']
     path = input_dict['path']
     try:
+        if not project.local_repo_path:
+            return "Error: 仓库未克隆，请先克隆仓库"
+
+        # 路径安全检查（与 list_directory 一致）
+        from pathlib import Path
+        target = Path(project.local_repo_path) / path
+        try:
+            target.resolve().relative_to(Path(project.local_repo_path).resolve())
+        except ValueError:
+            return "Error: 非法的文件路径"
+
         content = repo_service.read_file_content(project, path)
         return content
     except Exception as e:
