@@ -160,6 +160,40 @@ export function useExecutionObserver(executionId) {
     }
   }
 
+  /**
+   * 立即拉取缺失的步骤（断线重连后，利用实时持久化的步骤数据回填）。
+   * 回填完成后刷新一次截图帧。
+   */
+  async function _fetchMissingSteps() {
+    try {
+      const id = executionId.value !== undefined ? executionId.value : executionId
+      const { data } = await getExecutionSteps(id)
+
+      if (data.step_logs && data.step_logs.length > steps.value.length) {
+        for (const step of data.step_logs) {
+          const exists = steps.value.some(
+            s => s.step_num === step.step_num && s.state === 'completed'
+          )
+          if (!exists) {
+            steps.value.push({ ...step, state: 'completed', duration_ms: step.duration_ms || 0 })
+          }
+        }
+        stats.totalSteps = data.step_logs.length
+      }
+
+      // 同步 token 统计
+      if (data.agent_response?.input_tokens) {
+        stats.inputTokens = data.agent_response.input_tokens
+        stats.outputTokens = data.agent_response.output_tokens
+      }
+
+      // 回填完成后刷新截图帧
+      currentFrame.value = _getFrameUrl(Date.now())
+    } catch (e) {
+      console.warn('[Observer] _fetchMissingSteps failed:', e)
+    }
+  }
+
   function _getWsUrl() {
     // executionId 可能是 Vue ref/computed 或普通值
     const id = executionId.value !== undefined ? executionId.value : executionId
@@ -243,6 +277,8 @@ export function useExecutionObserver(executionId) {
       case 'connection_established': {
         // 检查后端返回的执行状态：如果已结束，直接进入 completed 状态
         const execStatus = data.execution_status
+        const serverSteps = data.completed_steps || 0
+
         if (execStatus && execStatus !== 'running') {
           status.value = 'completed'
           // 执行已结束，主动拉取最终数据并关闭连接
@@ -253,6 +289,10 @@ export function useExecutionObserver(executionId) {
           })
         } else {
           status.value = 'connected'
+          // 检查是否有缺失的步骤需要回填（断线重连场景）
+          if (serverSteps > steps.value.length) {
+            _fetchMissingSteps()
+          }
           // 执行可能已在运行中，启动帧轮询兜底
           _startFramePolling()
         }
