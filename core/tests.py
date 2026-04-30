@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 from rest_framework import status
 
 from .models import Project, TestCase as TC_Model, ExecutionRecord, AIConversation, SystemSetting, Screenshot
-from .execution_engine import _strip_markdown_code_fences
+from .execution_engine import _strip_markdown_code_fences, _build_step_logs, _extract_screenshots
 
 
 class ProjectAPITest(TestCase):
@@ -1091,3 +1091,154 @@ class ExecuteAllEndpointTest(TestCase):
     def test_execute_all_no_testcases(self):
         resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ─── Round 3: 执行引擎工具函数测试 ───
+
+
+class BuildStepLogsTest(TestCase):
+    """_build_step_logs 转换测试"""
+
+    def test_basic_tool_calls(self):
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'turn': 1,
+                    'tool': 'browser_navigate',
+                    'input': {'url': 'https://example.com'},
+                    'output': '已导航到: https://example.com',
+                    'timestamp': '2026-04-30T10:00:00',
+                },
+                {
+                    'turn': 2,
+                    'tool': 'browser_click',
+                    'input': {'selector': '#login-btn'},
+                    'output': '已点击: #login-btn',
+                    'timestamp': '2026-04-30T10:00:05',
+                },
+            ],
+        }
+        steps = _build_step_logs(agent_result)
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]['step_num'], 1)
+        self.assertEqual(steps[0]['action'], 'browser_navigate')
+        self.assertEqual(steps[0]['target'], 'https://example.com')
+        self.assertEqual(steps[1]['step_num'], 2)
+        self.assertEqual(steps[1]['target'], '#login-btn')
+
+    def test_fill_action_rewritten(self):
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'turn': 1,
+                    'tool': 'browser_fill',
+                    'input': {'selector': '#username', 'value': 'admin'},
+                    'output': '已填写',
+                    'timestamp': '',
+                },
+            ],
+        }
+        steps = _build_step_logs(agent_result)
+        self.assertIn('填写', steps[0]['action'])
+        self.assertIn('admin', steps[0]['action'])
+
+    def test_screenshot_path_extracted(self):
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'turn': 1,
+                    'tool': 'browser_screenshot',
+                    'input': {},
+                    'output': '截图已保存: /tmp/shot.png',
+                    'timestamp': '',
+                },
+            ],
+        }
+        steps = _build_step_logs(agent_result)
+        self.assertEqual(steps[0]['action'], '截图')
+        self.assertEqual(steps[0]['screenshot_path'], '/tmp/shot.png')
+
+    def test_report_result_action(self):
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'turn': 1,
+                    'tool': 'report_result',
+                    'input': {'status': 'passed', 'summary': 'All good'},
+                    'output': '结果已记录',
+                    'timestamp': '',
+                },
+            ],
+        }
+        steps = _build_step_logs(agent_result)
+        self.assertIn('报告结果', steps[0]['action'])
+        self.assertEqual(steps[0]['target'], 'All good')
+
+    def test_empty_tool_calls(self):
+        steps = _build_step_logs({'tool_calls_log': []})
+        self.assertEqual(steps, [])
+
+    def test_output_truncated(self):
+        long_output = 'x' * 500
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'turn': 1, 'tool': 'browser_get_text',
+                    'input': {'selector': 'body'},
+                    'output': long_output, 'timestamp': '',
+                },
+            ],
+        }
+        steps = _build_step_logs(agent_result)
+        self.assertLessEqual(len(steps[0]['result']), 300)
+
+
+class ExtractScreenshotsTest(TestCase):
+    """_extract_screenshots 路径提取测试"""
+
+    def test_extracts_from_standard_format(self):
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'tool': 'browser_screenshot',
+                    'output': '截图已保存: /media/screenshots/1/1/step_1.png',
+                },
+                {
+                    'tool': 'browser_navigate',
+                    'output': '已导航到: https://example.com',
+                },
+                {
+                    'tool': 'browser_screenshot',
+                    'output': '截图已保存: /media/screenshots/1/1/step_2.png',
+                },
+            ],
+        }
+        paths = _extract_screenshots(agent_result)
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(paths[0], '/media/screenshots/1/1/step_1.png')
+        self.assertEqual(paths[1], '/media/screenshots/1/1/step_2.png')
+
+    def test_no_screenshots(self):
+        agent_result = {
+            'tool_calls_log': [
+                {'tool': 'browser_click', 'output': '已点击'},
+            ],
+        }
+        self.assertEqual(_extract_screenshots(agent_result), [])
+
+    def test_empty_tool_calls(self):
+        self.assertEqual(_extract_screenshots({'tool_calls_log': []}), [])
+
+    def test_alternative_format_with_png(self):
+        """测试兼容 '已保存' + .png 的格式"""
+        agent_result = {
+            'tool_calls_log': [
+                {
+                    'tool': 'browser_screenshot',
+                    'output': '已保存 /tmp/test.png',
+                },
+            ],
+        }
+        paths = _extract_screenshots(agent_result)
+        self.assertEqual(len(paths), 1)
+        self.assertEqual(paths[0], '/tmp/test.png')
