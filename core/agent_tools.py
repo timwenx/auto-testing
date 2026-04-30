@@ -303,6 +303,152 @@ def _execute_browser_screenshot(input_dict, context):
         return f"Error taking screenshot: {e}"
 
 
+def _execute_browser_get_page_content(input_dict, context):
+    """获取页面主要内容区域的文本概览，用于一次性了解页面结构和内容"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+    try:
+        result = page.evaluate("""() => {
+            function collectElements(root, depth) {
+                if (depth > 6) return [];
+                const items = [];
+                for (const el of root.children) {
+                    const tag = el.tagName.toLowerCase();
+                    if (['script','style','noscript','svg'].includes(tag)) continue;
+                    const text = (el.innerText || '').trim();
+                    // 收集关键属性
+                    const attrNames = ['id', 'class', 'name', 'type', 'placeholder', 'value',
+                                       'href', 'src', 'alt', 'title', 'role', 'aria-label',
+                                       'data-testid', 'disabled', 'required', 'for'];
+                    const attrParts = [];
+                    for (const a of attrNames) {
+                        const v = el.getAttribute(a);
+                        if (v !== null && v !== '') {
+                            if (a === 'class') {
+                                const short = v.trim().split(/\\s+/).slice(0, 2).join('.');
+                                attrParts.push('.' + short);
+                            } else if (a === 'disabled' || a === 'required') {
+                                attrParts.push('[' + a + ']');
+                            } else {
+                                const display = v.length > 60 ? v.substring(0, 60) + '...' : v;
+                                attrParts.push(a + '="' + display + '"');
+                            }
+                        }
+                    }
+                    const attrStr = attrParts.join(' ');
+                    // 有文本的元素直接输出
+                    if (text && text.length >= 2) {
+                        const display = text.length > 200 ? text.substring(0, 200) + '...' : text;
+                        items.push({tag, attrs: attrStr, text: display});
+                        // 大块文本不再递归子元素（避免重复）
+                        if (text.length <= 200) {
+                            items.push(...collectElements(el, depth + 1));
+                        }
+                    } else {
+                        // 无文本但有属性的元素（如 input、img）也要输出
+                        if (attrStr || ['input','img','button','select','textarea','a','form'].includes(tag)) {
+                            items.push({tag, attrs: attrStr, text: ''});
+                        }
+                        // 继续递归子元素
+                        items.push(...collectElements(el, depth + 1));
+                    }
+                }
+                return items;
+            }
+            const body = document.body || document.querySelector('body');
+            if (!body) return [];
+            return collectElements(body, 0);
+        }""")
+        if not result:
+            return "(页面无可见内容)"
+        lines = []
+        total_len = 0
+        for item in result:
+            tag = item['tag']
+            attrs = item['attrs']
+            text = item['text']
+            line = f"<{tag}"
+            if attrs:
+                line += f" {attrs}"
+            line += ">"
+            if text:
+                line += f" {text}"
+            lines.append(line)
+            total_len += len(line)
+            if total_len > 4000:
+                lines.append("... (内容过长已截断，请用 browser_query_all 或 browser_get_text 获取具体元素)")
+                break
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error getting page content: {e}"
+
+
+def _execute_browser_query_all(input_dict, context):
+    """根据 CSS 选择器批量获取所有匹配元素的详细信息和文本"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+    selector = input_dict['selector']
+    try:
+        # 用 JS 一次性收集每个元素的关键属性和文本
+        results = page.evaluate(f"""(selector) => {{
+            const els = document.querySelectorAll(selector);
+            const items = [];
+            for (const el of els) {{
+                const info = {{ tag: el.tagName.toLowerCase() }};
+                // 收集关键属性
+                const attrs = ['id', 'class', 'name', 'type', 'placeholder', 'value',
+                               'href', 'src', 'alt', 'title', 'role', 'aria-label',
+                               'data-testid', 'disabled', 'readonly', 'required',
+                               'action', 'method', 'for', 'label'];
+                const attrParts = [];
+                for (const a of attrs) {{
+                    const v = el.getAttribute(a);
+                    if (v !== null && v !== '') {{
+                        if (a === 'class') {{
+                            const short = v.trim().split(/\\s+/).slice(0, 3).join('.');
+                            attrParts.push('class="' + short + '"');
+                        }} else if (a === 'disabled' || a === 'readonly' || a === 'required') {{
+                            attrParts.push(a);
+                        }} else {{
+                            const display = v.length > 80 ? v.substring(0, 80) + '...' : v;
+                            attrParts.push(a + '="' + display + '"');
+                        }}
+                    }}
+                }}
+                info.attrs = attrParts.join(' ');
+                // 文本内容
+                let text = (el.innerText || '').trim();
+                if (text.length > 200) text = text.substring(0, 200) + '...';
+                info.text = text;
+                items.push(info);
+            }}
+            return items;
+        }}""", selector)
+        if not results:
+            return f"未找到匹配 '{selector}' 的元素"
+        lines = []
+        for i, item in enumerate(results):
+            attr_str = item['attrs']
+            text = item['text']
+            tag = item['tag']
+            line = f"[{i}] <{tag}"
+            if attr_str:
+                line += f" {attr_str}"
+            line += ">"
+            if text:
+                line += f" {text}"
+            lines.append(line)
+            if len(lines) >= 50:
+                lines.append(f"... 共 {len(results)} 个元素，已截断显示前 50 个")
+                break
+        header = f"共找到 {len(results)} 个匹配 '{selector}' 的元素:"
+        return header + "\n" + "\n".join(lines)
+    except Exception as e:
+        return f"Error querying {selector}: {e}"
+
+
 BROWSER_TOOLS = [
     {
         'schema': {
@@ -433,6 +579,35 @@ BROWSER_TOOLS = [
             },
         },
         'execute': _execute_browser_screenshot,
+    },
+    {
+        'schema': {
+            'name': 'browser_get_page_content',
+            'description': '获取当前页面的主要内容文本概览，一次性列出页面上的主要元素及其文本。适合在导航后快速了解页面整体内容和结构，而不用逐个调用 browser_get_text。',
+            'input_schema': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+        'execute': _execute_browser_get_page_content,
+    },
+    {
+        'schema': {
+            'name': 'browser_query_all',
+            'description': '根据 CSS 选择器批量获取所有匹配元素的文本内容。一次返回所有匹配元素，比逐个调用 browser_get_text 高效得多。例如用 "li" 获取所有列表项、用 ".product" 获取所有产品卡片。',
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS 选择器，如 "li"、".product"、".table tbody tr"',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+        'execute': _execute_browser_query_all,
     },
 ]
 

@@ -34,9 +34,13 @@
 ### 第 3 阶段：执行测试
 1. 使用 `browser_navigate` 打开目标页面
 2. 使用 `browser_wait_for` 等待页面加载
-3. 逐步执行测试操作（click、fill、press_key 等）
-4. 使用 `browser_get_text` 或 `browser_screenshot` 验证结果
-5. 每步操作后检查结果，失败时尝试诊断原因
+3. **导航后必须先调用 `browser_get_page_content`** 获取页面全部内容概览，了解页面结构和所有可见元素
+4. 需要获取某一类元素（如所有列表项、所有表格行、所有按钮文字）时，使用 `browser_query_all` 一次批量获取，**禁止逐个调用 browser_get_text**
+5. 逐步执行测试操作（click、fill、press_key 等）
+6. 每次重要操作（如点击、提交）后，再次调用 `browser_get_page_content` 确认页面变化
+7. 只有当你已经明确知道目标元素的精确选择器且只需要验证单个元素时，才使用 `browser_get_text`
+8. `browser_screenshot` 用于关键节点截图留证
+9. 每步操作后检查结果，失败时尝试诊断原因
 
 ### 第 4 阶段：报告结果
 - 使用 `report_result` 工具报告最终结果
@@ -45,6 +49,7 @@
 - details: 详细说明测试过程和结果
 
 ## 重要约束
+- **禁止逐个调用 browser_get_text 来遍历页面元素**。导航后先 `browser_get_page_content` 全局概览，需要批量获取同类元素用 `browser_query_all`，只有验证单个已知选择器时才用 `browser_get_text`
 - 每次浏览器操作后，先验证操作是否成功再继续
 - 如果某步操作失败，尝试分析原因（选择器是否正确、页面是否完全加载等）
 - 如果连续 3 次操作失败，使用 `report_result` 报告错误并结束
