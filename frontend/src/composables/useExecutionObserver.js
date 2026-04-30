@@ -317,6 +317,15 @@ export function useExecutionObserver(executionId) {
         currentFrame.value = _getFrameUrl(data.ts || Date.now())
         break
 
+      case 'frame_heartbeat':
+        // Watchdog 在浏览器工具执行期间发送的心跳通知
+        // 此时主线程可能已捕获新帧，通过 HTTP 拉取最新截图
+        lastFrameTime = Date.now()
+        if (status.value === 'running') {
+          currentFrame.value = _getFrameUrl(Date.now())
+        }
+        break
+
       case 'execution_end':
         status.value = 'completed'
         _stopFramePolling()

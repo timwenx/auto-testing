@@ -210,9 +210,9 @@ def _extract_target(tool_name, tool_input):
     elif tool_name in ('list_files', 'list_directory'):
         return tool_input.get('path', '')
     elif tool_name == 'read_file':
-        return tool_input.get('file_path', '')
+        return tool_input.get('path', '')
     elif tool_name == 'search_code':
-        return tool_input.get('query', '')
+        return tool_input.get('keyword', '')
     return ''
 
 
@@ -350,12 +350,13 @@ class AgentRunner:
                         result_text = f"Error: 未知工具 '{tool_name}'"
                     else:
                         try:
-                            if tool_name in browser_tool_names and self._screenshot_stream:
-                                # 浏览器工具：在后台 watchdog 线程定期截图，
-                                # 确保长耗时操作（如 page.goto 30s）期间截图流不断流
+                            if tool_name in browser_tool_names and self.execution_id:
+                                # 浏览器工具：启动后台心跳 watchdog，
+                                # 确保长耗时操作（如 page.goto 30s）期间前端能定期轮询截图。
+                                # 注意：watchdog 只发送通知，不直接调用 Playwright（避免线程问题）
                                 from .screenshot_stream import run_with_frame_watchdog
                                 result_text = run_with_frame_watchdog(
-                                    self._screenshot_stream,
+                                    self.execution_id,
                                     lambda: executor(tool_input, context),
                                 )
                             else:
@@ -407,17 +408,20 @@ class AgentRunner:
             # 确保浏览器资源始终释放
             self._cleanup_browser(context)
 
-        if turn >= max_turns:
-            logger.warning("[Agent] 达到最大轮次 %d，强制结束", max_turns)
+            if turn >= max_turns:
+                logger.warning("[Agent] 达到最大轮次 %d，强制结束", max_turns)
 
-        # 推送执行结束事件
-        if self.execution_id:
-            _emit_step_event(self.execution_id, 'execution_end', {
-                'status': 'completed',
-                'total_steps': len(self._tool_calls_log),
-                'input_tokens': self._total_input_tokens,
-                'output_tokens': self._total_output_tokens,
-            })
+            # 推送执行结束事件（放在 finally 中确保异常时也能送达）
+            if self.execution_id:
+                try:
+                    _emit_step_event(self.execution_id, 'execution_end', {
+                        'status': 'completed',
+                        'total_steps': len(self._tool_calls_log),
+                        'input_tokens': self._total_input_tokens,
+                        'output_tokens': self._total_output_tokens,
+                    })
+                except Exception as e:
+                    logger.warning("[Agent] Failed to emit execution_end: %s", e)
 
         return {
             'response_text': response_text,

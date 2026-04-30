@@ -128,8 +128,9 @@ class ExecutionConsumer(WebsocketConsumer):
 
     def _stop_heartbeat(self):
         """停止心跳定时器"""
-        if self._heartbeat_timer:
-            self._heartbeat_timer.cancel()
+        timer = getattr(self, '_heartbeat_timer', None)
+        if timer:
+            timer.cancel()
             self._heartbeat_timer = None
 
     # ── Channel layer 事件处理器 ──
