@@ -104,20 +104,10 @@
         </template>
 
         <!-- 截图画廊 -->
-        <template v-if="detailRecord.screenshots && detailRecord.screenshots.length">
-          <h4>截图 ({{ detailRecord.screenshots.length }})</h4>
-          <div class="screenshot-grid">
-            <el-image
-              v-for="(ss, idx) in detailRecord.screenshots"
-              :key="idx"
-              :src="screenshotUrl(ss)"
-              :preview-src-list="detailRecord.screenshots.map(s => screenshotUrl(s))"
-              :initial-index="idx"
-              fit="cover"
-              class="screenshot-thumb"
-            />
-          </div>
-        </template>
+        <ScreenshotGallery
+          :screenshots="detailRecord.screenshots"
+          :show-title="true"
+        />
 
         <!-- Agent 响应 -->
         <template v-if="detailRecord.agent_response && detailRecord.agent_response.response_text">
@@ -182,9 +172,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { getExecutions, getProjects, aiAnalyzeResult } from '../api'
 import { ElMessage } from 'element-plus'
+import ScreenshotGallery from '../components/ScreenshotGallery.vue'
+
+const POLL_INTERVAL = 5000
 
 const executions = ref([])
 const projects = ref([])
@@ -199,6 +192,7 @@ const showAnalysisDialog = ref(false)
 const analysis = ref(null)
 const showImageDialog = ref(false)
 const previewImageUrl = ref('')
+let pollTimer = null
 
 const filteredExecutions = computed(() => {
   let result = executions.value
@@ -243,7 +237,22 @@ const loadExecutions = async () => {
   } finally {
     loading.value = false
   }
+  // 自动轮询：有 running 记录时启动，否则停止
+  const hasRunning = executions.value.some(r => r.status === 'running')
+  if (hasRunning && !pollTimer) {
+    pollTimer = setInterval(loadExecutions, POLL_INTERVAL)
+  } else if (!hasRunning && pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
 }
+
+onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 
 const showDetail = (row) => {
   detailRecord.value = row
@@ -317,18 +326,5 @@ onMounted(async () => {
   font-size: 12px;
   margin-top: 4px;
   word-break: break-all;
-}
-.screenshot-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0;
-}
-.screenshot-thumb {
-  width: 150px;
-  height: 100px;
-  border-radius: 4px;
-  cursor: pointer;
-  border: 1px solid #ebeef5;
 }
 </style>
