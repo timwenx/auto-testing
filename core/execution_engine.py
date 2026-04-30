@@ -4,12 +4,40 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_markdown_code_fences(text: str) -> str:
+    """
+    去除 AI 响应中可能包含的 markdown 代码围栏标记。
+    例如 ```python ... ``` 或 ```py ... ``` 或 ``` ... ```
+    只保留代码体内容。如果输入不含围栏，原样返回。
+    """
+    if not text:
+        return text
+    # 匹配 ```python / ```py / ``` 开头，到 ``` 结尾的代码块
+    pattern = r'^```(?:python|py|javascript|js)?\s*\n(.*?)\n```[\s]*$'
+    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    # 有些模型只在开头加 ```，结尾没有 ``` 或格式不标准，尝试宽松匹配
+    stripped = text.strip()
+    if stripped.startswith('```'):
+        # 去掉首行围栏标记
+        first_nl = stripped.find('\n')
+        if first_nl != -1:
+            stripped = stripped[first_nl + 1:]
+        # 去掉尾部围栏
+        if stripped.rstrip().endswith('```'):
+            stripped = stripped.rstrip()[:-3].rstrip()
+        return stripped
+    return text
 
 
 def _get_max_workers() -> int:
@@ -84,11 +112,14 @@ def _generate_playwright_code(testcase, base_url: str) -> str:
         base_url=base_url,
         code_context=code_context,
     )
-    return _call_claude(prompt, timeout=180)
+    raw_code = _call_claude(prompt, timeout=180)
+    return _strip_markdown_code_fences(raw_code)
 
 
 def _run_playwright_script(code: str, timeout: int = 120) -> dict:
     """执行 Playwright 脚本并返回结果"""
+    # 二次防御性清理：确保代码不含 markdown 围栏
+    code = _strip_markdown_code_fences(code)
     with tempfile.NamedTemporaryFile(
         mode='w', suffix='.py', delete=False, encoding='utf-8'
     ) as f:
