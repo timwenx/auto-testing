@@ -51,3 +51,22 @@
 - All 148 tests pass (verified in round 3)
 - No code changes needed — implementation complete
 - Only binary screenshot files have uncommitted changes (from test runs)
+
+## Round 3 — Plan 3 (6 tasks) audit and fixes
+
+### Audit Results (Plan 3 Tasks 1-6)
+All 6 tasks fully implemented and verified:
+1. **Task 1 (步骤实时写入 DB)**: `_persist_step` in AgentRunner, `execution_record` passed from execution_engine, `_save_agent_result` has fallback writes
+2. **Task 2 (两种进入场景差异化处理)**: Three branches in onMounted — replay=true, terminal status (REST only), running (REST + WS)
+3. **Task 3 (WS 连接阶段状态推送)**: Four phase_change events emitted at correct lifecycle points, frontend tracks currentPhase, BrowserView displays phase text
+4. **Task 4 (断线重连改进)**: `completed_steps` in connection_established, three layers of backfill resilience (immediate, stale poll, view-level watch)
+5. **Task 5 (固定时长截图持久化)**: `auto_captured` field + migration, persist logic in ScreenshotStream (3s interval), API returns auto_screenshots
+6. **Task 6 (截图流 debounce)**: 500ms debounce on both `browser_frame` and `frame_heartbeat` events
+
+### Fixes Applied
+- **executing_step phase enhancement** (`BrowserView.vue`): Now shows step_num and tool_name (e.g. "正在执行步骤 3: browser_click...")
+- **Stale phase on reconnect** (`useExecutionObserver.js`): Clear `currentPhase` on `connection_established` to prevent stale phase text flashing; store full phase event data (not just string)
+
+### Status
+- All 148 tests pass
+- Commit: `d34a008`
