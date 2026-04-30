@@ -169,6 +169,7 @@ class ExecutionRecordDetailView(generics.RetrieveAPIView):
 
 
 @api_view(['GET'])
+@api_view(['GET'])
 def serve_screenshot(request):
     """
     GET /api/executions/screenshots/?path=<filepath>
@@ -327,7 +328,7 @@ def execute_testcase_agent(request, testcase_id):
     testcase.save(update_fields=['status'])
 
     def _agent_task():
-        result = execution_engine.execute_testcase_with_agent(testcase, base_url)
+        result = execution_engine.execute_testcase_with_agent(testcase, base_url, execution_id=record.pk)
         _save_agent_result(record, result)
         testcase.status = result['status']
         testcase.save(update_fields=['status'])
@@ -377,7 +378,7 @@ def execute_project_agent(request, project_id):
 
         def _make_task(r, t):
             def _agent_task():
-                result = execution_engine.execute_testcase_with_agent(t, project.base_url)
+                result = execution_engine.execute_testcase_with_agent(t, project.base_url, execution_id=r.pk)
                 _save_agent_result(r, result)
                 t.status = result['status']
                 t.save(update_fields=['status'])
@@ -784,7 +785,7 @@ def agent_execute(request):
     # ── Agent 模式 ──
     if execution_mode == 'agent':
         def _agent_task():
-            result = execution_engine.execute_testcase_with_agent(testcase, base_url)
+            result = execution_engine.execute_testcase_with_agent(testcase, base_url, execution_id=record.pk)
             _save_agent_result(record, result)
             testcase.status = result['status']
             testcase.save(update_fields=['status'])
@@ -811,6 +812,28 @@ def agent_execute(request):
 
 
 # ─── 系统 ───
+
+@api_view(['GET'])
+def execution_steps(request, pk):
+    """
+    GET /api/executions/<id>/steps/
+    返回执行记录的 step_logs（用于 WebSocket 连接前的步骤补齐，或页面刷新后恢复状态）。
+    """
+    try:
+        record = ExecutionRecord.objects.get(pk=pk)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({
+        'execution_id': record.id,
+        'status': record.status,
+        'step_logs': record.step_logs or [],
+        'screenshots': record.screenshots or [],
+        'agent_response': record.agent_response or {},
+        'duration': record.duration,
+        'tool_calls_count': record.tool_calls_count,
+    })
+
 
 @api_view(['GET'])
 def health_check(request):
