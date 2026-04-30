@@ -36,7 +36,7 @@
         </el-form-item>
         <el-divider content-position="left">Agent 配置</el-divider>
         <el-form-item label="Agent 最大轮次">
-          <el-input-number v-model.number="settings.agent_max_turns" :min="5" :max="50" />
+          <el-input-number v-model.number="settings.agent_max_turns" :min="5" :max="120" />
           <div class="form-hint">Agent 单次执行最大工具调用轮次</div>
         </el-form-item>
         <el-form-item label="浏览器无头模式">
