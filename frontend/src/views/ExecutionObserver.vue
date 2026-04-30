@@ -292,8 +292,12 @@ async function _loadStepData() {
     lastRestepCount.value = data.step_logs?.length || 0
 
     // 加载截图数据（用于已完成执行的截图画廊）
-    if (data.screenshots && data.screenshots.length > 0) {
-      screenshots.value = data.screenshots
+    const allScreenshots = [
+      ...(data.screenshots || []),
+      ...(data.auto_screenshots || []),
+    ]
+    if (allScreenshots.length > 0) {
+      screenshots.value = allScreenshots
     } else {
       // 从 step_logs 中提取截图路径作为 fallback
       screenshots.value = (data.step_logs || [])

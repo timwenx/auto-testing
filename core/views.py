@@ -965,18 +965,28 @@ def execution_latest_frame(request, pk):
 def execution_steps(request, pk):
     """
     GET /api/executions/<id>/steps/
-    返回执行记录的 step_logs（用于 WebSocket 连接前的步骤补齐，或页面刷新后恢复状态）。
+    返回执行记录的 step_logs 和截图（包括自动截图）。
+    用于 WebSocket 连接前的步骤补齐，或页面刷新后恢复状态。
     """
     try:
         record = ExecutionRecord.objects.get(pk=pk)
     except ExecutionRecord.DoesNotExist:
         return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
 
+    # 合并手动截图（JSONField）和自动截图（Screenshot model）
+    screenshots = list(record.screenshots or [])
+    auto_screenshots = list(
+        Screenshot.objects.filter(execution=record, auto_captured=True)
+        .order_by('created_at')
+        .values_list('image', flat=True)
+    )
+
     return Response({
         'execution_id': record.id,
         'status': record.status,
         'step_logs': record.step_logs or [],
-        'screenshots': record.screenshots or [],
+        'screenshots': screenshots,
+        'auto_screenshots': auto_screenshots,
         'agent_response': record.agent_response or {},
         'duration': record.duration,
         'tool_calls_count': record.tool_calls_count,

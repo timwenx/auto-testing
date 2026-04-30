@@ -563,12 +563,15 @@ class AgentRunner:
             logger.error("[Agent] 浏览器初始化失败: %s", e)
             raise RuntimeError(f"Playwright 浏览器初始化失败: {e}")
 
-        # 启动截图流（Phase 2 — 实时浏览器画面推送）
+        # 启动截图流（Phase 2 — 实时浏览器画面推送 + 定时持久化）
         if self.execution_id:
             try:
                 from .screenshot_stream import ScreenshotStream
                 self._screenshot_stream = ScreenshotStream()
-                self._screenshot_stream.start(self._page, self.execution_id)
+                self._screenshot_stream.start(
+                    self._page, self.execution_id,
+                    project_id=self.project.pk,
+                )
             except Exception as e:
                 logger.warning("[Agent] 截图流启动失败（非致命）: %s", e)
 
