@@ -15,6 +15,7 @@ urlpatterns = [
     path('executions/', views.ExecutionRecordListView.as_view(), name='execution-list'),
     path('executions/<int:pk>/', views.ExecutionRecordDetailView.as_view(), name='execution-detail'),
     path('executions/<int:pk>/steps/', views.execution_steps, name='execution-steps'),
+    path('executions/<int:pk>/latest_frame/', views.execution_latest_frame, name='execution-latest-frame'),
     path('executions/screenshots/', views.serve_screenshot, name='serve-screenshot'),
     path('testcases/<int:testcase_id>/execute/', views.execute_testcase, name='testcase-execute'),
     path('testcases/<int:testcase_id>/execute-agent/', views.execute_testcase_agent, name='testcase-execute-agent'),

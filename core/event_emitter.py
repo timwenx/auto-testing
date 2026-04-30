@@ -53,6 +53,14 @@ def _emit_step_event(execution_id, event_type, data):
             **data,
         }
 
+        # 记录 browser_frame 事件的详细信息用于诊断
+        if event_type == 'browser_frame':
+            payload_size = len(json.dumps(payload))
+            send_path = 'run_coroutine_threadsafe' if (_asgi_event_loop and _asgi_event_loop.is_running()) else 'async_to_sync'
+            logger.info("[EventEmitter] browser_frame for execution %s: "
+                        "payload_size=%d bytes, send_path=%s",
+                        execution_id, payload_size, send_path)
+
         async def _send():
             await channel_layer.group_send(
                 group_name,
@@ -76,6 +84,6 @@ def _emit_step_event(execution_id, event_type, data):
                 },
             )
     except Exception as e:
-        # 静默失败，不中断 Agent 执行
-        logger.debug("[EventEmitter] Failed to emit %s for execution %s: %s",
-                     event_type, execution_id, e)
+        # 推送失败必须以 WARNING 级别可见，不中断 Agent 执行
+        logger.warning("[EventEmitter] Failed to emit %s for execution %s: %s",
+                       event_type, execution_id, e)

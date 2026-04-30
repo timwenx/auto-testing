@@ -79,4 +79,9 @@ class ExecutionConsumer(WebsocketConsumer):
 
     def step_event(self, event):
         """从 channel layer group_send 接收的步骤事件，转发给 WebSocket 客户端"""
-        self.send(text_data=json.dumps(event['data']))
+        data = event.get('data', {})
+        event_type = data.get('type', 'unknown')
+        data_size = len(json.dumps(data))
+        logger.debug("[WS] step_event received: type=%s, size=%d bytes, execution=%s",
+                     event_type, data_size, self.execution_id)
+        self.send(text_data=json.dumps(data))

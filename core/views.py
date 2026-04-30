@@ -828,6 +828,25 @@ def agent_execute(request):
 # ─── 系统 ───
 
 @api_view(['GET'])
+def execution_latest_frame(request, pk):
+    """
+    GET /api/executions/<id>/latest_frame/
+    返回指定执行的最新浏览器截图帧（JPEG）。
+    实时帧从内存缓存读取，无数据库查询。
+    """
+    from .screenshot_stream import get_latest_frame
+    ts, jpeg_bytes = get_latest_frame(pk)
+    if jpeg_bytes is None:
+        return Response({'error': '暂无截图帧'}, status=status.HTTP_404_NOT_FOUND)
+
+    from django.http import HttpResponse
+    response = HttpResponse(jpeg_bytes, content_type='image/jpeg')
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response['X-Frame-Timestamp'] = str(ts or '')
+    return response
+
+
+@api_view(['GET'])
 def execution_steps(request, pk):
     """
     GET /api/executions/<id>/steps/
