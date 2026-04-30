@@ -281,6 +281,9 @@ export function useExecutionObserver(executionId) {
         const execStatus = data.execution_status
         const serverSteps = data.completed_steps || 0
 
+        // 重连时清除旧的阶段描述，避免闪现过期状态
+        currentPhase.value = null
+
         if (execStatus && execStatus !== 'running') {
           status.value = 'completed'
           // 执行已结束，主动拉取最终数据并关闭连接
@@ -359,7 +362,7 @@ export function useExecutionObserver(executionId) {
 
       case 'phase_change':
         // 执行阶段变更（不修改 steps，只更新当前阶段描述）
-        currentPhase.value = data.phase || null
+        currentPhase.value = data || null
         break
 
       case 'browser_frame':
