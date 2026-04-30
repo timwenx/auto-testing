@@ -36,17 +36,28 @@ def _get_model() -> str:
     return SystemSetting.get('anthropic_model', 'claude-sonnet-4-20250514')
 
 
+def _get_base_url() -> str:
+    """获取 Anthropic API Base URL，留空则使用默认地址"""
+    from .models import SystemSetting
+    return SystemSetting.get('anthropic_base_url', '').strip()
+
+
 def _get_client():
-    """延迟初始化并返回 Anthropic 客户端（单例）"""
+    """延迟初始化并返回 Anthropic 客户端（单例），支持自定义 base_url"""
     global _client
     api_key = _get_api_key()
     if not api_key:
         raise RuntimeError(
             "请在系统设置中配置 Anthropic API Key，或设置环境变量 ANTHROPIC_API_KEY"
         )
-    if _client is None or _client.api_key != api_key:
+    base_url = _get_base_url()
+    if _client is None or _client.api_key != api_key or getattr(_client, '_custom_base_url', None) != base_url:
         import anthropic
-        _client = anthropic.Anthropic(api_key=api_key)
+        kwargs = {'api_key': api_key}
+        if base_url:
+            kwargs['base_url'] = base_url
+        _client = anthropic.Anthropic(**kwargs)
+        _client._custom_base_url = base_url
     return _client
 
 

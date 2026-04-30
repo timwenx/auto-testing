@@ -164,6 +164,7 @@ class SystemSetting(models.Model):
     # ── 默认设置 ──
     DEFAULTS = {
         'anthropic_api_key': {'value': '', 'description': 'Anthropic API Key（用于 AI 生成和分析）'},
+        'anthropic_base_url': {'value': '', 'description': 'Anthropic API Base URL（留空使用默认地址）'},
         'anthropic_model': {'value': 'claude-sonnet-4-20250514', 'description': 'Anthropic AI 模型名称'},
         'max_workers': {'value': '3', 'description': '同时执行的最大测试用例数量'},
         'execution_timeout': {'value': '120', 'description': '单个用例最大执行时间（秒）'},
