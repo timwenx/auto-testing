@@ -61,6 +61,7 @@ browser_batch_action(actions=[
 
 ### browser_click（增强版）
 点击后会自动检测页面变化。如果点击触发了页面跳转，会自动等待新页面加载。
+**自动处理 `confirm()`/`alert()`/`prompt()` 弹窗**（自动点确认），无需额外操作。
 也可以用 `wait_for` 参数主动等待特定元素出现：
 ```
 browser_click(selector="#submit", wait_for="#success-msg")

@@ -763,22 +763,41 @@ def _execute_browser_navigate(input_dict, context):
 
 
 def _execute_browser_click(input_dict, context):
-    """点击元素，支持等待页面响应后返回快照"""
+    """点击元素，自动处理 confirm/alert 弹窗，支持等待页面响应。失败时自动诊断。"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
     selector = input_dict['selector']
     wait_for = input_dict.get('wait_for', '')
     wait_nav = input_dict.get('wait_for_navigation', False)
+    wait_warning = ''
+    dialog_info = ''
+
+    # 注册 dialog 处理器：自动接受 confirm/alert/prompt
+    dialogs_seen = []
+    def _on_dialog(dialog):
+        dialogs_seen.append(dialog.message)
+        dialog.accept()
+    page.on('dialog', _on_dialog)
+
     try:
         old_url = page.url
         page.click(selector, timeout=10000)
 
-        # 等待策略：优先用 wait_for，其次 wait_for_navigation，最后短暂等待
+        if dialogs_seen:
+            dialog_info = f"\n💬 检测到弹窗已自动确认: {'; '.join(dialogs_seen[:3])}"
+
+        # 等待策略：优先用 wait_for，其次 wait_for_navigation，最后自动检测
         if wait_for:
-            page.wait_for_selector(wait_for, timeout=10000)
+            try:
+                page.wait_for_selector(wait_for, timeout=10000)
+            except Exception:
+                wait_warning = f"\n⚠️ 等待 '{wait_for}' 超时，但点击已成功"
         elif wait_nav:
-            page.wait_for_load_state('domcontentloaded', timeout=15000)
+            try:
+                page.wait_for_load_state('domcontentloaded', timeout=15000)
+            except Exception:
+                wait_warning = "\n⚠️ 等待页面导航超时"
         else:
             # 自动检测：如果 URL 变了，等待新页面加载
             import time as _time
@@ -792,13 +811,97 @@ def _execute_browser_click(input_dict, context):
                 _time.sleep(0.2)
 
         snap = _snapshot_page(page)
-        return f"✅ 已点击: {selector}\n\n{_format_snapshot(snap)}"
-    except Exception as e:
-        return f"Error clicking {selector}: {e}"
+        return f"✅ 已点击: {selector}{dialog_info}{wait_warning}\n\n{_format_snapshot(snap)}"
+    except Exception as click_err:
+        diagnosis = _diagnose_click_failure(page, selector)
+        try:
+            snap = _snapshot_page(page)
+            snap_text = f"\n\n{_format_snapshot(snap)}"
+        except Exception:
+            snap_text = ""
+        return f"❌ 点击失败: {selector}\n原因: {click_err}\n{diagnosis}{snap_text}"
+    finally:
+        # 移除 dialog 监听，避免影响后续操作
+        try:
+            page.remove_listener('dialog', _on_dialog)
+        except Exception:
+            pass
+
+
+def _diagnose_click_failure(page, selector):
+    """诊断点击失败的原因，返回可读的诊断信息"""
+    try:
+        diag = page.evaluate(f"""(selector) => {{
+            const el = document.querySelector(selector);
+            if (!el) {{
+                // 尝试模糊匹配
+                const all = document.querySelectorAll('button, input[type="submit"], input[type="button"], a');
+                const similar = [];
+                for (const e of all) {{
+                    const id = e.id || '';
+                    const text = (e.textContent || '').trim().substring(0, 30);
+                    const cls = e.className || '';
+                    if (id.includes('btn') || id.includes('submit') || text.includes('提交') || text.includes('保存') || text.includes('Submit')) {{
+                        similar.push({{ tag: e.tagName, id, text, type: e.type || '' }});
+                    }}
+                }}
+                return {{ exists: false, similar }};
+            }}
+
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+
+            // 检查是否被遮挡
+            let covered = false;
+            if (visible) {{
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                const topEl = document.elementFromPoint(cx, cy);
+                covered = topEl !== el && !el.contains(topEl);
+            }}
+
+            return {{
+                exists: true,
+                visible,
+                disabled,
+                covered,
+                rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
+                display: style.display,
+                opacity: style.opacity,
+                tag: el.tagName,
+                type: el.type || '',
+            }};
+        }}""", selector)
+
+        if not diag.get('exists'):
+            lines = ["诊断: 元素不存在"]
+            similar = diag.get('similar', [])
+            if similar:
+                lines.append("页面上发现类似的按钮:")
+                for s in similar[:5]:
+                    lines.append(f"  - <{s['tag']}> id=\"{s['id']}\" type=\"{s['type']}\" text=\"{s['text']}\"")
+            else:
+                lines.append("页面上没有找到类似的按钮元素")
+            return "\n".join(lines)
+
+        lines = []
+        if not diag.get('visible'):
+            lines.append(f"诊断: 元素不可见 (display={diag.get('display')}, opacity={diag.get('opacity')}, size={diag.get('rect', {}).get('width')}x{diag.get('rect', {}).get('height')})")
+        if diag.get('disabled'):
+            lines.append("诊断: 元素被禁用 (disabled)")
+        if diag.get('covered'):
+            lines.append("诊断: 元素被其他元素遮挡，无法点击")
+        if not lines:
+            lines.append(f"诊断: 元素存在且可见，但点击仍然失败 (tag={diag.get('tag')}, type={diag.get('type')})")
+        return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _execute_browser_fill(input_dict, context):
-    """填写单个输入框，操作后自动返回页面快照"""
+    """填写单个输入框，失败时自动诊断原因"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
@@ -809,8 +912,48 @@ def _execute_browser_fill(input_dict, context):
         snap = _snapshot_page(page)
         display_val = value[:50] + ('...' if len(value) > 50 else '')
         return f"✅ 已填写 '{selector}': {display_val}\n\n{_format_snapshot(snap)}"
-    except Exception as e:
-        return f"Error filling {selector}: {e}"
+    except Exception as fill_err:
+        diagnosis = _diagnose_element_failure(page, selector, 'fill')
+        try:
+            snap = _snapshot_page(page)
+            snap_text = f"\n\n{_format_snapshot(snap)}"
+        except Exception:
+            snap_text = ""
+        return f"❌ 填写失败: {selector}\n原因: {fill_err}\n{diagnosis}{snap_text}"
+
+
+def _diagnose_element_failure(page, selector, action='click'):
+    """通用元素诊断：检查元素是否存在、可见、可用"""
+    try:
+        diag = page.evaluate(f"""(selector) => {{
+            const el = document.querySelector(selector);
+            if (!el) return {{ exists: false }};
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            const visible = rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            const disabled = el.disabled || el.readOnly || el.getAttribute('aria-disabled') === 'true';
+            return {{
+                exists: true,
+                visible,
+                disabled,
+                tag: el.tagName,
+                type: el.type || '',
+                display: style.display,
+                readOnly: el.readOnly || false,
+            }};
+        }}""", selector)
+
+        if not diag.get('exists'):
+            return f"诊断: 选择器 '{selector}' 未匹配到任何元素，请检查选择器是否正确"
+        if not diag.get('visible'):
+            return f"诊断: 元素不可见 (display={diag.get('display')}), 可能被隐藏或在屏幕外"
+        if diag.get('disabled'):
+            if action == 'fill' and diag.get('readOnly'):
+                return "诊断: 元素是只读的 (readonly), 无法填写"
+            return "诊断: 元素被禁用 (disabled)"
+        return ""
+    except Exception:
+        return ""
 
 
 def _execute_browser_fill_form(input_dict, context):
@@ -1015,7 +1158,7 @@ def _execute_browser_screenshot(input_dict, context):
 
 
 def _execute_browser_batch_action(input_dict, context):
-    """依次执行多个浏览器操作，所有操作完成后只返回一次页面快照"""
+    """依次执行多个浏览器操作，所有操作完成后只返回一次页面快照。自动处理 confirm/alert 弹窗。"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
@@ -1023,63 +1166,79 @@ def _execute_browser_batch_action(input_dict, context):
     actions = input_dict['actions']
     delay = input_dict.get('delay_between', 20) / 1000.0  # ms -> seconds
     results = []
+    dialogs_seen = []
 
-    for i, action in enumerate(actions):
-        action_type = action.get('type', '')
-        try:
-            if action_type == 'click':
-                old_url = page.url
-                page.click(action['selector'], timeout=10000)
-                # 自动检测导航
-                import time as _t
-                _t.sleep(0.3)
-                if page.url != old_url:
-                    try:
-                        page.wait_for_load_state('domcontentloaded', timeout=10000)
-                    except Exception:
-                        pass
-            elif action_type == 'fill':
-                page.fill(action['selector'], action['value'], timeout=10000)
-            elif action_type == 'select':
-                label = action.get('label', '')
-                value = action.get('value', '')
-                if label:
-                    page.select_option(action['selector'], label=label, timeout=10000)
-                elif value:
-                    page.select_option(action['selector'], value=value, timeout=10000)
-                else:
-                    results.append(f"❌ [{i+1}] select: 必须指定 value 或 label")
-                    continue
-            elif action_type == 'press_key':
-                page.keyboard.press(action['key'])
-            elif action_type == 'wait':
-                sel = action.get('selector', '')
-                timeout = action.get('timeout', 5000)
-                if sel:
-                    page.wait_for_selector(sel, timeout=timeout)
-                else:
-                    import time as _time
-                    _time.sleep(timeout / 1000.0)
-            else:
-                results.append(f"❌ [{i+1}] 未知操作类型: {action_type}")
-                continue
-            results.append(f"✅ [{i+1}] {action_type}")
-        except Exception as e:
-            results.append(f"❌ [{i+1}] {action_type}: {e}")
+    # 注册全局 dialog 处理器：自动接受 confirm/alert/prompt
+    def _on_dialog(dialog):
+        dialogs_seen.append(dialog.message)
+        dialog.accept()
+    page.on('dialog', _on_dialog)
 
-        # 操作间延迟
-        if delay > 0 and i < len(actions) - 1:
-            import time as _time
-            _time.sleep(delay)
-
-    # 所有操作完成后返回一次快照
     try:
-        snap = _snapshot_page(page)
-        snapshot_text = _format_snapshot(snap)
-    except Exception as e:
-        snapshot_text = f"(快照获取失败: {e})"
+        for i, action in enumerate(actions):
+            action_type = action.get('type', '')
+            try:
+                if action_type == 'click':
+                    old_url = page.url
+                    page.click(action['selector'], timeout=10000)
+                    import time as _t
+                    _t.sleep(0.3)
+                    if page.url != old_url:
+                        try:
+                            page.wait_for_load_state('domcontentloaded', timeout=10000)
+                        except Exception:
+                            pass
+                elif action_type == 'fill':
+                    page.fill(action['selector'], action['value'], timeout=10000)
+                elif action_type == 'select':
+                    label = action.get('label', '')
+                    value = action.get('value', '')
+                    if label:
+                        page.select_option(action['selector'], label=label, timeout=10000)
+                    elif value:
+                        page.select_option(action['selector'], value=value, timeout=10000)
+                    else:
+                        results.append(f"❌ [{i+1}] select: 必须指定 value 或 label")
+                        continue
+                elif action_type == 'press_key':
+                    page.keyboard.press(action['key'])
+                elif action_type == 'wait':
+                    sel = action.get('selector', '')
+                    timeout = action.get('timeout', 5000)
+                    if sel:
+                        page.wait_for_selector(sel, timeout=timeout)
+                    else:
+                        import time as _time
+                        _time.sleep(timeout / 1000.0)
+                else:
+                    results.append(f"❌ [{i+1}] 未知操作类型: {action_type}")
+                    continue
+                results.append(f"✅ [{i+1}] {action_type}")
+            except Exception as e:
+                results.append(f"❌ [{i+1}] {action_type}: {e}")
 
-    return "\n".join(results) + f"\n\n{snapshot_text}"
+            # 操作间延迟
+            if delay > 0 and i < len(actions) - 1:
+                import time as _time
+                _time.sleep(delay)
+
+        # 所有操作完成后返回一次快照
+        try:
+            snap = _snapshot_page(page)
+            snapshot_text = _format_snapshot(snap)
+        except Exception as e:
+            snapshot_text = f"(快照获取失败: {e})"
+
+        dialog_info = ''
+        if dialogs_seen:
+            dialog_info = f"\n💬 检测到弹窗已自动确认: {'; '.join(dialogs_seen[:3])}\n"
+
+        return "\n".join(results) + dialog_info + f"\n\n{snapshot_text}"
+    finally:
+        try:
+            page.remove_listener('dialog', _on_dialog)
+        except Exception:
+            pass
 
 
 def _execute_browser_get_form(input_dict, context):
@@ -1137,8 +1296,9 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_click',
-            'description': '点击页面元素。点击后自动检测页面变化：如果 URL 变了会等待新页面加载，'
-                '也可以用 wait_for 等待特定元素出现。自动返回快照。',
+            'description': '点击页面元素。自动处理 confirm/alert 弹窗（自动点确认）。'
+                '点击后自动检测页面变化：如果 URL 变了会等待新页面加载，'
+                '也可以用 wait_for 等待特定元素出现。失败时自动诊断原因（元素不存在/不可见/被遮挡/被禁用）并返回页面快照。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
