@@ -79,6 +79,19 @@ def _save_agent_result(record, result):
     record.save()
     _create_screenshot_records(record, result.get('step_logs', []), result.get('screenshots', []))
 
+    # 兜底推送 execution_end 事件 — 确保即使 AgentRunner 的推送丢失，
+    # 客户端也能通过 WebSocket 收到执行结束通知
+    try:
+        from .event_emitter import _emit_step_event
+        _emit_step_event(record.pk, 'execution_end', {
+            'status': result['status'],
+            'total_steps': len(result.get('step_logs', [])),
+            'input_tokens': result.get('agent_response', {}).get('total_input_tokens', 0),
+            'output_tokens': result.get('agent_response', {}).get('total_output_tokens', 0),
+        })
+    except Exception as e:
+        logger.warning("[Views] 兜底 execution_end 推送失败: %s", e)
+
 
 def _save_script_result(record, result):
     """将 Script 执行结果保存到 ExecutionRecord"""
