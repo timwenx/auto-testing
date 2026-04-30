@@ -201,8 +201,9 @@ class AgentRunner:
         result = runner.run(system_prompt="...", messages=[...], max_turns=20)
     """
 
-    def __init__(self, project):
+    def __init__(self, project, testcase_id=None):
         self.project = project
+        self.testcase_id = testcase_id
         self._playwright = None
         self._browser = None
         self._page = None
@@ -240,7 +241,10 @@ class AgentRunner:
         # 构建运行时 context
         context = {
             'project': self.project,
+            'project_id': self.project.pk,
+            'testcase_id': self.testcase_id,
             'page': None,  # lazy init
+            'screenshot_counter': 0,
         }
 
         response_text = ''

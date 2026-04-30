@@ -146,6 +146,31 @@ class ExecutionRecord(models.Model):
         return f"[{self.status}] {tc_name} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
+def _screenshot_upload_path(instance, filename):
+    """截图文件上传路径：media/screenshots/<project_id>/<execution_id>/<filename>"""
+    return f"screenshots/{instance.execution.project_id}/{instance.execution_id}/{filename}"
+
+
+class Screenshot(models.Model):
+    """持久化截图记录 — 截图文件存储在 media/ 目录"""
+    execution = models.ForeignKey(
+        ExecutionRecord, on_delete=models.CASCADE, related_name='screenshot_records',
+        verbose_name='关联执行记录'
+    )
+    image = models.FileField('截图文件', upload_to=_screenshot_upload_path)
+    step_num = models.IntegerField('步骤序号', null=True, blank=True)
+    action = models.CharField('操作描述', max_length=200, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['step_num']
+        verbose_name = '截图'
+        verbose_name_plural = '截图'
+
+    def __str__(self):
+        return f"[Exec {self.execution_id}] Step {self.step_num or '?'}"
+
+
 class SystemSetting(models.Model):
     """系统设置 — 以 key-value 形式存储"""
     key = models.CharField('设置键', max_length=100, unique=True)

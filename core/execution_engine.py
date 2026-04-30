@@ -330,7 +330,7 @@ def execute_testcase_with_agent(testcase, base_url: str) -> dict:
 
         # 执行 Agent
         start = time.time()
-        runner = AgentRunner(project=project)
+        runner = AgentRunner(project=project, testcase_id=testcase.pk)
         agent_result = runner.run(
             system_prompt=system_prompt,
             messages=messages,
