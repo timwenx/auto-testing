@@ -11,17 +11,15 @@
     </div>
 
     <div class="observer-body">
-      <!-- 左侧：占位区域（Phase 2 浏览器截图流） -->
-      <div class="observer-left">
-        <div class="browser-placeholder">
-          <div v-if="currentFrame" class="frame-container">
-            <img :src="currentFrame" alt="Browser frame" class="browser-frame" />
-          </div>
-          <div v-else class="placeholder-content">
-            <el-icon :size="48" color="var(--el-text-color-placeholder)"><Monitor /></el-icon>
-            <p>浏览器画面将在 Phase 2 中可用</p>
-          </div>
-        </div>
+      <!-- 左侧：浏览器截图流 -->
+      <div class="observer-left" :class="{ 'pip-hidden': pipMode }">
+        <BrowserView
+          :frame-src="currentFrame"
+          :connected="status === 'connected' || status === 'running' || status === 'completed'"
+          :pip="pipMode"
+          @refresh="connect"
+          @toggle-pip="pipMode = !pipMode"
+        />
       </div>
 
       <!-- 右侧：步骤时间线 -->
@@ -43,62 +41,35 @@
         </div>
 
         <!-- 统计栏 -->
-        <div class="stats-bar" v-if="steps.length > 0">
-          <el-space :size="16">
-            <span class="stat-item">
-              <el-icon><Operation /></el-icon>
-              步骤: {{ steps.length }}
-            </span>
-            <span class="stat-item" v-if="stats.inputTokens > 0">
-              <el-icon><Coin /></el-icon>
-              Token: {{ stats.inputTokens + stats.outputTokens }}
-            </span>
-          </el-space>
-        </div>
+        <ExecutionStats
+          :status="status"
+          :total-steps="stats.totalSteps"
+          :input-tokens="stats.inputTokens"
+          :output-tokens="stats.outputTokens"
+          :duration="executionInfo?.duration || 0"
+        />
 
         <!-- 步骤时间线 -->
         <div class="timeline-container">
           <ExecutionTimeline :steps="steps" :selected-idx="selectedStepIdx" @select="handleStepSelect" />
         </div>
 
-        <!-- 步骤详情面板 (Phase 3 完善) -->
-        <div class="step-detail-panel" v-if="selectedStep">
-          <div class="detail-header">
-            <span class="step-icon">{{ getStepIcon(selectedStep.action) }}</span>
-            <span class="detail-title">{{ selectedStep.action }}</span>
-          </div>
-          <div class="detail-body">
-            <div v-if="selectedStep.target" class="detail-section">
-              <span class="detail-label">目标:</span>
-              <span class="detail-value">{{ selectedStep.target }}</span>
-            </div>
-            <div v-if="selectedStep.result" class="detail-section">
-              <span class="detail-label">结果:</span>
-              <pre class="detail-value detail-result">{{ selectedStep.result }}</pre>
-            </div>
-            <div v-if="selectedStep.screenshot_path" class="detail-section">
-              <span class="detail-label">截图:</span>
-              <el-image
-                :src="'/api/executions/screenshots/?path=' + encodeURIComponent(selectedStep.screenshot_path)"
-                :preview-src-list="['/api/executions/screenshots/?path=' + encodeURIComponent(selectedStep.screenshot_path)]"
-                style="max-width: 300px; border-radius: 4px;"
-                fit="contain"
-              />
-            </div>
-          </div>
-        </div>
+        <!-- 步骤详情面板 -->
+        <ToolDetailPanel :step="selectedStep" @close="selectedStepIdx = -1" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Monitor, Operation, Coin } from '@element-plus/icons-vue'
 import { getExecution, getExecutionSteps } from '../api'
 import { useExecutionObserver } from '../composables/useExecutionObserver'
 import ExecutionTimeline from '../components/ExecutionTimeline.vue'
+import ExecutionStats from '../components/ExecutionStats.vue'
+import ToolDetailPanel from '../components/ToolDetailPanel.vue'
+import BrowserView from '../components/BrowserView.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -112,6 +83,8 @@ const { steps, currentFrame, stats, status, error, connect, disconnect } = useEx
 
 // 选中步骤
 const selectedStepIdx = ref(-1)
+const pipMode = ref(false)
+const lastRestepCount = ref(0) // 追踪上次 REST 回填的步骤数
 const selectedStep = computed(() => {
   if (selectedStepIdx.value >= 0 && selectedStepIdx.value < steps.value.length) {
     return steps.value[selectedStepIdx.value]
@@ -135,16 +108,6 @@ function getStatusType(s) {
   return map[s] || 'info'
 }
 
-function getStepIcon(action) {
-  const map = {
-    browser_navigate: '🌐', browser_click: '👆', browser_fill: '✏️',
-    browser_press_key: '⌨️', browser_wait_for: '⏳', browser_get_text: '📋',
-    browser_screenshot: '📸', list_files: '📂', read_file: '📄',
-    search_code: '🔍', list_directory: '📁', report_result: '📊',
-  }
-  return map[action] || '⚙️'
-}
-
 function handleStepSelect(idx, step) {
   selectedStepIdx.value = selectedStepIdx.value === idx ? -1 : idx
 }
@@ -152,6 +115,37 @@ function handleStepSelect(idx, step) {
 function goBack() {
   router.back()
 }
+
+// 断线重连后 REST 补齐：当 WebSocket 重新连接时，拉取步骤补齐中间丢失的
+watch(status, async (newStatus, oldStatus) => {
+  if (newStatus === 'connected' && oldStatus !== 'idle' && oldStatus !== 'connecting') {
+    try {
+      const { data } = await getExecutionSteps(executionId.value)
+      if (data.step_logs && data.step_logs.length > lastRestepCount.value) {
+        // 合并 REST 返回的步骤（避免与 WebSocket 实时步骤重复）
+        const restSteps = data.step_logs.slice(lastRestepCount.value)
+        for (const step of restSteps) {
+          const exists = steps.value.some(s => s.step_num === step.step_num && s.state === 'completed')
+          if (!exists) {
+            steps.value.push({ ...step, state: 'completed', duration_ms: 0 })
+          }
+        }
+        lastRestepCount.value = data.step_logs.length
+      }
+      // 如果执行已完成，直接加载完整结果并关闭 WebSocket
+      if (data.status !== 'running') {
+        stats.totalSteps = data.step_logs?.length || stats.totalSteps
+        if (data.agent_response?.input_tokens) {
+          stats.inputTokens = data.agent_response.input_tokens
+          stats.outputTokens = data.agent_response.output_tokens
+        }
+        disconnect()
+      }
+    } catch (e) {
+      console.warn('REST backfill after reconnect failed:', e)
+    }
+  }
+})
 
 // 初始化
 onMounted(async () => {
@@ -179,6 +173,7 @@ onMounted(async () => {
       stats.outputTokens = data.agent_response.output_tokens
     }
     stats.totalSteps = data.step_logs?.length || 0
+    lastRestepCount.value = data.step_logs?.length || 0
   } catch (e) {
     console.error('Failed to load execution steps:', e)
   }
@@ -223,42 +218,14 @@ onMounted(async () => {
   width: 40%;
   min-width: 300px;
   border-right: 1px solid var(--el-border-color-lighter);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: var(--el-fill-color-darker);
 }
 
-.browser-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.frame-container {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px;
-}
-
-.browser-frame {
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-
-.placeholder-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  color: var(--el-text-color-placeholder);
+.observer-left.pip-hidden {
+  width: 0;
+  min-width: 0;
+  border-right: none;
+  overflow: hidden;
 }
 
 .observer-right {
@@ -273,70 +240,9 @@ onMounted(async () => {
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
-.stats-bar {
-  padding: 8px 16px;
-  background: var(--el-fill-color-lighter);
-  border-bottom: 1px solid var(--el-border-color-lighter);
-}
-
-.stat-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--el-text-color-regular);
-}
-
 .timeline-container {
   flex: 1;
   overflow-y: auto;
   padding: 12px 0;
-}
-
-.step-detail-panel {
-  border-top: 1px solid var(--el-border-color-lighter);
-  max-height: 250px;
-  overflow-y: auto;
-  padding: 12px 16px;
-  background: var(--el-fill-color-blank);
-}
-
-.detail-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.detail-title {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.detail-section {
-  margin-bottom: 8px;
-}
-
-.detail-label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  margin-right: 8px;
-}
-
-.detail-value {
-  font-size: 13px;
-  color: var(--el-text-color-primary);
-}
-
-.detail-result {
-  background: var(--el-fill-color-light);
-  padding: 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin-top: 4px;
-  max-height: 120px;
-  overflow-y: auto;
 }
 </style>
