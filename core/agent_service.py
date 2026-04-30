@@ -11,6 +11,7 @@ refine_testcase_with_agent — 无工具的单用例对话式调整。
 """
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -200,14 +201,29 @@ def _extract_target(tool_name, tool_input):
         return ''
     if tool_name == 'browser_navigate':
         return tool_input.get('url', '')
-    elif tool_name in ('browser_click', 'browser_fill', 'browser_get_text',
-                        'browser_select', 'browser_snapshot'):
+    elif tool_name in ('browser_click', 'browser_fill', 'browser_get_text', 'browser_select'):
         return tool_input.get('selector', '')
+    elif tool_name == 'browser_snapshot':
+        mode = tool_input.get('mode', 'interactive')
+        sel = tool_input.get('selector', '')
+        target = f"mode={mode}"
+        if sel:
+            target += f" scope={sel}"
+        return target
     elif tool_name == 'browser_fill_form':
         fields = tool_input.get('fields', [])
         return f"{len(fields)} fields" + (f" + submit" if tool_input.get('submit_selector') else '')
     elif tool_name == 'browser_query_all':
+        selectors = tool_input.get('selectors', [])
+        if selectors:
+            return f"{len(selectors)} selectors"
         return tool_input.get('selector', '')
+    elif tool_name == 'browser_batch_action':
+        actions = tool_input.get('actions', [])
+        types = [a.get('type', '?') for a in actions]
+        return f"{len(actions)} actions: {', '.join(types)}"
+    elif tool_name == 'browser_get_form':
+        return tool_input.get('selector', 'all forms')
     elif tool_name == 'browser_screenshot':
         return 'screenshot'
     elif tool_name == 'report_result':
@@ -241,9 +257,20 @@ def format_step_action(tool_name, tool_input):
     elif tool_name == 'browser_click':
         return f"点击 {tool_input.get('selector', '')}"
     elif tool_name == 'browser_snapshot':
-        return '获取页面快照'
+        mode = tool_input.get('mode', 'interactive')
+        return f"获取页面快照 (mode={mode})"
     elif tool_name == 'browser_query_all':
+        selectors = tool_input.get('selectors', [])
+        if selectors:
+            return f"查询 {len(selectors)} 个选择器"
         return f"查询 {tool_input.get('selector', '')}"
+    elif tool_name == 'browser_batch_action':
+        actions = tool_input.get('actions', [])
+        types = [a.get('type', '?') for a in actions]
+        return f"批量操作 ({len(actions)} 步: {', '.join(types)})"
+    elif tool_name == 'browser_get_form':
+        sel = tool_input.get('selector', '')
+        return f"获取表单数据" + (f" ({sel})" if sel else "")
     elif tool_name == 'browser_screenshot':
         return '截图'
     elif tool_name == 'report_result':
@@ -285,7 +312,32 @@ class AgentRunner:
         # 是否有浏览器工具被调用过（用于决定是否需要清理）
         self._browser_used = False
 
-    def _persist_step(self, tool_name, tool_input, result_text, step_start_time, duration_ms):
+    def _auto_screenshot(self, context):
+        """浏览器工具执行后自动截图，保存到 media/{execution_id}/step_{n}.png"""
+        page = context.get('page')
+        if not page or page.is_closed():
+            return ''
+        try:
+            from django.conf import settings as django_settings
+            execution_id = context.get('execution_id', 'unknown')
+            # 使用 screenshot_counter 追踪步骤编号
+            counter = context.get('screenshot_counter', 0) + 1
+            context['screenshot_counter'] = counter
+            screenshot_dir = os.path.join(
+                str(django_settings.MEDIA_ROOT),
+                str(execution_id),
+            )
+            os.makedirs(screenshot_dir, exist_ok=True)
+            save_path = os.path.join(screenshot_dir, f'step_{counter}.png')
+            page.screenshot(path=save_path, full_page=True)
+            logger.info("[Agent] 自动截图 step_%d: %s", counter, save_path)
+            return save_path
+        except Exception as e:
+            logger.warning("[Agent] 自动截图失败: %s", e)
+            return ''
+
+    def _persist_step(self, tool_name, tool_input, result_text, step_start_time, duration_ms,
+                      screenshot_path=None):
         """将单个工具调用步骤实时写入 DB。
 
         每次工具调用完成后调用一次，追加 step_log 到 ExecutionRecord.step_logs JSONField。
@@ -296,13 +348,18 @@ class AgentRunner:
 
         # 已在 run() 中 _tool_calls_log.append() 之后调用，len 即为当前步骤的 1-indexed 编号
         step_num = len(self._tool_calls_log)
+
+        # 如果调用方已提供 screenshot_path（来自自动截图），优先使用；
+        # 否则从 result_text 中提取（兼容 browser_screenshot 工具的返回值）。
+        sp = screenshot_path or _extract_screenshot_path(result_text)
+
         step = {
             'step_num': step_num,
             'action': format_step_action(tool_name, tool_input),
             'tool_name': tool_name,
             'target': _extract_target(tool_name, tool_input),
             'result': (result_text or '')[:300],
-            'screenshot_path': _extract_screenshot_path(result_text),
+            'screenshot_path': sp,
             'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
             'duration_ms': duration_ms,
         }
@@ -483,9 +540,16 @@ class AgentRunner:
                         'duration_ms': duration_ms,
                     })
 
+                    # 浏览器工具执行后自动截图（一个步骤一张截图）
+                    auto_screenshot_path = ''
+                    if tool_name in browser_tool_names and context.get('page') and not context['page'].is_closed():
+                        auto_screenshot_path = self._auto_screenshot(context)
+
+                    # 如果工具本身未返回截图路径，使用自动截图路径
+                    screenshot_path = _extract_screenshot_path(result_text) or auto_screenshot_path
+
                     # 推送步骤完成事件
                     if self.execution_id:
-                        screenshot_path = _extract_screenshot_path(result_text)
                         _emit_step_event(self.execution_id, 'step_complete', {
                             'step_num': len(self._tool_calls_log),
                             'action': tool_name,
@@ -496,11 +560,8 @@ class AgentRunner:
                         })
 
                     # 实时持久化步骤到 DB（断线重连后 REST 回填可用）
-                    self._persist_step(tool_name, tool_input, result_text, step_start_time, duration_ms)
-
-                    # 同线程截图轮询（每个工具调用之后）
-                    if self._screenshot_stream:
-                        self._screenshot_stream.maybe_capture()
+                    self._persist_step(tool_name, tool_input, result_text, step_start_time, duration_ms,
+                                       screenshot_path=screenshot_path)
 
                     tool_results.append({
                         'type': 'tool_result',

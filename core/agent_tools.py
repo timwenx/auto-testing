@@ -321,6 +321,276 @@ _JS_SNAPSHOT = """
 }
 """
 
+_JS_SNAPSHOT_INTERACTIVE = """
+(rootSel) => {
+    const SKIP = new Set(['script','style','noscript','svg','path','br','hr','wbr','iframe']);
+    const INTERACTIVE = new Set(['input','button','select','textarea','a']);
+    const LANDMARK = new Set(['form','fieldset','section','nav','header','footer','main','article','aside','dialog']);
+    const ATTRS = ['id','class','name','type','placeholder','value','href','src',
+                   'alt','title','role','aria-label','data-testid','disabled',
+                   'readonly','required','action','method','for','selected','checked'];
+
+    const root = rootSel ? document.querySelector(rootSel) : document.body;
+    if (!root) return { url: location.href, title: document.title || '', items: [] };
+
+    function getAttrs(el) {
+        const parts = [];
+        for (const a of ATTRS) {
+            const v = el.getAttribute(a);
+            if (v !== null && v !== '') {
+                if (a === 'class') parts.push('class="' + v.trim().split(/\\s+/).slice(0,3).join(' ') + '"');
+                else if (['disabled','readonly','required','selected','checked'].includes(a)) parts.push(a);
+                else parts.push(a + '="' + (v.length > 80 ? v.substring(0,80)+'...' : v) + '"');
+            }
+        }
+        return parts.join(' ');
+    }
+
+    function findLandmark(el) {
+        let cur = el.parentElement;
+        while (cur && cur !== document.body) {
+            const tag = cur.tagName.toLowerCase();
+            if (LANDMARK.has(tag) || /^h[1-6]$/.test(tag)) {
+                const id = cur.id ? '#' + cur.id : '';
+                const name = cur.getAttribute('name') ? '[name=' + cur.getAttribute('name') + ']' : '';
+                let text = '';
+                if (/^h[1-6]$/.test(tag)) {
+                    text = cur.textContent.trim().substring(0, 60);
+                }
+                return { tag, id, name, text };
+            }
+            cur = cur.parentElement;
+        }
+        return null;
+    }
+
+    const items = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+        const el = walker.currentNode;
+        const tag = el.tagName.toLowerCase();
+        if (SKIP.has(tag)) continue;
+        if (!el.checkVisibility()) continue;
+        if (!INTERACTIVE.has(tag)) continue;
+
+        // Skip nested options inside select (select itself is enough)
+        if (tag === 'option') continue;
+
+        const attrs = getAttrs(el);
+        const landmark = findLandmark(el);
+        let text = '';
+        if (tag === 'a') {
+            text = (el.textContent || '').trim().substring(0, 100);
+        }
+
+        items.push({ tag, attrs, text, parent: landmark });
+    }
+    return { url: location.href, title: document.title || '', items };
+}
+"""
+
+_JS_SNAPSHOT_FORMS = """
+(rootSel) => {
+    const ATTRS = ['id','class','name','type','placeholder','value',
+                   'disabled','readonly','required','action','method'];
+
+    function getAttrs(el) {
+        const parts = [];
+        for (const a of ATTRS) {
+            const v = el.getAttribute(a);
+            if (v !== null && v !== '') {
+                if (a === 'class') parts.push('class="' + v.trim().split(/\\s+/).slice(0,3).join(' ') + '"');
+                else if (['disabled','readonly','required'].includes(a)) parts.push(a);
+                else parts.push(a + '="' + (v.length > 80 ? v.substring(0,80)+'...' : v) + '"');
+            }
+        }
+        return parts.join(' ');
+    }
+
+    function buildSelector(el) {
+        if (el.id) return '#' + el.id;
+        if (el.name) return el.tagName.toLowerCase() + '[name=' + el.name + ']';
+        return getAttrs(el) || el.tagName.toLowerCase();
+    }
+
+    function extractField(el) {
+        const tag = el.tagName.toLowerCase();
+        const info = {
+            tag,
+            selector: buildSelector(el),
+            id: el.id || '',
+            name: el.name || '',
+            type: el.getAttribute('type') || (tag === 'textarea' ? 'textarea' : tag === 'select' ? 'select' : 'text'),
+            placeholder: el.placeholder || '',
+            value: el.value || '',
+            required: el.required,
+            disabled: el.disabled,
+            readonly: el.readOnly,
+        };
+        if (tag === 'select') {
+            info.options = Array.from(el.options).map(o => ({
+                value: o.value,
+                label: o.textContent.trim(),
+                selected: o.selected,
+            }));
+        }
+        return info;
+    }
+
+    function extractForm(formEl) {
+        const formInfo = {
+            form_id: formEl.id || '',
+            form_name: formEl.name || '',
+            action: formEl.action || '',
+            method: formEl.method || 'get',
+            selector: formEl.id ? '#' + formEl.id : (formEl.name ? 'form[name=' + formEl.name + ']' : 'form'),
+            fields: [],
+            submit_buttons: [],
+        };
+        const inputs = formEl.querySelectorAll('input, select, textarea');
+        for (const el of inputs) {
+            const type = (el.getAttribute('type') || '').toLowerCase();
+            if (['hidden','submit','button','reset','image'].includes(type)) {
+                if (type === 'submit' || type === 'image') {
+                    formInfo.submit_buttons.push({
+                        selector: buildSelector(el),
+                        text: el.value || el.alt || 'Submit',
+                    });
+                }
+                continue;
+            }
+            formInfo.fields.push(extractField(el));
+        }
+        const btns = formEl.querySelectorAll('button');
+        for (const btn of btns) {
+            const type = (btn.getAttribute('type') || 'submit').toLowerCase();
+            if (type === 'submit') {
+                formInfo.submit_buttons.push({
+                    selector: buildSelector(btn),
+                    text: btn.textContent.trim().substring(0, 50),
+                });
+            }
+        }
+        return formInfo;
+    }
+
+    const root = rootSel ? document.querySelector(rootSel) : document.body;
+    if (!root) return [];
+    const forms = root.querySelectorAll('form');
+    if (forms.length > 0) return Array.from(forms).map(extractForm);
+    return [extractForm(root)];
+}
+"""
+
+_JS_SNAPSHOT_TEXT = """
+(rootSel) => {
+    const SKIP = new Set(['script','style','noscript','svg','path','br','hr','wbr','iframe']);
+    const HEADING = new Set(['h1','h2','h3','h4','h5','h6']);
+
+    const root = rootSel ? document.querySelector(rootSel) : document.body;
+    if (!root) return { url: location.href, title: document.title || '', sections: [] };
+
+    const sections = [];
+    let current = { heading: '(页面顶部)', texts: [] };
+
+    function walk(el) {
+        const tag = el.tagName.toLowerCase();
+        if (SKIP.has(tag)) return;
+        if (!el.checkVisibility()) return;
+
+        if (HEADING.has(tag)) {
+            if (current.texts.length > 0 || current.heading !== '(页面顶部)') {
+                sections.push(current);
+            }
+            current = { heading: tag + ': ' + el.textContent.trim().substring(0, 100), texts: [] };
+            return;
+        }
+
+        // Direct text only
+        let directText = '';
+        for (const child of el.childNodes) {
+            if (child.nodeType === 3) directText += child.textContent;
+        }
+        const trimmed = directText.trim();
+        if (trimmed.length > 0) {
+            current.texts.push(trimmed.substring(0, 200));
+        }
+
+        for (const child of el.children) {
+            walk(child);
+        }
+    }
+
+    walk(root);
+    if (current.texts.length > 0) sections.push(current);
+    return { url: location.href, title: document.title || '', sections };
+}
+"""
+
+_JS_GET_FORM = """
+function extractForm(formEl) {
+    function buildSelector(el) {
+        if (el.id) return '#' + el.id;
+        if (el.name) return el.tagName.toLowerCase() + '[name=' + el.name + ']';
+        return el.tagName.toLowerCase();
+    }
+
+    const formInfo = {
+        form_id: formEl.id || '',
+        form_name: formEl.name || '',
+        action: formEl.action || '',
+        method: formEl.method || 'get',
+        selector: formEl.id ? '#' + formEl.id : (formEl.name ? 'form[name=' + formEl.name + ']' : 'form'),
+        fields: [],
+        submit_buttons: [],
+    };
+    const inputs = formEl.querySelectorAll('input, select, textarea');
+    for (const el of inputs) {
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        if (['hidden','submit','button','reset','image'].includes(type)) {
+            if (type === 'submit' || type === 'image') {
+                formInfo.submit_buttons.push({
+                    selector: buildSelector(el),
+                    text: el.value || el.alt || 'Submit',
+                });
+            }
+            continue;
+        }
+        const info = {
+            tag: el.tagName.toLowerCase(),
+            selector: buildSelector(el),
+            id: el.id || '',
+            name: el.name || '',
+            type: el.getAttribute('type') || (el.tagName.toLowerCase() === 'textarea' ? 'textarea' : el.tagName.toLowerCase() === 'select' ? 'select' : 'text'),
+            placeholder: el.placeholder || '',
+            value: el.value || '',
+            required: el.required,
+            disabled: el.disabled,
+            readonly: el.readOnly,
+        };
+        if (el.tagName.toLowerCase() === 'select') {
+            info.options = Array.from(el.options).map(o => ({
+                value: o.value,
+                label: o.textContent.trim(),
+                selected: o.selected,
+            }));
+        }
+        formInfo.fields.push(info);
+    }
+    const btns = formEl.querySelectorAll('button');
+    for (const btn of btns) {
+        const type = (btn.getAttribute('type') || 'submit').toLowerCase();
+        if (type === 'submit') {
+            formInfo.submit_buttons.push({
+                selector: buildSelector(btn),
+                text: btn.textContent.trim().substring(0, 50),
+            });
+        }
+    }
+    return formInfo;
+}
+"""
+
 
 def _format_tree(node, indent=0, max_lines=120):
     """将 DOM 树格式化为缩进文本，限制总行数"""
@@ -383,6 +653,92 @@ def _format_snapshot(snap):
     return "\n".join(lines)
 
 
+def _format_interactive(snap):
+    """格式化 interactive 模式结果为扁平列表"""
+    lines = [f"📄 URL: {snap['url']}", f"📌 标题: {snap.get('title', '')}"]
+    items = snap.get('items', [])
+    if not items:
+        lines.append("\n(无可交互元素)")
+        return "\n".join(lines)
+
+    lines.append(f"\n[可交互元素] ({len(items)} 个)")
+
+    # 按 parent 分组显示
+    current_parent = None
+    for item in items:
+        parent = item.get('parent')
+        parent_key = ''
+        if parent:
+            ptag = parent.get('tag', '')
+            pid = parent.get('id', '')
+            pname = parent.get('name', '')
+            ptext = parent.get('text', '')
+            parent_key = f"{ptag}{'#' + pid if pid else ''}{'[name=' + pname + ']' if pname else ''}"
+            if ptext:
+                parent_key += f' "{ptext}"'
+        else:
+            parent_key = '(页面根部)'
+
+        if parent_key != current_parent:
+            current_parent = parent_key
+            lines.append(f"\n  [{parent_key}]")
+
+        tag = item['tag']
+        icon = '🔤 ' if tag in ('input', 'select', 'textarea') else '👆 '
+        attrs = item.get('attrs', '')
+        text = item.get('text', '')
+        line = f"    {icon}<{tag}"
+        if attrs:
+            line += f" {attrs}"
+        line += ">"
+        if text:
+            line += f' "{text}"'
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+def _format_forms(forms_data):
+    """格式化 forms 模式结果为结构化 JSON"""
+    if not forms_data:
+        return "(未找到表单)"
+    return json.dumps(forms_data, ensure_ascii=False, indent=2)
+
+
+def _format_text(snap):
+    """格式化 text 模式结果为纯文本"""
+    lines = [f"📄 URL: {snap['url']}", f"📌 标题: {snap.get('title', '')}"]
+    sections = snap.get('sections', [])
+    if not sections:
+        lines.append("\n(页面无可见文本)")
+        return "\n".join(lines)
+
+    for sec in sections:
+        lines.append(f"\n## {sec['heading']}")
+        for t in sec.get('texts', []):
+            lines.append(f"  {t}")
+
+    return "\n".join(lines)
+
+
+def _get_snapshot(page, mode='interactive', selector=''):
+    """统一的快照获取入口，根据 mode 路由到不同的 JS 和格式化函数"""
+    if mode == 'full':
+        snap = page.evaluate(_JS_SNAPSHOT) if not selector else page.locator(selector).evaluate(_JS_SNAPSHOT)
+        return _format_snapshot(snap)
+    elif mode == 'interactive':
+        snap = page.evaluate(_JS_SNAPSHOT_INTERACTIVE, selector)
+        return _format_interactive(snap)
+    elif mode == 'forms':
+        result = page.evaluate(_JS_SNAPSHOT_FORMS, selector)
+        return _format_forms(result)
+    elif mode == 'text':
+        snap = page.evaluate(_JS_SNAPSHOT_TEXT, selector)
+        return _format_text(snap)
+    else:
+        return f"Error: 未知 mode '{mode}'，支持: interactive, forms, full, text"
+
+
 # ---------- 工具实现 ----------
 
 def _execute_browser_navigate(input_dict, context):
@@ -407,16 +763,34 @@ def _execute_browser_navigate(input_dict, context):
 
 
 def _execute_browser_click(input_dict, context):
-    """点击元素，操作后自动返回页面快照以便验证结果"""
+    """点击元素，支持等待页面响应后返回快照"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
     selector = input_dict['selector']
+    wait_for = input_dict.get('wait_for', '')
+    wait_nav = input_dict.get('wait_for_navigation', False)
     try:
+        old_url = page.url
         page.click(selector, timeout=10000)
-        # 短暂等待页面响应
-        import time as _time
-        _time.sleep(0.5)
+
+        # 等待策略：优先用 wait_for，其次 wait_for_navigation，最后短暂等待
+        if wait_for:
+            page.wait_for_selector(wait_for, timeout=10000)
+        elif wait_nav:
+            page.wait_for_load_state('domcontentloaded', timeout=15000)
+        else:
+            # 自动检测：如果 URL 变了，等待新页面加载
+            import time as _time
+            _time.sleep(0.3)
+            if page.url != old_url:
+                try:
+                    page.wait_for_load_state('domcontentloaded', timeout=10000)
+                except Exception:
+                    pass
+            else:
+                _time.sleep(0.2)
+
         snap = _snapshot_page(page)
         return f"✅ 已点击: {selector}\n\n{_format_snapshot(snap)}"
     except Exception as e:
@@ -509,55 +883,92 @@ def _execute_browser_press_key(input_dict, context):
 
 
 def _execute_browser_snapshot(input_dict, context):
-    """获取当前页面的完整快照: URL、标题、所有交互元素(带属性)、页面文本内容。
-    一次调用即可了解页面上所有可操作的元素和当前显示的内容。"""
+    """获取当前页面快照，支持多种探索模式。"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
+    mode = input_dict.get('mode', 'interactive')
+    selector = input_dict.get('selector', '')
     try:
-        snap = _snapshot_page(page)
-        return _format_snapshot(snap)
+        return _get_snapshot(page, mode=mode, selector=selector)
     except Exception as e:
         return f"Error: {e}"
 
 
 def _execute_browser_query_all(input_dict, context):
-    """根据 CSS 选择器批量获取所有匹配元素的详细属性和文本"""
+    """根据 CSS 选择器批量获取匹配元素的详细属性和文本，支持多个选择器一次查询"""
     page = context.get('page')
     if not page:
         return "Error: 浏览器未初始化"
-    selector = input_dict['selector']
+
+    # 支持 selector (string) 和 selectors (array)，向后兼容
+    selector = input_dict.get('selector', '')
+    selectors = input_dict.get('selectors', [])
+    if not selectors and selector:
+        selectors = [selector]
+    if not selectors:
+        return "Error: 必须指定 selector 或 selectors"
+
+    query_js = f"""(selector) => {{
+        {_JS_COLLECT_ATTRS}
+        const els = document.querySelectorAll(selector);
+        const items = [];
+        for (const el of els) {{
+            const tag = el.tagName.toLowerCase();
+            const attrs = getAttrs(el);
+            let text = (el.innerText || '').trim();
+            if (text.length > 200) text = text.substring(0, 200) + '...';
+            items.push({{ tag, attrs, text }});
+        }}
+        return items;
+    }}"""
+
     try:
-        results = page.evaluate(f"""(selector) => {{
-            {_JS_COLLECT_ATTRS}
-            const els = document.querySelectorAll(selector);
-            const items = [];
-            for (const el of els) {{
-                const tag = el.tagName.toLowerCase();
-                const attrs = getAttrs(el);
-                let text = (el.innerText || '').trim();
-                if (text.length > 200) text = text.substring(0, 200) + '...';
-                items.push({{ tag, attrs, text }});
-            }}
-            return items;
-        }}""", selector)
-        if not results:
-            return f"未找到匹配 '{selector}' 的元素"
-        lines = []
-        for i, item in enumerate(results):
-            line = f"[{i}] <{item['tag']}"
-            if item['attrs']:
-                line += f" {item['attrs']}"
-            line += ">"
-            if item['text']:
-                line += f" {item['text']}"
-            lines.append(line)
-            if len(lines) >= 50:
-                lines.append(f"... 共 {len(results)} 个元素，截断显示前 50 个")
-                break
-        return f"共找到 {len(results)} 个匹配 '{selector}' 的元素:\n" + "\n".join(lines)
+        if len(selectors) == 1:
+            # 单选择器：保持原有输出格式
+            sel = selectors[0]
+            results = page.evaluate(query_js, sel)
+            if not results:
+                return f"未找到匹配 '{sel}' 的元素"
+            lines = []
+            for i, item in enumerate(results):
+                line = f"[{i}] <{item['tag']}"
+                if item['attrs']:
+                    line += f" {item['attrs']}"
+                line += ">"
+                if item['text']:
+                    line += f" {item['text']}"
+                lines.append(line)
+                if len(lines) >= 50:
+                    lines.append(f"... 共 {len(results)} 个元素，截断显示前 50 个")
+                    break
+            return f"共找到 {len(results)} 个匹配 '{sel}' 的元素:\n" + "\n".join(lines)
+        else:
+            # 多选择器：按分组返回
+            all_lines = []
+            total = 0
+            for sel in selectors:
+                results = page.evaluate(query_js, sel)
+                count = len(results)
+                total += count
+                all_lines.append(f"\n=== {sel} ({count} 个匹配) ===")
+                if not results:
+                    all_lines.append("  (无匹配)")
+                    continue
+                for i, item in enumerate(results):
+                    line = f"  [{i}] <{item['tag']}"
+                    if item['attrs']:
+                        line += f" {item['attrs']}"
+                    line += ">"
+                    if item['text']:
+                        line += f" {item['text']}"
+                    all_lines.append(line)
+                    if i >= 49:
+                        all_lines.append(f"  ... 共 {count} 个元素，截断显示前 50 个")
+                        break
+            return f"共查询 {len(selectors)} 个选择器，找到 {total} 个元素:" + "\n".join(all_lines)
     except Exception as e:
-        return f"Error querying {selector}: {e}"
+        return f"Error querying selectors: {e}"
 
 
 def _execute_browser_get_text(input_dict, context):
@@ -603,6 +1014,102 @@ def _execute_browser_screenshot(input_dict, context):
         return f"Error taking screenshot: {e}"
 
 
+def _execute_browser_batch_action(input_dict, context):
+    """依次执行多个浏览器操作，所有操作完成后只返回一次页面快照"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+
+    actions = input_dict['actions']
+    delay = input_dict.get('delay_between', 20) / 1000.0  # ms -> seconds
+    results = []
+
+    for i, action in enumerate(actions):
+        action_type = action.get('type', '')
+        try:
+            if action_type == 'click':
+                old_url = page.url
+                page.click(action['selector'], timeout=10000)
+                # 自动检测导航
+                import time as _t
+                _t.sleep(0.3)
+                if page.url != old_url:
+                    try:
+                        page.wait_for_load_state('domcontentloaded', timeout=10000)
+                    except Exception:
+                        pass
+            elif action_type == 'fill':
+                page.fill(action['selector'], action['value'], timeout=10000)
+            elif action_type == 'select':
+                label = action.get('label', '')
+                value = action.get('value', '')
+                if label:
+                    page.select_option(action['selector'], label=label, timeout=10000)
+                elif value:
+                    page.select_option(action['selector'], value=value, timeout=10000)
+                else:
+                    results.append(f"❌ [{i+1}] select: 必须指定 value 或 label")
+                    continue
+            elif action_type == 'press_key':
+                page.keyboard.press(action['key'])
+            elif action_type == 'wait':
+                sel = action.get('selector', '')
+                timeout = action.get('timeout', 5000)
+                if sel:
+                    page.wait_for_selector(sel, timeout=timeout)
+                else:
+                    import time as _time
+                    _time.sleep(timeout / 1000.0)
+            else:
+                results.append(f"❌ [{i+1}] 未知操作类型: {action_type}")
+                continue
+            results.append(f"✅ [{i+1}] {action_type}")
+        except Exception as e:
+            results.append(f"❌ [{i+1}] {action_type}: {e}")
+
+        # 操作间延迟
+        if delay > 0 and i < len(actions) - 1:
+            import time as _time
+            _time.sleep(delay)
+
+    # 所有操作完成后返回一次快照
+    try:
+        snap = _snapshot_page(page)
+        snapshot_text = _format_snapshot(snap)
+    except Exception as e:
+        snapshot_text = f"(快照获取失败: {e})"
+
+    return "\n".join(results) + f"\n\n{snapshot_text}"
+
+
+def _execute_browser_get_form(input_dict, context):
+    """提取页面表单数据为结构化 JSON"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+    selector = input_dict.get('selector', '')
+
+    try:
+        result = page.evaluate(f"""(selector) => {{
+            {_JS_GET_FORM}
+            if (selector) {{
+                const form = document.querySelector(selector);
+                return form ? extractForm(form) : null;
+            }}
+            const forms = document.querySelectorAll('form');
+            if (forms.length > 0) {{
+                return Array.from(forms).map(extractForm);
+            }}
+            return extractForm(document.body);
+        }}""", selector)
+
+        if not result:
+            return "未找到表单元素"
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Error getting form: {e}"
+
+
 BROWSER_TOOLS = [
     {
         'schema': {
@@ -630,13 +1137,26 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_click',
-            'description': '点击页面元素。点击后自动返回页面快照，可直接看到操作结果。支持 CSS 选择器或文本定位。',
+            'description': '点击页面元素。点击后自动检测页面变化：如果 URL 变了会等待新页面加载，'
+                '也可以用 wait_for 等待特定元素出现。自动返回快照。',
             'input_schema': {
                 'type': 'object',
                 'properties': {
                     'selector': {
                         'type': 'string',
-                        'description': 'CSS 选择器，如 "button.submit"、"#login-btn"、"a[href=\\"/login\\"]"',
+                        'description': 'CSS 选择器，如 "#login-btn"、"button[type=submit]"',
+                    },
+                    'wait_for': {
+                        'type': 'string',
+                        'description': '点击后等待此 CSS 选择器对应的元素出现，如 "#success-msg"、".result"。'
+                            '适用于点击后页面异步加载内容的场景。',
+                        'default': '',
+                    },
+                    'wait_for_navigation': {
+                        'type': 'boolean',
+                        'description': '点击后等待页面导航完成（URL 变化并加载）。'
+                            '适用于点击后跳转到新页面的场景。',
+                        'default': False,
                     },
                 },
                 'required': ['selector'],
@@ -742,10 +1262,27 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_snapshot',
-            'description': '获取当前页面的完整快照，包括: URL、标题、所有交互元素(input/button/select/a 等及其 id/class/name/type/placeholder 等属性)和页面文本内容。一次调用即可全面了解页面状态。适合在操作后验证结果。',
+            'description': '获取当前页面快照。支持多种探索模式:\n'
+                '- mode="interactive" (默认): 只返回可交互元素(input/button/select/textarea/a)及其父级上下文(form/section等)。最省 token，推荐日常使用。\n'
+                '- mode="forms": 返回所有表单及其字段的结构化 JSON (含 name/type/placeholder/options)。\n'
+                '- mode="full": 完整 DOM 树，仅在需要完整页面结构时使用。\n'
+                '- mode="text": 只返回页面可见文本，按标题组织。\n'
+                '- selector 参数: 只快照页面的某个区域，如 "#login-form"。',
             'input_schema': {
                 'type': 'object',
-                'properties': {},
+                'properties': {
+                    'mode': {
+                        'type': 'string',
+                        'enum': ['interactive', 'forms', 'full', 'text'],
+                        'default': 'interactive',
+                        'description': '探索模式: interactive=只返回可交互元素(默认), forms=表单结构化JSON, full=完整DOM树, text=纯文本',
+                    },
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS 选择器，限定快照范围，如 "#login-form"。留空则快照整个页面。',
+                        'default': '',
+                    },
+                },
                 'required': [],
             },
         },
@@ -754,16 +1291,23 @@ BROWSER_TOOLS = [
     {
         'schema': {
             'name': 'browser_query_all',
-            'description': '根据 CSS 选择器批量获取所有匹配元素的详细属性(id/class/name/type/placeholder/value 等)和文本。一次返回所有匹配，比逐个 browser_get_text 高效得多。',
+            'description': '根据 CSS 选择器批量获取匹配元素的详细属性和文本。'
+                '支持单个 selector 或多个 selectors 一次查询，结果按选择器分组返回。\n'
+                '示例: selector="input" 或 selectors=["input","button","select"]',
             'input_schema': {
                 'type': 'object',
                 'properties': {
                     'selector': {
                         'type': 'string',
-                        'description': 'CSS 选择器，如 "li"、".product"、".table tbody tr"、"input"',
+                        'description': '单个 CSS 选择器（向后兼容），如 "input"、".product"',
+                    },
+                    'selectors': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'description': '多个 CSS 选择器，一次查询多个类型，如 ["input","button","select"]',
                     },
                 },
-                'required': ['selector'],
+                'required': [],
             },
         },
         'execute': _execute_browser_query_all,
@@ -802,6 +1346,83 @@ BROWSER_TOOLS = [
             },
         },
         'execute': _execute_browser_screenshot,
+    },
+    {
+        'schema': {
+            'name': 'browser_batch_action',
+            'description': '依次执行多个浏览器操作（click/fill/select/press_key/wait），所有操作完成后只返回一次页面快照。'
+                '比逐个调用高效得多，适合填写表单后提交、连续点击等场景。\n'
+                '示例: actions=[{"type":"fill","selector":"#user","value":"admin"},'
+                '{"type":"fill","selector":"#pass","value":"123"},'
+                '{"type":"click","selector":"#submit"}]',
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'actions': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'type': {
+                                    'type': 'string',
+                                    'enum': ['click', 'fill', 'select', 'press_key', 'wait'],
+                                    'description': '操作类型',
+                                },
+                                'selector': {
+                                    'type': 'string',
+                                    'description': '元素的 CSS 选择器 (click/fill/select 需要)',
+                                },
+                                'value': {
+                                    'type': 'string',
+                                    'description': '要填写的值 (fill) 或 select 的 value 属性',
+                                },
+                                'label': {
+                                    'type': 'string',
+                                    'description': 'select 的显示文本 (与 value 二选一)',
+                                },
+                                'key': {
+                                    'type': 'string',
+                                    'description': '键盘按键名称 (press_key 需要)，如 "Enter"、"Escape"',
+                                },
+                                'timeout': {
+                                    'type': 'integer',
+                                    'description': '等待超时毫秒数 (wait 可用)，默认 5000',
+                                },
+                            },
+                            'required': ['type'],
+                        },
+                        'description': '操作列表，按顺序依次执行',
+                    },
+                    'delay_between': {
+                        'type': 'integer',
+                        'description': '操作之间的延迟（毫秒），默认 20。设为 0 则无延迟。',
+                        'default': 20,
+                    },
+                },
+                'required': ['actions'],
+            },
+        },
+        'execute': _execute_browser_batch_action,
+    },
+    {
+        'schema': {
+            'name': 'browser_get_form',
+            'description': '提取页面表单数据为结构化 JSON，包含所有字段的 name/type/placeholder/value/options 和提交按钮。'
+                '比从快照中解析更可靠，适合精确了解表单结构。\n'
+                '不传 selector 则提取页面所有表单；传 selector 提取指定表单。',
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': '表单的 CSS 选择器，如 "#login-form" 或 "form"。留空则提取所有表单。',
+                        'default': '',
+                    },
+                },
+                'required': [],
+            },
+        },
+        'execute': _execute_browser_get_form,
     },
 ]
 

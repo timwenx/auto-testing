@@ -67,7 +67,6 @@ const ICON_MAP = {
   browser_snapshot: '📸',
   browser_query_all: '🔎',
   browser_get_text: '📋',
-  browser_screenshot: '📸',
   list_files: '📂',
   read_file: '📄',
   search_code: '🔍',
@@ -100,9 +99,6 @@ function getStepLabel(step) {
   if (toolName === 'browser_click') {
     return `点击 ${step.target || ''}`
   }
-  if (toolName === 'browser_screenshot') {
-    return '截图'
-  }
   if (toolName === 'report_result') {
     return `报告结果: ${step.target || ''}`
   }
@@ -114,6 +110,7 @@ function getStepType(step) {
   if (step.state === 'thinking') return 'info'
   return 'success'
 }
+
 </script>
 
 <style scoped>
