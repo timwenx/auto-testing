@@ -216,6 +216,32 @@ def _extract_target(tool_name, tool_input):
     return ''
 
 
+def format_step_action(tool_name, tool_input):
+    """将工具名称和输入转换为人类可读的步骤描述（action 字段）。
+
+    供 AgentRunner._persist_step() 和 execution_engine._build_step_logs() 共用，
+    保证实时写入与历史回填的数据格式一致。
+    """
+    if not isinstance(tool_input, dict):
+        return tool_name
+    if tool_name == 'browser_fill':
+        return f"填写 {tool_input.get('value', '')[:30]}"
+    elif tool_name == 'browser_screenshot':
+        return '截图'
+    elif tool_name == 'report_result':
+        return f"报告结果: {tool_input.get('status', '')}"
+    return tool_name
+
+
+def _extract_screenshot_path(result_text):
+    """从工具执行结果中提取截图路径"""
+    if not result_text:
+        return ''
+    if '截图已保存:' in result_text:
+        return result_text.split('截图已保存:')[-1].strip()
+    return ''
+
+
 class AgentRunner:
     """
     Agent 执行引擎。
@@ -225,10 +251,11 @@ class AgentRunner:
         result = runner.run(system_prompt="...", messages=[...], max_turns=20)
     """
 
-    def __init__(self, project, testcase_id=None, execution_id=None):
+    def __init__(self, project, testcase_id=None, execution_id=None, execution_record=None):
         self.project = project
         self.testcase_id = testcase_id
         self.execution_id = execution_id
+        self._execution_record = execution_record  # 用于实时持久化步骤到 DB
         self._playwright = None
         self._browser = None
         self._page = None
@@ -239,6 +266,39 @@ class AgentRunner:
         self._total_output_tokens = 0
         # 是否有浏览器工具被调用过（用于决定是否需要清理）
         self._browser_used = False
+
+    def _persist_step(self, tool_name, tool_input, result_text, step_start_time, duration_ms):
+        """将单个工具调用步骤实时写入 DB。
+
+        每次工具调用完成后调用一次，追加 step_log 到 ExecutionRecord.step_logs JSONField。
+        DB 写入失败不会中断 Agent 执行流程。
+        """
+        if not self._execution_record:
+            return
+
+        # 已在 run() 中 _tool_calls_log.append() 之后调用，len 即为当前步骤的 1-indexed 编号
+        step_num = len(self._tool_calls_log)
+        step = {
+            'step_num': step_num,
+            'action': format_step_action(tool_name, tool_input),
+            'tool_name': tool_name,
+            'target': _extract_target(tool_name, tool_input),
+            'result': (result_text or '')[:300],
+            'screenshot_path': _extract_screenshot_path(result_text),
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'duration_ms': duration_ms,
+        }
+
+        try:
+            record = self._execution_record
+            # 读取当前 step_logs 并追加新步骤
+            current_logs = list(record.step_logs or [])
+            current_logs.append(step)
+            record.step_logs = current_logs
+            record.tool_calls_count = len(current_logs)
+            record.save(update_fields=['step_logs', 'tool_calls_count'])
+        except Exception as e:
+            logger.warning("[Agent] 步骤实时持久化失败 (step %d): %s", step_num + 1, e)
 
     def run(self, system_prompt: str, messages: list, max_turns: int = 20) -> dict:
         """
@@ -378,9 +438,7 @@ class AgentRunner:
 
                     # 推送步骤完成事件
                     if self.execution_id:
-                        screenshot_path = ''
-                        if '截图已保存:' in (result_text or ''):
-                            screenshot_path = result_text.split('截图已保存:')[-1].strip()
+                        screenshot_path = _extract_screenshot_path(result_text)
                         _emit_step_event(self.execution_id, 'step_complete', {
                             'step_num': len(self._tool_calls_log),
                             'action': tool_name,
@@ -389,6 +447,9 @@ class AgentRunner:
                             'screenshot_path': screenshot_path,
                             'duration_ms': duration_ms,
                         })
+
+                    # 实时持久化步骤到 DB（断线重连后 REST 回填可用）
+                    self._persist_step(tool_name, tool_input, result_text, step_start_time, duration_ms)
 
                     # 同线程截图轮询（每个工具调用之后）
                     if self._screenshot_stream:

@@ -263,6 +263,7 @@ export function useExecutionObserver(executionId) {
         _startFramePolling()
         steps.value.push({
           step_num: data.step_num,
+          tool_name: data.action || '',
           action: data.action || '',
           target: data.target || '',
           result: '',
@@ -281,6 +282,7 @@ export function useExecutionObserver(executionId) {
         )
         const stepData = {
           step_num: data.step_num,
+          tool_name: data.action || '',
           action: data.action || '',
           target: data.target || '',
           result: data.result || '',
