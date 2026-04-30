@@ -4,6 +4,7 @@ ASGI config for backend project.
 Supports both HTTP and WebSocket (via Django Channels).
 """
 
+import asyncio
 import os
 import logging
 
@@ -36,15 +37,33 @@ class ShutdownGuardMiddleware:
                 raise
 
 
+class EventLoopCaptureMiddleware:
+    """在首次请求时捕获 ASGI 事件循环，供 event_emitter 使用。"""
+
+    _captured = False
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if not EventLoopCaptureMiddleware._captured:
+            from core.event_emitter import set_asgi_event_loop
+            set_asgi_event_loop(asyncio.get_running_loop())
+            EventLoopCaptureMiddleware._captured = True
+        return await self.app(scope, receive, send)
+
+
 # 先初始化 Django（必须在 import routing 之前）
 django_asgi_app = get_asgi_application()
 
 # 延迟 import routing，确保 Django apps 已加载
 from core.routing import websocket_urlpatterns  # noqa: E402
 
-application = ShutdownGuardMiddleware(
-    ProtocolTypeRouter({
-        'http': django_asgi_app,
-        'websocket': URLRouter(websocket_urlpatterns),
-    })
+application = EventLoopCaptureMiddleware(
+    ShutdownGuardMiddleware(
+        ProtocolTypeRouter({
+            'http': django_asgi_app,
+            'websocket': URLRouter(websocket_urlpatterns),
+        })
+    )
 )

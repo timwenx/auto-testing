@@ -43,14 +43,6 @@ class ExecutionConsumer(WebsocketConsumer):
         self.group_name = f'execution_{self.execution_id}'
         self._heartbeat_timer = None
 
-        # 保存 ASGI 事件循环引用，供工作线程通过 run_coroutine_threadsafe 推送事件
-        import asyncio
-        from .event_emitter import set_asgi_event_loop
-        try:
-            set_asgi_event_loop(asyncio.get_running_loop())
-        except RuntimeError:
-            pass
-
         self.accept()
         logger.info("[WS] Client connected to execution %s", self.execution_id)
 
@@ -167,14 +159,6 @@ class FrameConsumer(WebsocketConsumer):
         self.execution_id = self.scope['url_route']['kwargs']['execution_id']
         self.group_name = f'frame_{self.execution_id}'
         self._heartbeat_timer = None
-
-        # 保存 ASGI 事件循环引用，供工作线程通过 run_coroutine_threadsafe 推送事件
-        import asyncio
-        from .event_emitter import set_asgi_event_loop
-        try:
-            set_asgi_event_loop(asyncio.get_running_loop())
-        except RuntimeError:
-            pass
 
         self.accept()
         logger.info("[FrameWS] Client connected to frame channel for execution %s",

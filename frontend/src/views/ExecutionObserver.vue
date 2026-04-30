@@ -131,7 +131,6 @@ const canReplay = computed(() => isTerminalStatus.value)
 function enterReplay() {
   replayMode.value = true
   disconnect()
-  disconnectFrame()
 }
 
 function exitReplay() {
@@ -139,7 +138,6 @@ function exitReplay() {
   // 如果执行仍在运行，重新连接
   if (executionInfo.value?.status === 'running') {
     connect()
-    connectFrame()
   }
 }
 
@@ -150,8 +148,8 @@ const screenshots = ref([])  // 截图画廊数据
 // Step 通道 composable（步骤事件）
 const { steps, stats, status, error, currentPhase, connect, disconnect } = useExecutionObserver(executionId)
 
-// Frame 通道 composable（截图帧事件）
-const { currentFrame, frameWsStatus, connectFrame, disconnectFrame } = useFrameObserver(executionId)
+// Frame composable（步骤截图管理 — 不再使用独立 WS）
+const { currentFrame, updateFrame, showLatestStepScreenshot, connectFrame, disconnectFrame } = useFrameObserver(executionId)
 
 // 选中步骤
 const selectedStepIdx = ref(-1)
@@ -185,6 +183,16 @@ function getStatusType(s) {
 function handleStepSelect(idx, step) {
   selectedStepIdx.value = selectedStepIdx.value === idx ? -1 : idx
 }
+
+// 监听步骤变化，自动更新截图（一个步骤一张截图）
+// 使用 deep watch 捕获 step_complete 更新已有步骤的 screenshot_path（长度不变的情况）
+watch(steps, (newSteps) => {
+  if (newSteps.length === 0) return
+  const latestStep = newSteps[newSteps.length - 1]
+  if (latestStep && latestStep.screenshot_path) {
+    updateFrame(latestStep)
+  }
+}, { deep: true, flush: 'post' })
 
 function goBack() {
   router.back()
@@ -238,7 +246,6 @@ watch(status, async (newStatus, oldStatus) => {
           stats.outputTokens = data.agent_response.output_tokens
         }
         disconnect()
-        disconnectFrame()
       }
     } catch (e) {
       console.warn('REST backfill after reconnect failed:', e)
@@ -273,37 +280,30 @@ onMounted(async () => {
     return
   }
 
-  // 分支 3: 进行中执行 → 先 REST 拉取已持久化步骤，再建双 WS 连接
+  // 分支 3: 进行中执行 → 先 REST 拉取已持久化步骤，再建 WS 连接
   await _loadStepData()
-  connect()        // 步骤事件通道
-  connectFrame()   // 截图帧通道
+  showLatestStepScreenshot(steps.value)
+  connect()        // 步骤事件通道（截图通过 step_complete 的 screenshot_path 传递）
 })
 
 /**
  * 从 REST 数据中设置终态下的截图帧
  */
 function _setTerminalFrame() {
-  // 从 screenshots 数组中取最后一个条目
-  const allScreenshots = [
-    ...(screenshots.value || []),
-  ]
-  if (allScreenshots.length > 0) {
-    const lastScreenshot = allScreenshots[allScreenshots.length - 1]
-    const path = typeof lastScreenshot === 'string' ? lastScreenshot : (lastScreenshot.image || lastScreenshot.path || '')
-    if (path) {
-      currentFrame.value = `/api/executions/screenshots/?path=${encodeURIComponent(path)}`
-      return
+  // 优先从 step_logs 中查找最后一个有 screenshot_path 的步骤
+  showLatestStepScreenshot(steps.value)
+
+  // 如果步骤截图都没找到，回退到 screenshots 数组
+  if (!currentFrame.value) {
+    const allScreenshots = [...(screenshots.value || [])]
+    if (allScreenshots.length > 0) {
+      const lastScreenshot = allScreenshots[allScreenshots.length - 1]
+      const path = typeof lastScreenshot === 'string' ? lastScreenshot : (lastScreenshot.image || lastScreenshot.path || '')
+      if (path) {
+        currentFrame.value = `/api/executions/screenshots/?path=${encodeURIComponent(path)}`
+      }
     }
   }
-  // 从 step_logs 中查找最后一个有 screenshot_path 的步骤
-  const stepsWithScreenshot = steps.value.filter(s => s.screenshot_path)
-  if (stepsWithScreenshot.length > 0) {
-    const lastStep = stepsWithScreenshot[stepsWithScreenshot.length - 1]
-    currentFrame.value = `/api/executions/screenshots/?path=${encodeURIComponent(lastStep.screenshot_path)}`
-    return
-  }
-  // 回退到 latest_frame 端点
-  currentFrame.value = `/api/executions/${executionId.value}/latest_frame/?t=${Date.now()}`
 }
 
 /**

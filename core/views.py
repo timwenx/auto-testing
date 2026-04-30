@@ -384,7 +384,7 @@ def serve_screenshot(request):
     # 返回文件
     content_type = mimetypes.guess_type(abs_path)[0] or 'image/png'
     try:
-        return FileResponse(open(abs_path, 'rb'), content_type=content_type, close=True)
+        return FileResponse(open(abs_path, 'rb'), content_type=content_type)
     except IOError as e:
         logger.error("Failed to read screenshot file: %s", e)
         raise Http404("无法读取截图文件")
