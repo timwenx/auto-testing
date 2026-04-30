@@ -12,6 +12,7 @@ refine_testcase_with_agent — 无工具的单用例对话式调整。
 import json
 import logging
 import sys
+import threading
 import time
 
 from .agent_tools import get_tool_schemas, get_tool_executor, get_browser_tool_names
@@ -294,11 +295,24 @@ class AgentRunner:
             # 读取当前 step_logs 并追加新步骤
             current_logs = list(record.step_logs or [])
             current_logs.append(step)
-            record.step_logs = current_logs
-            record.tool_calls_count = len(current_logs)
-            record.save(update_fields=['step_logs', 'tool_calls_count'])
+
+            def _save_step():
+                """在独立线程中执行 DB 写入，避免 Playwright 事件循环触发 Django async-safety 检查"""
+                try:
+                    record.step_logs = current_logs
+                    record.tool_calls_count = len(current_logs)
+                    record.save(update_fields=['step_logs', 'tool_calls_count'])
+                except Exception as exc:
+                    logger.warning("[Agent] 步骤持久化写入失败 (step %d): %s", step_num, exc)
+
+            # sync_playwright() 会在后台创建一个 asyncio 事件循环，
+            # 导致 Django 5 的 async-safety 检查认为当前是 async 上下文，
+            # 拒绝同步 ORM 操作。通过在线程中执行 DB 写入绕过此限制。
+            t = threading.Thread(target=_save_step, daemon=True)
+            t.start()
+            t.join(timeout=5)  # 等待写入完成，最多 5 秒
         except Exception as e:
-            logger.warning("[Agent] 步骤实时持久化失败 (step %d): %s", step_num + 1, e)
+            logger.warning("[Agent] 步骤实时持久化失败 (step %d): %s", step_num, e)
 
     def run(self, system_prompt: str, messages: list, max_turns: int = 20) -> dict:
         """
@@ -346,6 +360,12 @@ class AgentRunner:
                 if self._screenshot_stream:
                     self._screenshot_stream.maybe_capture()
 
+                # 推送阶段状态：等待 Claude 响应
+                if self.execution_id:
+                    _emit_step_event(self.execution_id, 'phase_change', {
+                        'phase': 'waiting_for_claude',
+                    })
+
                 # 调用 Claude API
                 response = client.messages.create(
                     model=model,
@@ -390,6 +410,14 @@ class AgentRunner:
                     tool_name = tool_use.name
                     tool_input = tool_use.input
                     logger.info("[Agent] 工具调用: %s(%s)", tool_name, tool_input)
+
+                    # 推送阶段状态：正在执行步骤
+                    if self.execution_id:
+                        _emit_step_event(self.execution_id, 'phase_change', {
+                            'phase': 'executing_step',
+                            'step_num': len(self._tool_calls_log) + 1,
+                            'tool_name': tool_name,
+                        })
 
                     # 推送步骤开始事件
                     step_start_time = time.time()
@@ -498,6 +526,14 @@ class AgentRunner:
             return
 
         logger.info("[Agent] 初始化 Playwright 浏览器")
+
+        # 推送阶段状态：正在初始化浏览器
+        from .event_emitter import _emit_step_event
+        if self.execution_id:
+            _emit_step_event(self.execution_id, 'phase_change', {
+                'phase': 'initializing_browser',
+            })
+
         try:
             import asyncio
             from playwright.sync_api import sync_playwright
@@ -535,6 +571,12 @@ class AgentRunner:
                 self._screenshot_stream.start(self._page, self.execution_id)
             except Exception as e:
                 logger.warning("[Agent] 截图流启动失败（非致命）: %s", e)
+
+        # 推送阶段状态：浏览器就绪
+        if self.execution_id:
+            _emit_step_event(self.execution_id, 'phase_change', {
+                'phase': 'browser_ready',
+            })
 
     def _cleanup_browser(self, context):
         """清理浏览器资源"""

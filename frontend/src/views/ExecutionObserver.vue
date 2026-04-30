@@ -54,6 +54,7 @@
           v-else
           :frame-src="currentFrame"
           :execution-status="status === 'running' ? 'running' : (executionInfo?.status || 'idle')"
+          :phase="currentPhase"
           :pip="pipMode"
           @refresh="connect"
           @toggle-pip="pipMode = !pipMode"
@@ -144,7 +145,7 @@ const executionInfo = ref(null)
 const screenshots = ref([])  // 截图画廊数据
 
 // Observer composable
-const { steps, currentFrame, stats, status, error, connect, disconnect } = useExecutionObserver(executionId)
+const { steps, currentFrame, stats, status, error, currentPhase, connect, disconnect } = useExecutionObserver(executionId)
 
 // 选中步骤
 const selectedStepIdx = ref(-1)

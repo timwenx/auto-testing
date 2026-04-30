@@ -43,6 +43,7 @@ const props = defineProps({
   frameSrc: { type: String, default: null },
   pip: { type: Boolean, default: false },
   executionStatus: { type: String, default: 'idle' },
+  phase: { type: String, default: null },
 })
 
 defineEmits(['refresh', 'toggle-pip'])
@@ -77,6 +78,14 @@ const fpsDisplay = computed(() => {
   return `${fps.value} fps`
 })
 
+// 阶段描述映射
+const PHASE_TEXT = {
+  initializing_browser: '正在启动浏览器...',
+  browser_ready: '浏览器就绪',
+  waiting_for_claude: '正在等待 Claude 响应...',
+  executing_step: '正在执行步骤...',
+}
+
 const placeholderText = computed(() => {
   const execStatus = props.executionStatus
   if (execStatus === 'completed' || execStatus === 'passed') {
@@ -87,6 +96,10 @@ const placeholderText = computed(() => {
   }
   if (execStatus === 'error') {
     return '执行异常'
+  }
+  // 有阶段信息时优先显示阶段描述
+  if (props.phase && PHASE_TEXT[props.phase]) {
+    return PHASE_TEXT[props.phase]
   }
   if (execStatus === 'running') {
     return '等待浏览器启动...'

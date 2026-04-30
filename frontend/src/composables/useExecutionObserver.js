@@ -22,6 +22,7 @@ export function useExecutionObserver(executionId) {
   })
   const status = ref('idle')           // idle | connecting | connected | running | completed | error
   const error = ref(null)
+  const currentPhase = ref(null)       // 当前执行阶段（来自 phase_change 事件）
 
   // ── 帧轮询（HTTP fallback） ──
   let lastFrameTime = 0               // 上次收到 browser_frame 事件的 Date.now()（ms）
@@ -276,6 +277,7 @@ export function useExecutionObserver(executionId) {
 
       case 'step_complete':
         status.value = 'running'
+        currentPhase.value = null  // 步骤完成，清除阶段描述
         // 查找对应的 step_start 并更新，或直接添加
         const existingIdx = steps.value.findIndex(
           s => s.step_num === data.step_num && s.state === 'running'
@@ -311,6 +313,11 @@ export function useExecutionObserver(executionId) {
           state: 'thinking',
           timestamp: data.timestamp,
         })
+        break
+
+      case 'phase_change':
+        // 执行阶段变更（不修改 steps，只更新当前阶段描述）
+        currentPhase.value = data.phase || null
         break
 
       case 'browser_frame':
@@ -426,6 +433,7 @@ export function useExecutionObserver(executionId) {
     stats,
     status,
     error,
+    currentPhase,
     connect,
     disconnect,
   }
