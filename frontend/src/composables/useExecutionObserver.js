@@ -7,6 +7,7 @@
  *   disconnect() // 断开连接
  */
 import { ref, reactive, onUnmounted } from 'vue'
+import { getExecutionSteps } from '../api'
 
 export function useExecutionObserver(executionId) {
   // ── 响应式状态 ──
@@ -64,9 +65,10 @@ export function useExecutionObserver(executionId) {
     }
 
     ws.onopen = () => {
-      status.value = 'connected'
       reconnectAttempts = 0
       error.value = null
+      // 注意：不在这里设置 status = 'connected'，
+      // 等 connection_established 事件到来后根据 execution_status 决定
     }
 
     ws.onmessage = (event) => {
@@ -95,9 +97,18 @@ export function useExecutionObserver(executionId) {
 
   function _handleEvent(data) {
     switch (data.type) {
-      case 'connection_established':
-        // 连接确认，不做额外处理
+      case 'connection_established': {
+        // 检查后端返回的执行状态：如果已结束，直接进入 completed 状态
+        const execStatus = data.execution_status
+        if (execStatus && execStatus !== 'running') {
+          status.value = 'completed'
+          // 执行已结束，主动拉取最终数据并关闭连接
+          _fetchFinalDataAndClose()
+        } else {
+          status.value = 'connected'
+        }
         break
+      }
 
       case 'step_start':
         status.value = 'running'
@@ -168,6 +179,39 @@ export function useExecutionObserver(executionId) {
 
       default:
         console.debug('[Observer] Unknown event type:', data.type)
+    }
+  }
+
+  /**
+   * 执行已结束时，通过 REST 拉取最终数据并关闭 WebSocket。
+   */
+  async function _fetchFinalDataAndClose() {
+    const id = executionId.value !== undefined ? executionId.value : executionId
+    try {
+      const { data } = await getExecutionSteps(id)
+      if (data.step_logs && data.step_logs.length > 0) {
+        // 合并 REST 返回的步骤（避免与 WebSocket 实时步骤重复）
+        for (const step of data.step_logs) {
+          const exists = steps.value.some(s => s.step_num === step.step_num && s.state === 'completed')
+          if (!exists) {
+            steps.value.push({ ...step, state: 'completed', duration_ms: 0 })
+          }
+        }
+      }
+      stats.totalSteps = data.step_logs?.length || stats.totalSteps
+      if (data.agent_response?.input_tokens) {
+        stats.inputTokens = data.agent_response.input_tokens
+        stats.outputTokens = data.agent_response.output_tokens
+      }
+      if (data.duration) {
+        stats.duration = data.duration
+      }
+    } catch (e) {
+      console.warn('[Observer] Failed to fetch final execution data:', e)
+    }
+    // 关闭 WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close(1000, 'Execution already completed')
     }
   }
 
