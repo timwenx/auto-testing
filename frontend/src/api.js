@@ -31,6 +31,7 @@ export const getProjectTestCases = (projectId) => api.get(`/projects/${projectId
 // ─── 执行 ───
 export const getExecutions = (params) => api.get('/executions/', { params })
 export const getExecution = (id) => api.get(`/executions/${id}/`)
+export const getExecutionSteps = (id) => api.get(`/executions/${id}/steps/`)
 export const executeTestCase = (testcaseId) => api.post(`/testcases/${testcaseId}/execute/`)
 export const executeProject = (projectId) => api.post(`/projects/${projectId}/execute-all/`)
 export const executeTestCaseAgent = (testcaseId) => aiApi.post(`/testcases/${testcaseId}/execute-agent/`)

@@ -22,6 +22,11 @@ const routes = [
     component: () => import('../views/Executions.vue'),
   },
   {
+    path: '/executions/:id/observe',
+    name: 'ExecutionObserver',
+    component: () => import('../views/ExecutionObserver.vue'),
+  },
+  {
     path: '/ai',
     name: 'AIAssistant',
     component: () => import('../views/AIAssistant.vue'),
