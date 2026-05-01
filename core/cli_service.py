@@ -8,9 +8,64 @@ Claude CLI 服务 — 通过 subprocess 调用 Claude Code CLI 进行代码分�
 """
 import logging
 import os
+import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_claude_bin(bin_path: str) -> str:
+    """
+    解析 Claude CLI 可执行文件的实际路径。
+
+    查找顺序:
+    1. 如果传入的路径已存在，直接返回
+    2. 检查 %APPDATA%/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+    3. 通过 which 找到 claude.cmd，再定位同目录下的 claude.exe
+    4. 尝试 which claude.exe / claude
+
+    Args:
+        bin_path: 配置中的 CLI 路径（默认 'claude'）
+
+    Returns:
+        解析后的可执行文件路径
+    """
+    import platform
+
+    # If the path exists, use it directly
+    if os.path.exists(bin_path):
+        return bin_path
+
+    if platform.system() == 'Windows':
+        # Check APPDATA/npm path
+        appdata = os.environ.get('APPDATA', '')
+        if appdata:
+            exe_path = os.path.join(
+                appdata, 'npm', 'node_modules',
+                '@anthropic-ai', 'claude-code', 'bin', 'claude.exe',
+            )
+            if os.path.exists(exe_path):
+                return exe_path
+
+        # Try to resolve via which: find claude.cmd, then look for the exe
+        cmd_path = shutil.which('claude.cmd')
+        if cmd_path:
+            parent = os.path.dirname(cmd_path)
+            exe_path = os.path.join(
+                parent, 'node_modules',
+                '@anthropic-ai', 'claude-code', 'bin', 'claude.exe',
+            )
+            if os.path.exists(exe_path):
+                return exe_path
+
+        # Check common names via which
+        for candidate in ('claude.exe', 'claude'):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+
+    # On non-Windows or if resolution fails, return original
+    return bin_path
 
 
 def get_cli_settings() -> dict:
@@ -37,6 +92,8 @@ def is_cli_available(cli_path: str = None) -> tuple:
     if not cli_path:
         settings = get_cli_settings()
         cli_path = settings['cli_path']
+
+    cli_path = resolve_claude_bin(cli_path)
 
     try:
         result = subprocess.run(
@@ -82,7 +139,7 @@ def call_cli(prompt: str, cwd: str, model: str = None, timeout: int = None) -> s
         RuntimeError: CLI 返回非零退出码
     """
     settings = get_cli_settings()
-    cli_path = settings['cli_path']
+    cli_path = resolve_claude_bin(settings['cli_path'])
     if timeout is None:
         timeout = settings['timeout']
 
