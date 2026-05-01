@@ -82,7 +82,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getProject, getRepoAnalysis, getGenerationDraft, clearGenerationDraft } from '../api.js'
+import { getProject, getRepoAnalysis, getGenerationDraft, saveGenerationDraft, clearGenerationDraft } from '../api.js'
 import RepoStatusCard from '../components/RepoStatusCard.vue'
 import CodeAnalysisPanel from '../components/CodeAnalysisPanel.vue'
 import PreconditionSelector from '../components/PreconditionSelector.vue'
@@ -142,6 +142,15 @@ async function restoreWizardState(projectData) {
       activeStep.value = 3
       return
     }
+    if (draft.status === 'selected' && draft.selected_items && draft.selected_items.length > 0) {
+      // Items were selected but generation hasn't started yet
+      selectedItems.value = draft.selected_items || []
+      itemDescriptions.value = draft.descriptions || {}
+      selectedPreconditionId.value = draft.precondition_id || null
+      initialDraftCases.value = null
+      activeStep.value = 3
+      return
+    }
   } catch (e) {
     // Draft fetch failed, continue with analysis check
   }
@@ -194,6 +203,14 @@ function onItemsSelected(items, descriptions) {
   selectedItems.value = items
   itemDescriptions.value = descriptions
   activeStep.value = 3
+  // Persist selection to server so a page refresh restores to step 3
+  saveGenerationDraft(projectId.value, {
+    selected_items: items,
+    descriptions: descriptions,
+    precondition_id: null,
+    status: 'selected',
+    step: 3,
+  }).catch(() => {})
 }
 
 function onSaveComplete(count) {

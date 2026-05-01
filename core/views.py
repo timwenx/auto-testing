@@ -1300,10 +1300,12 @@ def batch_generate_testcases(request, project_id):
     if not selected_items:
         return Response({'error': '请至少选择一个目标'}, status=status.HTTP_400_BAD_REQUEST)
 
-    try:
-        precondition = PreconditionTemplate.objects.get(pk=precondition_id)
-    except PreconditionTemplate.DoesNotExist:
-        return Response({'error': '前置条件模板不存在'}, status=status.HTTP_404_NOT_FOUND)
+    # Only validate precondition when one is explicitly provided
+    if precondition_id is not None:
+        try:
+            PreconditionTemplate.objects.get(pk=precondition_id)
+        except PreconditionTemplate.DoesNotExist:
+            return Response({'error': '前置条件模板不存在'}, status=status.HTTP_404_NOT_FOUND)
 
     # Save generation draft as 'generating' status immediately
     project.generation_draft = {

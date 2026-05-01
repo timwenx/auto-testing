@@ -173,9 +173,9 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { batchGenerateTestcases, batchSaveTestcases, getGenerationDraft } from '../api.js'
+import { batchGenerateTestcases, batchSaveTestcases, getGenerationDraft, saveGenerationDraft } from '../api.js'
 
 const props = defineProps({
   projectId: { type: Number, required: true },
@@ -205,6 +205,40 @@ const previewCase = ref(null)
 const showEdit = ref(false)
 const editingCase = ref(null)
 const editingIndex = ref(-1)
+
+// --- Auto-sync: debounce edits back to server generation_draft ---
+let syncTimer = null
+let skipNextSync = true  // skip the initial population from props
+
+function syncDraftToServer() {
+  if (generating.value || saving.value) return
+  const draft = {
+    selected_items: props.selectedItems,
+    descriptions: props.descriptions,
+    precondition_id: props.preconditionId,
+    generated_cases: generatedCases.value,
+    status: generatedCases.value.length > 0 ? 'completed' : 'selected',
+    step: 3,
+  }
+  saveGenerationDraft(props.projectId, draft).catch((e) => {
+    console.warn('Draft sync failed:', e)
+  })
+}
+
+watch(generatedCases, () => {
+  if (skipNextSync) {
+    skipNextSync = false
+    return
+  }
+  if (generating.value) return  // don't overwrite during generation
+  if (syncTimer) clearTimeout(syncTimer)
+  syncTimer = setTimeout(syncDraftToServer, 1500)
+}, { deep: true })
+
+onUnmounted(() => {
+  if (syncTimer) clearTimeout(syncTimer)
+})
+// --- End auto-sync ---
 
 async function handleGenerate() {
   if (!props.selectedItems?.length) {
