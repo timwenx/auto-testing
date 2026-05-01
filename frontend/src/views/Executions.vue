@@ -48,7 +48,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="执行时间" width="170" />
-        <el-table-column label="操作" min-width="220" fixed="right">
+        <el-table-column label="操作" min-width="280" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'running'"
@@ -56,13 +56,17 @@
               @click="navigateToObserver(row.id)"
             >观察</el-button>
             <el-button
-              v-if="row.execution_mode === 'agent' && isTerminalStatus(row.status)"
+              v-if="['agent', 'replay'].includes(row.execution_mode) && isTerminalStatus(row.status)"
               size="small" text type="warning"
               @click="navigateToReplay(row.id)"
             >回放</el-button>
+            <el-button
+              v-if="['agent', 'replay'].includes(row.execution_mode) && isTerminalStatus(row.status)"
+              size="small" text type="success"
+              @click="navigateToScriptEditor(row.id)"
+            >{{ row.replay_script ? '编辑脚本' : '生成脚本' }}</el-button>
             <el-button size="small" text type="primary" @click="showDetail(row)">详情</el-button>
             <el-button size="small" text type="warning" @click="showLog(row)">日志</el-button>
-            <el-button size="small" text type="success" @click="handleAnalyze(row)">AI 分析</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -71,11 +75,11 @@
     <!-- 详情弹窗 -->
     <el-dialog v-model="showDetailDialog" title="执行详情" width="800px" top="5vh">
       <template v-if="detailRecord">
-        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; gap: 8px;" v-if="detailRecord.status === 'running' || (detailRecord.execution_mode === 'agent' && isTerminalStatus(detailRecord.status))">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; gap: 8px;" v-if="detailRecord.status === 'running' || (['agent', 'replay'].includes(detailRecord.execution_mode) && isTerminalStatus(detailRecord.status))">
           <el-button v-if="detailRecord.status === 'running'" type="primary" size="small" @click="navigateToObserver(detailRecord.id); showDetailDialog = false">
             <el-icon><Monitor /></el-icon> 观察执行
           </el-button>
-          <el-button v-if="detailRecord.execution_mode === 'agent' && isTerminalStatus(detailRecord.status)" type="warning" size="small" @click="navigateToReplay(detailRecord.id); showDetailDialog = false">
+          <el-button v-if="['agent', 'replay'].includes(detailRecord.execution_mode) && isTerminalStatus(detailRecord.status)" type="warning" size="small" @click="navigateToReplay(detailRecord.id); showDetailDialog = false">
             <el-icon><VideoPlay /></el-icon> 回放
           </el-button>
         </div>
@@ -162,24 +166,6 @@
       </template>
     </el-dialog>
 
-    <!-- AI 分析弹窗 -->
-    <el-dialog v-model="showAnalysisDialog" title="AI 分析结果" width="600px">
-      <template v-if="analysis">
-        <el-descriptions :column="1" border size="small">
-          <el-descriptions-item label="总结">{{ analysis.summary }}</el-descriptions-item>
-          <el-descriptions-item label="根因分析">{{ analysis.root_cause }}</el-descriptions-item>
-          <el-descriptions-item label="改进建议">{{ analysis.suggestion }}</el-descriptions-item>
-          <el-descriptions-item label="严重程度">
-            <el-tag :type="severityType(analysis.severity)" size="small">{{ analysis.severity }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="偶发问题">
-            {{ analysis.is_flaky ? '可能是' : '否' }}
-          </el-descriptions-item>
-        </el-descriptions>
-      </template>
-      <div v-else v-loading="true" style="height: 100px"></div>
-    </el-dialog>
-
     <!-- 图片预览弹窗 -->
     <el-dialog v-model="showImageDialog" title="截图预览" width="80%" top="5vh">
       <div style="text-align: center">
@@ -192,7 +178,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getExecutions, getProjects, aiAnalyzeResult } from '../api'
+import { getExecutions, getProjects } from '../api'
 import { ElMessage } from 'element-plus'
 import { Monitor, VideoPlay } from '@element-plus/icons-vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
@@ -210,8 +196,6 @@ const showDetailDialog = ref(false)
 const detailRecord = ref(null)
 const showLogDialog = ref(false)
 const logRecord = ref(null)
-const showAnalysisDialog = ref(false)
-const analysis = ref(null)
 const showImageDialog = ref(false)
 const previewImageUrl = ref('')
 let pollTimer = null
@@ -229,11 +213,6 @@ const filteredExecutions = computed(() => {
 
 const statusType = (s) => {
   const map = { passed: 'success', failed: 'danger', running: 'warning', error: 'danger', pending: 'info' }
-  return map[s] || 'info'
-}
-
-const severityType = (s) => {
-  const map = { low: 'success', medium: 'warning', high: 'danger' }
   return map[s] || 'info'
 }
 
@@ -294,19 +273,11 @@ const navigateToReplay = (id) => {
   router.push({ name: 'ExecutionObserver', params: { id }, query: { replay: 'true' } })
 }
 
-const isTerminalStatus = (s) => ['passed', 'failed', 'error'].includes(s)
-
-const handleAnalyze = async (row) => {
-  analysis.value = null
-  showAnalysisDialog.value = true
-  try {
-    const { data } = await aiAnalyzeResult({ execution_id: row.id })
-    analysis.value = data
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || 'AI 分析失败')
-    showAnalysisDialog.value = false
-  }
+const navigateToScriptEditor = (id) => {
+  router.push({ name: 'ScriptEditor', params: { id } })
 }
+
+const isTerminalStatus = (s) => ['passed', 'failed', 'error'].includes(s)
 
 watch(() => filters.value.project, loadExecutions)
 

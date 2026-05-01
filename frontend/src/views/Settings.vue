@@ -27,13 +27,6 @@
           <el-input-number v-model.number="settings.execution_timeout" :min="30" :max="600" />
           <div class="form-hint">单个用例的最大执行时间</div>
         </el-form-item>
-        <el-form-item label="默认执行模式">
-          <el-select v-model="settings.default_execution_mode" style="width: 200px">
-            <el-option label="Script 模式" value="script" />
-            <el-option label="Agent 模式" value="agent" />
-          </el-select>
-          <div class="form-hint">统一执行入口使用哪种模式</div>
-        </el-form-item>
         <el-divider content-position="left">Agent 配置</el-divider>
         <el-form-item label="Agent 最大轮次">
           <el-input-number v-model.number="settings.agent_max_turns" :min="5" :max="120" />
@@ -84,7 +77,6 @@ const defaultSettings = {
   max_workers: 3,
   execution_timeout: 120,
   api_base_url: '/api',
-  default_execution_mode: 'script',
   agent_max_turns: 20,
   agent_headless: true,
 }
@@ -106,7 +98,6 @@ const loadSettings = async () => {
       max_workers: parseInt(data.max_workers) || defaultSettings.max_workers,
       execution_timeout: parseInt(data.execution_timeout) || defaultSettings.execution_timeout,
       api_base_url: data.api_base_url ?? defaultSettings.api_base_url,
-      default_execution_mode: data.default_execution_mode ?? defaultSettings.default_execution_mode,
       agent_max_turns: parseInt(data.agent_max_turns) || defaultSettings.agent_max_turns,
       agent_headless: String(data.agent_headless ?? 'true').toLowerCase() === 'true',
     }
@@ -127,7 +118,6 @@ const handleSave = async () => {
       max_workers: String(settings.value.max_workers),
       execution_timeout: String(settings.value.execution_timeout),
       api_base_url: String(settings.value.api_base_url),
-      default_execution_mode: String(settings.value.default_execution_mode),
       agent_max_turns: String(settings.value.agent_max_turns),
       agent_headless: settings.value.agent_headless ? 'true' : 'false',
     })
@@ -149,7 +139,6 @@ const handleReset = async () => {
       max_workers: String(defaultSettings.max_workers),
       execution_timeout: String(defaultSettings.execution_timeout),
       api_base_url: defaultSettings.api_base_url,
-      default_execution_mode: defaultSettings.default_execution_mode,
       agent_max_turns: String(defaultSettings.agent_max_turns),
       agent_headless: defaultSettings.agent_headless ? 'true' : 'false',
     })

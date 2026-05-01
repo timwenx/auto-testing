@@ -312,25 +312,26 @@ class AgentRunner:
         # 是否有浏览器工具被调用过（用于决定是否需要清理）
         self._browser_used = False
 
-    def _auto_screenshot(self, context):
-        """浏览器工具执行后自动截图，保存到 media/{execution_id}/step_{n}.png"""
+    def _auto_screenshot(self, context, step_num):
+        """浏览器工具执行后自动截图，保存到 media/{execution_id}/step_{n}.png
+
+        使用全局 step_num（而非独立计数器）命名，确保文件名与步骤号一一对应。
+        非浏览器步骤不会有文件，避免错位。
+        """
         page = context.get('page')
         if not page or page.is_closed():
             return ''
         try:
             from django.conf import settings as django_settings
             execution_id = context.get('execution_id', 'unknown')
-            # 使用 screenshot_counter 追踪步骤编号
-            counter = context.get('screenshot_counter', 0) + 1
-            context['screenshot_counter'] = counter
             screenshot_dir = os.path.join(
                 str(django_settings.MEDIA_ROOT),
                 str(execution_id),
             )
             os.makedirs(screenshot_dir, exist_ok=True)
-            save_path = os.path.join(screenshot_dir, f'step_{counter}.png')
+            save_path = os.path.join(screenshot_dir, f'step_{step_num}.png')
             page.screenshot(path=save_path, full_page=True)
-            logger.info("[Agent] 自动截图 step_%d: %s", counter, save_path)
+            logger.info("[Agent] 自动截图 step_%d: %s", step_num, save_path)
             return save_path
         except Exception as e:
             logger.warning("[Agent] 自动截图失败: %s", e)
@@ -358,7 +359,8 @@ class AgentRunner:
             'action': format_step_action(tool_name, tool_input),
             'tool_name': tool_name,
             'target': _extract_target(tool_name, tool_input),
-            'result': (result_text or '')[:300],
+            'tool_input': tool_input,
+            'result': (result_text or '')[:5000],
             'screenshot_path': sp,
             'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
             'duration_ms': duration_ms,
@@ -421,7 +423,6 @@ class AgentRunner:
             'testcase_id': self.testcase_id,
             'execution_id': self.execution_id,
             'page': None,  # lazy init
-            'screenshot_counter': 0,
         }
 
         response_text = ''
@@ -535,7 +536,7 @@ class AgentRunner:
                         'turn': turn,
                         'tool': tool_name,
                         'input': tool_input,
-                        'output': result_text[:500],  # 截断避免日志过大
+                        'output': result_text[:5000],
                         'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
                         'duration_ms': duration_ms,
                     })
@@ -543,10 +544,15 @@ class AgentRunner:
                     # 浏览器工具执行后自动截图（一个步骤一张截图）
                     auto_screenshot_path = ''
                     if tool_name in browser_tool_names and context.get('page') and not context['page'].is_closed():
-                        auto_screenshot_path = self._auto_screenshot(context)
+                        current_step_num = len(self._tool_calls_log)
+                        auto_screenshot_path = self._auto_screenshot(context, current_step_num)
 
                     # 如果工具本身未返回截图路径，使用自动截图路径
                     screenshot_path = _extract_screenshot_path(result_text) or auto_screenshot_path
+
+                    # 将 screenshot_path 补充到刚才 append 的 tool_calls_log 条目
+                    if screenshot_path:
+                        self._tool_calls_log[-1]['screenshot_path'] = screenshot_path
 
                     # 推送步骤完成事件
                     if self.execution_id:
@@ -554,7 +560,7 @@ class AgentRunner:
                             'step_num': len(self._tool_calls_log),
                             'action': tool_name,
                             'target': _extract_target(tool_name, tool_input),
-                            'result': (result_text or '')[:300],
+                            'result': (result_text or '')[:5000],
                             'screenshot_path': screenshot_path,
                             'duration_ms': duration_ms,
                         })

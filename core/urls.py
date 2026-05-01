@@ -17,9 +17,12 @@ urlpatterns = [
     path('executions/<int:pk>/steps/', views.execution_steps, name='execution-steps'),
     path('executions/<int:pk>/latest_frame/', views.execution_latest_frame, name='execution-latest-frame'),
     path('executions/screenshots/', views.serve_screenshot, name='serve-screenshot'),
-    path('testcases/<int:testcase_id>/execute/', views.execute_testcase, name='testcase-execute'),
+    # 脚本回放
+    path('executions/<int:pk>/convert-script/', views.convert_to_script, name='convert-to-script'),
+    path('executions/<int:pk>/replay-script/', views.get_replay_script, name='get-replay-script'),
+    path('executions/<int:pk>/replay-script/update/', views.update_replay_script, name='update-replay-script'),
+    path('executions/<int:pk>/replay-execute/', views.replay_execute, name='replay-execute'),
     path('testcases/<int:testcase_id>/execute-agent/', views.execute_testcase_agent, name='testcase-execute-agent'),
-    path('projects/<int:project_id>/execute-all/', views.execute_project, name='project-execute-all'),
     path('projects/<int:project_id>/execute-agent/', views.execute_project_agent, name='project-execute-agent'),
 
     # AI 对话

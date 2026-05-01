@@ -253,8 +253,9 @@ def _build_step_logs(agent_result: dict) -> list:
             'action': format_step_action(tool_name, tool_input),
             'tool_name': tool_name,
             'target': _extract_target(tool_name, tool_input),
-            'result': output[:300],
-            'screenshot_path': _extract_screenshot_path(output),
+            'tool_input': tool_input,
+            'result': output[:5000],
+            'screenshot_path': call.get('screenshot_path', '') or _extract_screenshot_path(output),
             'timestamp': call.get('timestamp', ''),
             'duration_ms': call.get('duration_ms', 0),
         }

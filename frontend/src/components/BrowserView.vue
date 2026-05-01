@@ -1,5 +1,5 @@
 <template>
-  <div class="browser-view" :class="{ 'pip-mode': pip }">
+  <div class="browser-view" :class="{ 'pip-mode': pip, 'fullscreen-mode': fullscreen }">
     <!-- 画面区 -->
     <div class="frame-wrapper">
       <transition name="fade" mode="out-in">
@@ -30,6 +30,11 @@
           <el-icon><CopyDocument /></el-icon>
         </el-button>
       </el-tooltip>
+      <el-tooltip :content="fullscreen ? '退出全屏' : '全屏'" placement="top">
+        <el-button size="small" circle @click="$emit('toggle-fullscreen')">
+          <el-icon><FullScreen /></el-icon>
+        </el-button>
+      </el-tooltip>
       <span class="frame-fps" v-if="frameSrc">{{ fpsDisplay }}</span>
     </div>
   </div>
@@ -37,16 +42,17 @@
 
 <script setup>
 import { ref, watch, computed } from 'vue'
-import { Loading, Refresh, CopyDocument } from '@element-plus/icons-vue'
+import { Loading, Refresh, CopyDocument, FullScreen } from '@element-plus/icons-vue'
 
 const props = defineProps({
   frameSrc: { type: String, default: null },
   pip: { type: Boolean, default: false },
+  fullscreen: { type: Boolean, default: false },
   executionStatus: { type: String, default: 'idle' },
   phase: { type: [String, Object], default: null },
 })
 
-defineEmits(['refresh', 'toggle-pip'])
+defineEmits(['refresh', 'toggle-pip', 'toggle-fullscreen'])
 
 // 帧计数器（用于 key 触发 transition）
 const frameCount = ref(0)
@@ -154,6 +160,16 @@ const placeholderIconColor = computed(() => {
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   overflow: hidden;
+  background: #000;
+}
+
+.browser-view.fullscreen-mode {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 9999;
   background: #000;
 }
 

@@ -6,9 +6,6 @@
         <div class="card-header">
           <span>{{ project.name }}</span>
           <div>
-            <el-button type="primary" size="small" @click="handleExecuteAll" :loading="executingAll">
-              <el-icon><VideoPlay /></el-icon> 批量执行
-            </el-button>
             <el-button type="warning" size="small" @click="handleExecuteAllAgent" :loading="executingAllAgent">
               <el-icon><Cpu /></el-icon> Agent 批量执行
             </el-button>
@@ -68,7 +65,7 @@
         <el-table-column prop="execution_count" label="执行次数" width="90" />
         <el-table-column label="操作" width="400" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="handleExecute(row)">执行</el-button>
+            <el-button size="small" text type="primary" @click="openEditor(row)">编辑</el-button>
             <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
             <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
             <el-button size="small" text @click="showDetail(row)">详情</el-button>
@@ -99,6 +96,35 @@
             </el-descriptions-item>
           </el-descriptions>
         </template>
+      </template>
+    </el-dialog>
+
+    <!-- 用例编辑弹窗 -->
+    <el-dialog v-model="showEditDialog" title="编辑用例" width="1000px" top="3vh">
+      <template v-if="editingTC">
+        <el-form label-width="80px" size="small">
+          <el-form-item label="用例名称">
+            <el-input v-model="editingTC.name" />
+          </el-form-item>
+        </el-form>
+        <div class="md-editor-layout">
+          <div class="md-editor-left">
+            <div class="md-editor-label">Markdown 编辑</div>
+            <textarea
+              v-model="editingTC.markdown_content"
+              class="md-textarea"
+              placeholder="输入 Markdown 内容..."
+            ></textarea>
+          </div>
+          <div class="md-editor-right">
+            <div class="md-editor-label">预览</div>
+            <div class="markdown-body md-preview" v-html="editPreview"></div>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="showEditDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveTC" :loading="savingTC">保存</el-button>
       </template>
     </el-dialog>
 
@@ -307,7 +333,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import {
   getProject, getProjectTestCases, createTestCase,
-  deleteTestCase, executeTestCase, executeProject,
+  updateTestCase, deleteTestCase,
   executeTestCaseAgent, executeProjectAgent,
   aiGenerateTestCase, aiAdjustTestCase,
   getExecutions,
@@ -327,8 +353,10 @@ const showCreate = ref(false)
 const showDetailDialog = ref(false)
 const showAIGenerate = ref(false)
 const detailTC = ref(null)
-const executingAll = ref(false)
 const executingAllAgent = ref(false)
+const showEditDialog = ref(false)
+const editingTC = ref(null)
+const savingTC = ref(false)
 const aiGenerating = ref(false)
 const aiRequirement = ref('')
 const aiTarget = ref('')
@@ -355,6 +383,38 @@ const renderedMarkdown = computed(() => {
   if (!detailTC.value?.markdown_content) return ''
   return marked.parse(detailTC.value.markdown_content)
 })
+
+const editPreview = computed(() => {
+  if (!editingTC.value?.markdown_content) return '<span style="color:#999">预览区域</span>'
+  return marked.parse(editingTC.value.markdown_content)
+})
+
+function openEditor(row) {
+  editingTC.value = {
+    id: row.id,
+    name: row.name,
+    markdown_content: row.markdown_content || `## 测试步骤\n\n${row.steps || ''}\n\n## 预期结果\n\n${row.expected_result || ''}`,
+  }
+  showEditDialog.value = true
+}
+
+async function handleSaveTC() {
+  if (!editingTC.value) return
+  savingTC.value = true
+  try {
+    await updateTestCase(editingTC.value.id, {
+      name: editingTC.value.name,
+      markdown_content: editingTC.value.markdown_content,
+    })
+    ElMessage.success('保存成功')
+    showEditDialog.value = false
+    loadData()
+  } catch (e) {
+    ElMessage.error('保存失败')
+  } finally {
+    savingTC.value = false
+  }
+}
 
 const statusType = (s) => {
   const map = { draft: 'info', ready: '', running: 'warning', passed: 'success', failed: 'danger' }
@@ -389,29 +449,6 @@ const handleDeleteTC = async (row) => {
   await deleteTestCase(row.id)
   ElMessage.success('已删除')
   await loadData()
-}
-
-const handleExecute = async (row) => {
-  try {
-    await executeTestCase(row.id)
-    ElMessage.success('已提交执行')
-    row.status = 'running'
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '执行失败')
-  }
-}
-
-const handleExecuteAll = async () => {
-  executingAll.value = true
-  try {
-    const { data } = await executeProject(projectId)
-    ElMessage.success(`已提交 ${data.length} 个用例执行`)
-    await loadData()
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '执行失败')
-  } finally {
-    executingAll.value = false
-  }
 }
 
 const handleExecuteAgent = async (row) => {
@@ -682,5 +719,50 @@ onMounted(loadData)
   padding: 12px;
   max-height: 200px;
   overflow-y: auto;
+}
+.md-editor-layout {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+.md-editor-left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.md-editor-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.md-editor-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.md-textarea {
+  flex: 1;
+  min-height: 400px;
+  padding: 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+.md-textarea:focus {
+  border-color: #409eff;
+}
+.md-preview {
+  flex: 1;
+  min-height: 400px;
+  padding: 12px;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  overflow-y: auto;
+  background: #fafafa;
 }
 </style>

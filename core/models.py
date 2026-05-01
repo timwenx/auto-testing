@@ -102,6 +102,7 @@ class ExecutionRecord(models.Model):
     EXECUTION_MODE_CHOICES = [
         ('script', '脚本模式'),
         ('agent', 'Agent 模式'),
+        ('replay', '脚本回放'),
     ]
 
     project = models.ForeignKey(
@@ -133,6 +134,15 @@ class ExecutionRecord(models.Model):
     agent_response = models.JSONField(
         'Agent 原始响应', default=dict, blank=True,
         help_text='Agent 执行的完整原始响应数据'
+    )
+    replay_script = models.JSONField(
+        '可回放脚本', default=None, null=True, blank=True,
+        help_text='从 Agent 执行生成的结构化可编辑 Playwright 脚本'
+    )
+    source_execution = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='replay_runs', verbose_name='来源执行记录',
+        help_text='回放执行时指向源脚本所在的执行记录'
     )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
@@ -198,7 +208,6 @@ class SystemSetting(models.Model):
         'repo_base_path': {'value': 'repos', 'description': 'Git 仓库克隆目标根目录'},
         'agent_max_turns': {'value': '20', 'description': 'Agent 最大工具调用轮次'},
         'agent_headless': {'value': 'true', 'description': 'Playwright 浏览器是否无头模式'},
-        'default_execution_mode': {'value': 'script', 'description': '默认执行模式（script/agent）'},
     }
 
     @classmethod

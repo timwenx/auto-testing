@@ -24,9 +24,9 @@
           <el-icon><VideoPlay /></el-icon>
           <span>执行记录</span>
         </el-menu-item>
-        <el-menu-item index="/ai">
-          <el-icon><MagicStick /></el-icon>
-          <span>AI 助手</span>
+        <el-menu-item index="/scripts">
+          <el-icon><Document /></el-icon>
+          <span>脚本管理</span>
         </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
@@ -59,7 +59,7 @@ const pageTitleMap = {
   '/': '仪表盘',
   '/projects': '项目管理',
   '/executions': '执行记录',
-  '/ai': 'AI 助手',
+  '/scripts': '脚本管理',
   '/settings': '系统设置',
   '/login': '登录',
 }
@@ -68,6 +68,7 @@ const pageTitle = computed(() => {
   const path = route.path
   if (pageTitleMap[path]) return pageTitleMap[path]
   if (path.startsWith('/projects/')) return '项目详情'
+  if (path.startsWith('/executions/')) return '执行详情'
   return 'MyTest'
 })
 </script>
