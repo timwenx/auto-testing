@@ -864,9 +864,11 @@ async function handleMoveDown(row) {
   }
 }
 
-// feature_group autocomplete 建议列表
+// feature_group autocomplete 建议列表（排除 '未分组' 虚拟组名）
 const featureGroupSuggestions = computed(() => {
-  return featureGroups.value.map(g => ({ value: g.name }))
+  return featureGroups.value
+    .filter(g => g.name !== '未分组')
+    .map(g => ({ value: g.name }))
 })
 
 function queryFeatureGroup(queryString, cb) {
