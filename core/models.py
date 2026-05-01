@@ -230,6 +230,9 @@ class SystemSetting(models.Model):
         'repo_base_path': {'value': 'repos', 'description': 'Git 仓库克隆目标根目录'},
         'agent_max_turns': {'value': '20', 'description': 'Agent 最大工具调用轮次'},
         'agent_headless': {'value': 'true', 'description': 'Playwright 浏览器是否无头模式'},
+        'claude_cli_path': {'value': 'claude', 'description': 'Claude Code CLI 可执行文件路径'},
+        'analysis_engine': {'value': 'cli', 'description': '代码分析引擎（cli 或 sdk）'},
+        'claude_cli_timeout': {'value': '300', 'description': 'CLI 调用超时秒数'},
     }
 
     @classmethod
@@ -274,6 +277,8 @@ class RepoAnalysis(models.Model):
         help_text='分析发现的页面和 API 列表，结构为 [{type, path, name, method, description, source_file}]',
     )
     analysis_log = models.TextField('分析日志', blank=True, default='')
+    started_at = models.DateTimeField('开始分析时间', null=True, blank=True)
+    last_heartbeat = models.DateTimeField('最近心跳时间', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:

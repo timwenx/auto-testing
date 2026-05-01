@@ -2353,6 +2353,11 @@ class RepoAnalyzerTest(TestCase):
     def test_analyze_repo_success(self, mock_repo_service, mock_get_client, mock_model):
         from .repo_analyzer import analyze_repo
 
+        # Set SDK mode for this test
+        SystemSetting.objects.create(key='analysis_engine', value='sdk')
+        SystemSetting.objects.create(key='anthropic_api_key', value='test-key')
+        SystemSetting.objects.create(key='anthropic_model', value='test-model')
+
         mock_repo_service.clone_or_update_repo.return_value = '/tmp/repos/project_1'
         mock_repo_service.get_repo_file_tree.return_value = 'src/\n  index.js\n'
         mock_repo_service.search_code.return_value = [
@@ -3895,3 +3900,314 @@ class ScriptFilterTest(TestCase):
         resp = self.client.get('/api/scripts/feature-groups/')
         self.assertEqual(resp.status_code, 400)
 
+
+# ══════════════════════════════════════════════════════════════════
+# CLI Service Tests
+# ══════════════════════════════════════════════════════════════════
+
+class CliServiceTest(TestCase):
+    """Tests for core/cli_service.py"""
+
+    def setUp(self):
+        SystemSetting.objects.create(key='claude_cli_path', value='claude')
+        SystemSetting.objects.create(key='claude_cli_timeout', value='300')
+        SystemSetting.objects.create(key='analysis_engine', value='cli')
+        SystemSetting.objects.create(key='anthropic_api_key', value='test-key')
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_is_cli_available_success(self, mock_run):
+        """CLI detected and returns version string."""
+        mock_run.return_value = mock.Mock(returncode=0, stdout='claude 1.0.0')
+
+        from core.cli_service import is_cli_available
+        available, info = is_cli_available('claude')
+
+        self.assertTrue(available)
+        self.assertEqual(info, 'claude 1.0.0')
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        self.assertEqual(args, ['claude', '--version'])
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_is_cli_available_not_found(self, mock_run):
+        """CLI not found raises FileNotFoundError."""
+        mock_run.side_effect = FileNotFoundError()
+
+        from core.cli_service import is_cli_available
+        available, info = is_cli_available('nonexistent-cli')
+
+        self.assertFalse(available)
+        self.assertIn('未找到', info)
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_is_cli_available_nonzero_exit(self, mock_run):
+        """CLI returns non-zero exit code."""
+        mock_run.return_value = mock.Mock(returncode=1, stderr='error: not authenticated')
+
+        from core.cli_service import is_cli_available
+        available, info = is_cli_available('claude')
+
+        self.assertFalse(available)
+        self.assertIn('error', info)
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_call_cli_success(self, mock_run):
+        """Successful CLI call returns stdout text."""
+        mock_run.return_value = mock.Mock(returncode=0, stdout='{"pages":[],"apis":[]}')
+
+        from core.cli_service import call_cli
+        result = call_cli(
+            prompt='Analyze this project',
+            cwd='/tmp/repo',
+            timeout=60,
+        )
+
+        self.assertEqual(result, '{"pages":[],"apis":[]}')
+        call_args = mock_run.call_args
+        cmd = call_args[0][0]
+        self.assertIn('-p', cmd)
+        self.assertIn('--output-format', cmd)
+        self.assertIn('text', cmd)
+        self.assertEqual(call_args[1]['cwd'], '/tmp/repo')
+        self.assertEqual(call_args[1]['timeout'], 60)
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_call_cli_with_model(self, mock_run):
+        """CLI call with model flag adds --model to command."""
+        mock_run.return_value = mock.Mock(returncode=0, stdout='result')
+
+        from core.cli_service import call_cli
+        call_cli(prompt='test', cwd='/tmp', model='claude-sonnet-4-20250514')
+
+        cmd = mock_run.call_args[0][0]
+        self.assertIn('--model', cmd)
+        self.assertIn('claude-sonnet-4-20250514', cmd)
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_call_cli_timeout(self, mock_run):
+        """CLI timeout raises subprocess.TimeoutExpired."""
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd='claude', timeout=60)
+
+        from core.cli_service import call_cli
+        with self.assertRaises(subprocess.TimeoutExpired):
+            call_cli(prompt='test', cwd='/tmp', timeout=60)
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_call_cli_not_found(self, mock_run):
+        """CLI not installed raises FileNotFoundError."""
+        mock_run.side_effect = FileNotFoundError()
+
+        from core.cli_service import call_cli
+        with self.assertRaises(FileNotFoundError):
+            call_cli(prompt='test', cwd='/tmp')
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_call_cli_nonzero_exit(self, mock_run):
+        """CLI returns non-zero exit code raises RuntimeError."""
+        mock_run.return_value = mock.Mock(returncode=1, stderr='Authentication failed')
+
+        from core.cli_service import call_cli
+        with self.assertRaises(RuntimeError) as ctx:
+            call_cli(prompt='test', cwd='/tmp')
+        self.assertIn('Authentication failed', str(ctx.exception))
+
+    def test_get_cli_settings_defaults(self):
+        """get_cli_settings reads from SystemSetting with defaults."""
+        from core.cli_service import get_cli_settings
+        settings = get_cli_settings()
+        self.assertEqual(settings['cli_path'], 'claude')
+        self.assertEqual(settings['timeout'], 300)
+        self.assertEqual(settings['analysis_engine'], 'cli')
+        self.assertEqual(settings['api_key'], 'test-key')
+
+    def test_get_cli_settings_custom(self):
+        """get_cli_settings reads custom values from SystemSetting."""
+        SystemSetting.objects.filter(key='claude_cli_path').update(value='/usr/local/bin/claude')
+        SystemSetting.objects.filter(key='claude_cli_timeout').update(value='600')
+
+        from core.cli_service import get_cli_settings
+        settings = get_cli_settings()
+        self.assertEqual(settings['cli_path'], '/usr/local/bin/claude')
+        self.assertEqual(settings['timeout'], 600)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Repo Analyzer CLI Mode Tests
+# ══════════════════════════════════════════════════════════════════
+
+class RepoAnalyzerCliModeTest(TestCase):
+    """Tests for repo_analyzer.py CLI mode integration."""
+
+    def setUp(self):
+        self.project = Project.objects.create(
+            name='CLI Test Project',
+            base_url='https://example.com',
+            repo_url='https://github.com/example/test.git',
+            local_repo_path='/tmp/test-repo',
+        )
+        SystemSetting.objects.create(key='analysis_engine', value='cli')
+        SystemSetting.objects.create(key='claude_cli_path', value='claude')
+        SystemSetting.objects.create(key='claude_cli_timeout', value='300')
+        SystemSetting.objects.create(key='anthropic_api_key', value='test-key')
+
+    @mock.patch('core.repo_analyzer.repo_service.clone_or_update_repo')
+    @mock.patch('core.cli_service.call_cli')
+    def test_cli_mode_calls_cli(self, mock_call_cli, mock_clone):
+        """CLI mode calls call_cli instead of SDK."""
+        mock_clone.return_value = '/tmp/test-repo'
+        mock_call_cli.return_value = json.dumps({
+            'pages': [{'path': '/home', 'name': '首页', 'description': '主页', 'source_file': 'router.js'}],
+            'apis': [{'path': '/api/users', 'method': 'GET', 'name': '用户列表', 'description': '获取用户', 'source_file': 'user.py'}],
+        })
+
+        from core.repo_analyzer import analyze_repo
+        analysis = analyze_repo(self.project)
+
+        self.assertEqual(analysis.status, 'completed')
+        self.assertEqual(len(analysis.discovered_items), 2)
+        mock_call_cli.assert_called_once()
+        # Verify CLI was called with correct cwd
+        call_kwargs = mock_call_cli.call_args
+        self.assertEqual(call_kwargs[1].get('cwd') or call_kwargs.kwargs.get('cwd'), '/tmp/test-repo')
+
+    @mock.patch('core.repo_analyzer.repo_service.clone_or_update_repo')
+    @mock.patch('core.cli_service.call_cli')
+    def test_cli_mode_skips_code_collection(self, mock_call_cli, mock_clone):
+        """CLI mode does not call repo_service.get_repo_file_tree or search_code."""
+        mock_clone.return_value = '/tmp/test-repo'
+        mock_call_cli.return_value = json.dumps({'pages': [], 'apis': []})
+
+        from core.repo_analyzer import analyze_repo
+        analyze_repo(self.project)
+
+        # call_cli should be called (CLI mode)
+        mock_call_cli.assert_called_once()
+
+    @mock.patch('core.repo_analyzer.repo_service.clone_or_update_repo')
+    @mock.patch('core.cli_service.call_cli')
+    def test_cli_mode_parses_json_response(self, mock_call_cli, mock_clone):
+        """CLI mode correctly parses JSON response into discovered_items."""
+        mock_clone.return_value = '/tmp/test-repo'
+        mock_call_cli.return_value = json.dumps({
+            'pages': [
+                {'path': '/login', 'name': '登录页', 'description': '用户登录', 'source_file': 'router.js'},
+            ],
+            'apis': [
+                {'path': '/api/auth', 'method': 'POST', 'name': '认证', 'description': '登录认证', 'source_file': 'auth.py'},
+                {'path': '/api/users', 'method': 'GET', 'name': '用户', 'description': '用户列表', 'source_file': 'user.py'},
+            ],
+        })
+
+        from core.repo_analyzer import analyze_repo
+        analysis = analyze_repo(self.project)
+
+        items = analysis.discovered_items
+        self.assertEqual(len(items), 3)
+        pages = [i for i in items if i['type'] == 'page']
+        apis = [i for i in items if i['type'] == 'api']
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(len(apis), 2)
+        self.assertEqual(pages[0]['path'], '/login')
+        self.assertEqual(apis[0]['method'], 'POST')
+
+    @mock.patch('core.repo_analyzer.repo_service.clone_or_update_repo')
+    @mock.patch('core.cli_service.call_cli')
+    def test_cli_mode_handles_failure(self, mock_call_cli, mock_clone):
+        """CLI mode failure marks analysis as failed."""
+        mock_clone.return_value = '/tmp/test-repo'
+        mock_call_cli.side_effect = RuntimeError('CLI failed: authentication error')
+
+        from core.repo_analyzer import analyze_repo
+        analysis = analyze_repo(self.project)
+
+        self.assertEqual(analysis.status, 'failed')
+        self.assertIn('CLI failed', analysis.analysis_log)
+
+
+class RepoAnalyzerSdkModeTest(TestCase):
+    """Tests for repo_analyzer.py SDK fallback mode."""
+
+    def setUp(self):
+        self.project = Project.objects.create(
+            name='SDK Test Project',
+            base_url='https://example.com',
+            repo_url='https://github.com/example/test.git',
+            local_repo_path='/tmp/test-repo',
+        )
+        SystemSetting.objects.create(key='analysis_engine', value='sdk')
+        SystemSetting.objects.create(key='anthropic_api_key', value='test-key')
+        SystemSetting.objects.create(key='anthropic_model', value='claude-sonnet-4-20250514')
+
+    @mock.patch('core.repo_analyzer.repo_service.clone_or_update_repo')
+    @mock.patch('core.repo_analyzer.repo_service.get_repo_file_tree')
+    @mock.patch('core.repo_analyzer.repo_service.search_code')
+    @mock.patch('core.repo_analyzer._get_client')
+    @mock.patch('core.repo_analyzer._get_model')
+    def test_sdk_mode_uses_api(self, mock_model, mock_client, mock_search, mock_tree, mock_clone):
+        """SDK mode calls Anthropic API with code snippets."""
+        mock_clone.return_value = '/tmp/test-repo'
+        mock_tree.return_value = 'src/\n  router.js\n  api.py'
+        mock_search.return_value = []
+
+        mock_response = mock.Mock()
+        mock_response.content = [mock.Mock(text=json.dumps({
+            'pages': [{'path': '/', 'name': '首页', 'description': '主页', 'source_file': 'router.js'}],
+            'apis': [],
+        }))]
+        mock_client.return_value.messages.create.return_value = mock_response
+        mock_model.return_value = 'claude-sonnet-4-20250514'
+
+        from core.repo_analyzer import analyze_repo
+        analysis = analyze_repo(self.project)
+
+        self.assertEqual(analysis.status, 'completed')
+        self.assertEqual(len(analysis.discovered_items), 1)
+        self.assertEqual(analysis.discovered_items[0]['type'], 'page')
+        mock_client.return_value.messages.create.assert_called_once()
+
+
+# ══════════════════════════════════════════════════════════════════
+# CLI Check Endpoint Tests
+# ══════════════════════════════════════════════════════════════════
+
+class CliCheckEndpointTest(TestCase):
+    """Tests for GET /api/settings/cli-check/"""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_cli_available(self, mock_run):
+        """CLI check returns available=true when CLI is installed."""
+        mock_run.return_value = mock.Mock(returncode=0, stdout='claude 1.0.0')
+
+        resp = self.client.get('/api/settings/cli-check/', {'cli_path': 'claude'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data['available'])
+        self.assertEqual(resp.data['version'], 'claude 1.0.0')
+        self.assertIsNone(resp.data['error'])
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_cli_not_available(self, mock_run):
+        """CLI check returns available=false when CLI is not found."""
+        mock_run.side_effect = FileNotFoundError()
+
+        resp = self.client.get('/api/settings/cli-check/', {'cli_path': 'missing-cli'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.data['available'])
+        self.assertIsNotNone(resp.data['error'])
+        self.assertEqual(resp.data['version'], '')
+
+    @mock.patch('core.cli_service.subprocess.run')
+    def test_cli_check_default_path(self, mock_run):
+        """CLI check uses SystemSetting default when no cli_path param."""
+        SystemSetting.objects.create(key='claude_cli_path', value='my-claude')
+        mock_run.return_value = mock.Mock(returncode=0, stdout='my-claude 2.0.0')
+
+        resp = self.client.get('/api/settings/cli-check/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data['available'])
+        # Verify it used the configured path
+        args = mock_run.call_args[0][0]
+        self.assertEqual(args[0], 'my-claude')

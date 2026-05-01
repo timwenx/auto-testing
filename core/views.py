@@ -772,6 +772,19 @@ def settings_view(request):
     return Response(SystemSetting.get_all_dict())
 
 
+@api_view(['GET'])
+def cli_check(request):
+    """GET /api/settings/cli-check/ — 检测 Claude CLI 是否可用"""
+    from .cli_service import is_cli_available
+    cli_path = request.query_params.get('cli_path', '').strip() or None
+    available, info = is_cli_available(cli_path)
+    return Response({
+        'available': available,
+        'version': info if available else '',
+        'error': info if not available else None,
+    })
+
+
 # ─── Agent 统一 API ───
 
 @api_view(['POST'])
@@ -1161,6 +1174,20 @@ def repo_analyze(request, project_id):
     if not project.local_repo_path and not project.repo_url:
         return Response({'error': '项目未配置 Git 仓库'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # 自动恢复卡住的分析（心跳超时 > 60s）
+    from django.utils import timezone
+    from datetime import timedelta
+    from django.db import models as db_models
+    stale_cutoff = timezone.now() - timedelta(seconds=60)
+    stale_analyses = RepoAnalysis.objects.filter(
+        project=project, status='analyzing',
+    ).filter(
+        db_models.Q(last_heartbeat__isnull=True, created_at__lt=stale_cutoff)
+        | db_models.Q(last_heartbeat__lt=stale_cutoff)
+    )
+    if stale_analyses.exists():
+        stale_analyses.update(status='failed', analysis_log='分析进程中断（心跳超时），已自动标记为失败')
+
     # 防止重复触发分析
     active = RepoAnalysis.objects.filter(project=project, status='analyzing').exists()
     if active:
@@ -1192,9 +1219,38 @@ def repo_analysis_detail(request, project_id):
     if not analysis:
         return Response({'analysis': None})
 
-    return Response({
-        'analysis': RepoAnalysisSerializer(analysis).data,
-    })
+    data = RepoAnalysisSerializer(analysis).data
+
+    # 计算卡住检测和已用时间
+    if analysis.status == 'analyzing':
+        from django.utils import timezone
+        ref_time = analysis.last_heartbeat or analysis.created_at
+        if ref_time:
+            data['is_stuck'] = (timezone.now() - ref_time).total_seconds() > 30
+        else:
+            data['is_stuck'] = False
+        start = analysis.started_at or analysis.created_at
+        data['elapsed_seconds'] = int((timezone.now() - start).total_seconds()) if start else 0
+    else:
+        data['is_stuck'] = False
+        data['elapsed_seconds'] = 0
+
+    return Response({'analysis': data})
+
+
+@api_view(['POST'])
+def repo_analysis_reset(request, project_id):
+    """POST /api/projects/<id>/repo/analysis/reset/ — 重置卡住的分析"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    updated = RepoAnalysis.objects.filter(
+        project=project, status='analyzing',
+    ).update(status='failed', analysis_log='用户手动重置')
+
+    return Response({'reset_count': updated})
 
 
 @api_view(['GET'])
