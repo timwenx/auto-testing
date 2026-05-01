@@ -387,10 +387,11 @@ class TestPlan(models.Model):
 
 
 class TestPlanItem(models.Model):
-    """方案子项 — 支持脚本或功能分组类型的编排"""
+    """方案子项 — 支持脚本、功能分组、Agent用例类型的编排"""
     ITEM_TYPE_CHOICES = [
         ('script', '脚本'),
         ('feature_group', '功能分组'),
+        ('agent_testcase', 'Agent用例'),
     ]
 
     test_plan = models.ForeignKey(
@@ -398,12 +399,17 @@ class TestPlanItem(models.Model):
     )
     item_type = models.CharField(
         '子项类型', max_length=20, choices=ITEM_TYPE_CHOICES,
-        help_text='script: 单个脚本, feature_group: 执行该分组下所有活跃脚本'
+        help_text='script: 单个脚本, feature_group: 执行该分组下所有活跃脚本, agent_testcase: Agent模式执行用例'
     )
     script = models.ForeignKey(
         Script, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='plan_items', verbose_name='关联脚本',
         help_text='item_type=script 时关联的脚本'
+    )
+    testcase = models.ForeignKey(
+        'TestCase', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='plan_items', verbose_name='关联用例',
+        help_text='item_type=agent_testcase 时关联的测试用例'
     )
     feature_group_name = models.CharField(
         '功能分组名称', max_length=200, blank=True, default='',
@@ -419,6 +425,8 @@ class TestPlanItem(models.Model):
     def __str__(self):
         if self.item_type == 'script':
             return f"[Script] {self.script.name if self.script else '?'}"
+        elif self.item_type == 'agent_testcase':
+            return f"[Agent] {self.testcase.name if self.testcase else '?'}"
         return f"[Feature] {self.feature_group_name}"
 
 

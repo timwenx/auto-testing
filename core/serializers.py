@@ -279,12 +279,14 @@ class ScriptExecuteRequestSerializer(serializers.Serializer):
 class TestPlanItemSerializer(serializers.ModelSerializer):
     script_name = serializers.CharField(source='script.name', read_only=True, default='')
     script_feature_group = serializers.CharField(source='script.feature_group', read_only=True, default='')
+    testcase_name = serializers.CharField(source='testcase.name', read_only=True, default='')
 
     class Meta:
         model = TestPlanItem
         fields = [
             'id', 'test_plan', 'item_type', 'script', 'script_name',
-            'script_feature_group', 'feature_group_name', 'sort_order',
+            'script_feature_group', 'testcase', 'testcase_name',
+            'feature_group_name', 'sort_order',
         ]
         read_only_fields = ['id']
 
@@ -336,8 +338,9 @@ class TestPlanCreateUpdateSerializer(serializers.ModelSerializer):
 
 class TestPlanItemCreateSerializer(serializers.Serializer):
     """添加方案子项请求"""
-    item_type = serializers.ChoiceField(choices=['script', 'feature_group'])
+    item_type = serializers.ChoiceField(choices=['script', 'feature_group', 'agent_testcase'])
     script_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    testcase_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     feature_group_name = serializers.CharField(
         required=False, default='', allow_blank=True,
         help_text='item_type=feature_group 时必填'
