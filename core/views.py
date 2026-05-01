@@ -9,13 +9,15 @@ from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate
 from .serializers import (
     ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
     AIAdjustRequestSerializer, SystemSettingSerializer, SystemSettingBulkUpdateSerializer,
     AgentGenerateRequestSerializer, AgentRefineRequestSerializer,
     AgentConfirmRequestSerializer, AgentExecuteRequestSerializer,
+    RepoAnalysisSerializer, PreconditionTemplateSerializer,
+    BatchGenerateRequestSerializer, BatchSaveRequestSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -1109,3 +1111,221 @@ def replay_execute(request, pk):
         ExecutionRecordSerializer(new_record).data,
         status=status.HTTP_202_ACCEPTED,
     )
+
+
+# ══════════════════════════════════════════════════════════════════
+# 仓库分析 + 批量用例生成 API
+# ══════════════════════════════════════════════════════════════════
+
+@api_view(['POST'])
+def repo_pull(request, project_id):
+    """POST /api/projects/<id>/repo/pull/ — 拉取/更新 Git 仓库"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        from . import repo_service
+        local_path = repo_service.clone_or_update_repo(project)
+    except RuntimeError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.exception("Repo pull failed for project #%s", project_id)
+        return Response({'error': f'仓库拉取失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'status': 'ready',
+        'local_path': local_path,
+    })
+
+
+@api_view(['POST'])
+def repo_analyze(request, project_id):
+    """POST /api/projects/<id>/repo/analyze/ — 触发仓库代码分析（异步）"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not project.local_repo_path and not project.repo_url:
+        return Response({'error': '项目未配置 Git 仓库'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 创建分析记录
+    analysis = RepoAnalysis.objects.create(
+        project=project,
+        status='pending',
+        local_repo_path=project.local_repo_path or '',
+    )
+
+    def _analyze_task():
+        from .repo_analyzer import analyze_repo
+        try:
+            analyze_repo(project)
+        except Exception as e:
+            logger.exception("[RepoAnalyze] Task failed for project #%s: %s", project_id, e)
+            analysis.status = 'failed'
+            analysis.analysis_log = str(e)[:5000]
+            analysis.save()
+
+    _submit_agent_task(_analyze_task)
+
+    return Response({
+        'analysis_id': analysis.id,
+        'status': 'pending',
+    }, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(['GET'])
+def repo_analysis_detail(request, project_id):
+    """GET /api/projects/<id>/repo/analysis/ — 获取最新的仓库分析结果"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    analysis = project.repo_analyses.order_by('-created_at').first()
+    if not analysis:
+        return Response({'analysis': None})
+
+    return Response({
+        'analysis': RepoAnalysisSerializer(analysis).data,
+    })
+
+
+@api_view(['GET'])
+def repo_analysis_list(request, project_id):
+    """GET /api/projects/<id>/repo/analysis/list/ — 获取历史分析列表"""
+    analyses = RepoAnalysis.objects.filter(project_id=project_id)[:20]
+    return Response({
+        'analyses': RepoAnalysisSerializer(analyses, many=True).data,
+    })
+
+
+@api_view(['POST'])
+def batch_generate_testcases(request, project_id):
+    """POST /api/projects/<id>/batch-generate/ — 批量生成测试用例（不保存 DB）"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = BatchGenerateRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    selected_items = serializer.validated_data['selected_items']
+    descriptions = serializer.validated_data.get('descriptions', {})
+    precondition_id = serializer.validated_data.get('precondition_id')
+
+    if not selected_items:
+        return Response({'error': '请至少选择一个目标'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 加载前置条件模板
+    precondition = None
+    if precondition_id:
+        try:
+            precondition = PreconditionTemplate.objects.get(pk=precondition_id)
+        except PreconditionTemplate.DoesNotExist:
+            return Response({'error': '前置条件模板不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        from .batch_generator import generate_testcases_for_items
+        testcases = generate_testcases_for_items(
+            project, selected_items, descriptions, precondition
+        )
+    except Exception as e:
+        logger.exception("Batch generate failed for project #%s", project_id)
+        return Response({'error': f'批量生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({
+        'testcases': testcases,
+        'count': len(testcases),
+    })
+
+
+@api_view(['POST'])
+def batch_save_testcases(request, project_id):
+    """POST /api/projects/<id>/batch-save/ — 批量保存确认后的测试用例"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = BatchSaveRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    testcases_data = serializer.validated_data['testcases']
+    if not testcases_data:
+        return Response({'error': '用例列表为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+    created = []
+    for item in testcases_data:
+        tc = TestCase.objects.create(
+            project=project,
+            name=item.get('name', '未命名用例'),
+            description=item.get('description', ''),
+            steps=item.get('steps', ''),
+            expected_result=item.get('expected_result', ''),
+            markdown_content=item.get('markdown_content', ''),
+            priority=item.get('priority', ''),
+            test_type=item.get('test_type', ''),
+            target_page_or_api=item.get('target_page_or_api', ''),
+            status='draft',
+            is_ai_generated=True,
+            created_by='claude_cli',
+        )
+        created.append(tc)
+
+    return Response({
+        'testcases': TestCaseSerializer(created, many=True).data,
+        'count': len(created),
+    }, status=status.HTTP_201_CREATED)
+
+
+# ─── 前置条件模板 CRUD ───
+
+@api_view(['GET'])
+def precondition_list(request):
+    """GET /api/preconditions/ — 列出所有前置条件模板"""
+    templates = PreconditionTemplate.objects.all()
+    return Response({
+        'preconditions': PreconditionTemplateSerializer(templates, many=True).data,
+    })
+
+
+@api_view(['POST'])
+def precondition_create(request):
+    """POST /api/preconditions/ — 创建前置条件模板"""
+    serializer = PreconditionTemplateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    template = serializer.save()
+    return Response(PreconditionTemplateSerializer(template).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PUT'])
+def precondition_update(request, pk):
+    """PUT /api/preconditions/<pk>/ — 更新前置条件模板"""
+    try:
+        template = PreconditionTemplate.objects.get(pk=pk)
+    except PreconditionTemplate.DoesNotExist:
+        return Response({'error': '模板不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = PreconditionTemplateSerializer(template, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(PreconditionTemplateSerializer(template).data)
+
+
+@api_view(['DELETE'])
+def precondition_delete(request, pk):
+    """DELETE /api/preconditions/<pk>/ — 删除前置条件模板"""
+    try:
+        template = PreconditionTemplate.objects.get(pk=pk)
+    except PreconditionTemplate.DoesNotExist:
+        return Response({'error': '模板不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if template.is_default:
+        return Response({'error': '系统内置模板不可删除'}, status=status.HTTP_400_BAD_REQUEST)
+
+    template.delete()
+    return Response({'deleted': True})

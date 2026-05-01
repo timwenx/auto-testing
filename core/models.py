@@ -233,6 +233,57 @@ class SystemSetting(models.Model):
         return result
 
 
+class RepoAnalysis(models.Model):
+    """仓库代码分析记录 — 存储单次分析发现的页面和 API"""
+    STATUS_CHOICES = [
+        ('pending', '等待中'),
+        ('analyzing', '分析中'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+    ]
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name='repo_analyses',
+        verbose_name='关联项目',
+    )
+    status = models.CharField('分析状态', max_length=20, choices=STATUS_CHOICES, default='pending')
+    local_repo_path = models.CharField('本地仓库路径', max_length=500, blank=True, default='')
+    discovered_items = models.JSONField(
+        '发现列表', default=list, blank=True,
+        help_text='分析发现的页面和 API 列表，结构为 [{type, path, name, method, description, source_file}]',
+    )
+    analysis_log = models.TextField('分析日志', blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '仓库分析'
+        verbose_name_plural = '仓库分析'
+
+    def __str__(self):
+        return f"[{self.status}] 项目 {self.project_id} @ {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class PreconditionTemplate(models.Model):
+    """可复用的前置条件模板 — 如 SSO 登录、管理员登录等"""
+    name = models.CharField('模板名称', max_length=200)
+    description = models.TextField('模板描述', blank=True, default='')
+    steps = models.TextField('前置步骤', help_text='自然语言描述的前置步骤')
+    markdown_content = models.TextField('Markdown 内容', blank=True, default='',
+                                        help_text='完整的 Markdown 格式前置条件文档')
+    is_default = models.BooleanField('系统内置', default=False)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-is_default', 'name']
+        verbose_name = '前置条件模板'
+        verbose_name_plural = '前置条件模板'
+
+    def __str__(self):
+        prefix = '[内置] ' if self.is_default else ''
+        return f"{prefix}{self.name}"
+
+
 class AIConversation(models.Model):
     """AI 对话记录"""
     CONVERSATION_TYPES = [
