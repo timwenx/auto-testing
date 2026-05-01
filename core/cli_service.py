@@ -100,6 +100,8 @@ def is_cli_available(cli_path: str = None) -> tuple:
             [cli_path, '--version'],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=10,
         )
         if result.returncode == 0:
@@ -143,12 +145,6 @@ def call_cli(prompt: str, cwd: str, model: str = None, timeout: int = None) -> s
     if timeout is None:
         timeout = settings['timeout']
 
-    # 注入 API Key 到环境变量
-    env = os.environ.copy()
-    if settings['api_key']:
-        env['ANTHROPIC_API_KEY'] = settings['api_key']
-
-    # 构造命令
     cmd = [cli_path, '-p', prompt, '--output-format', 'text']
     if model:
         cmd.extend(['--model', model])
@@ -163,9 +159,10 @@ def call_cli(prompt: str, cwd: str, model: str = None, timeout: int = None) -> s
             cmd,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout,
             cwd=cwd,
-            env=env,
         )
     except FileNotFoundError:
         logger.error("[CLIService] CLI not found: %s", cli_path)
@@ -182,6 +179,6 @@ def call_cli(prompt: str, cwd: str, model: str = None, timeout: int = None) -> s
         )
         raise RuntimeError(f"Claude CLI 执行失败 (exit {result.returncode}): {stderr}")
 
-    output = result.stdout.strip()
+    output = (result.stdout or '').strip()
     logger.info("[CLIService] CLI response: %d chars", len(output))
     return output
