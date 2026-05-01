@@ -263,3 +263,40 @@ All 6 tasks fully implemented and verified:
 - All 210 tests pass (199 previous + 11 new)
 - Frontend builds successfully
 - Commit: `41f0080`
+
+## Round 3 — Critical bug fixes and quality improvements
+
+### Issues Found via Comprehensive Audit (40+ issues identified)
+
+### Frontend Fixes
+1. **v-show → v-if** (`TestCaseManager.vue`): Changed all step panels from `v-show` to `v-if`. This prevents `CodeAnalysisPanel` polling (3s interval) from running indefinitely even when user is on other steps. Also added `analysisKey`/`batchKey` refs with `:key` binding to force child component remount on `restart()`.
+2. **repoPull timeout** (`api.js`): Changed from `api` (30s timeout) to `aiApi` (120s timeout). Git clone of non-trivial repos was timing out.
+3. **restart() doesn't reset state** (`TestCaseManager.vue`): Added `selectedPreconditionId.value = null` to reset precondition selection on restart.
+4. **Missing "Next Step" button** (`RepoStatusCard.vue`): When repo is already pulled, only showed "Re-pull" button. Added "下一步" button to skip ahead.
+5. **Missing "Re-analyze" button** (`CodeAnalysisPanel.vue`): No way to re-analyze after completion. Added "重新分析" button in header for completed analysis.
+6. **Shallow copy in edit dialog** (`BatchTestCaseEditor.vue`): `{ ...tc }` caused mutation of original on cancel. Changed to `JSON.parse(JSON.stringify(tc))`.
+7. **No delete confirmation** (`BatchTestCaseEditor.vue`): Added `ElMessageBox.confirm` before removing generated test cases.
+8. **Save double-click guard** (`BatchTestCaseEditor.vue`): Added `saving.value` early return check.
+9. **Prop mutation** (`RepoStatusCard.vue`): `Object.assign(props.project, data)` violated one-way data flow. Changed to emit `project-updated` event.
+10. **Silent error + no loading** (`PreconditionSelector.vue`): Added loading state and `ElMessage.error` feedback.
+
+### Backend Fixes
+1. **Race condition on concurrent analysis** (`views.py`): Added check for existing `analyzing` status, returns 409 Conflict if already in progress.
+2. **Non-atomic batch save** (`views.py`): Wrapped `batch_save_testcases` loop in `transaction.atomic()`.
+3. **Missing project check** (`views.py`): `repo_analysis_list` now validates project exists before returning results.
+4. **Admin registration** (`admin.py`): Registered `RepoAnalysis` and `PreconditionTemplate` models with list display, filters, and search fields.
+
+### New Tests (17 added)
+- `RepoAnalyzeConcurrencyTest` (2 tests) — reject when already analyzing, allow when completed
+- `RepoAnalysisListProjectCheckTest` (2 tests) — 404 for nonexistent project, 200 for existing
+- `BatchSaveAtomicTest` (2 tests) — transaction save, empty list 400
+- `RepoAnalysisAdminTest` (2 tests) — admin registration verification
+- `PreconditionUpdateDefaultProtectionTest` (4 tests) — delete default/custom, update, update nonexistent
+- `RepoAnalyzerEdgeCaseTest` (3 tests) — extra text before JSON, empty lists, missing name
+- `BatchGeneratorEdgeCaseTest` (2 tests) — non-list items, empty single result
+
+### Status
+- All **227 tests pass** (210 previous + 17 new)
+- Frontend builds successfully
+- Django check: 0 issues
+- Commit: `17beb19`
