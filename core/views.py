@@ -4,13 +4,13 @@ import os
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse, FileResponse, Http404
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Max
 from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate, Script, TestPlan, TestPlanItem, PlanExecution
 from .serializers import (
     ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
@@ -20,6 +20,10 @@ from .serializers import (
     RepoAnalysisSerializer, PreconditionTemplateSerializer,
     BatchGenerateRequestSerializer, BatchSaveRequestSerializer,
     TestCaseReorderSerializer,
+    ScriptSerializer, ScriptConvertRequestSerializer, ScriptExecuteRequestSerializer,
+    TestPlanSerializer, TestPlanCreateUpdateSerializer,
+    TestPlanItemSerializer, TestPlanItemCreateSerializer, TestPlanItemsReorderSerializer,
+    PlanExecutionSerializer, PlanExecutionDetailSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -1339,12 +1343,13 @@ def testcase_reorder(request, project_id):
 
 @api_view(['GET'])
 def project_feature_groups(request, project_id):
-    """GET /api/projects/<id>/feature-groups/ — 获取项目下所有功能点分组"""
+    """GET /api/projects/<id>/feature-groups/ — 获取项目下所有功能点分组（含用例概要）"""
     try:
         project = Project.objects.get(pk=project_id)
     except Project.DoesNotExist:
         return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
 
+    # 基础分组 + 计数
     groups = (
         TestCase.objects.filter(project=project)
         .values('feature_group')
@@ -1352,13 +1357,36 @@ def project_feature_groups(request, project_id):
         .order_by('feature_group')
     )
 
+    # 是否返回详细信息（含每个用例的最近执行状态）
+    detailed = request.query_params.get('detailed', '').lower() in ('true', '1', 'yes')
+
     result = []
     for g in groups:
         name = g['feature_group'] or '未分组'
-        result.append({
+        entry = {
             'name': name,
             'count': g['count'],
-        })
+        }
+
+        if detailed:
+            testcases = TestCase.objects.filter(
+                project=project, feature_group=g['feature_group']
+            ).order_by('sort_order')
+
+            tc_list = []
+            for tc in testcases:
+                latest_exec = tc.executions.order_by('-created_at').first()
+                tc_list.append({
+                    'id': tc.id,
+                    'name': tc.name,
+                    'status': tc.status,
+                    'sort_order': tc.sort_order,
+                    'latest_execution_status': latest_exec.status if latest_exec else None,
+                    'latest_execution_id': latest_exec.id if latest_exec else None,
+                })
+            entry['testcases'] = tc_list
+
+        result.append(entry)
 
     return Response({'groups': result})
 
@@ -1410,3 +1438,677 @@ def precondition_delete(request, pk):
 
     template.delete()
     return Response({'deleted': True})
+
+
+# ══════════════════════════════════════════════════════════════════
+# Script CRUD + Convert API
+# ══════════════════════════════════════════════════════════════════
+
+@api_view(['GET'])
+def script_list(request):
+    """GET /api/scripts/ — 脚本列表，支持 project/feature_group/status 筛选"""
+    qs = Script.objects.select_related('project', 'testcase').all()
+    project_id = request.query_params.get('project')
+    if project_id:
+        qs = qs.filter(project_id=project_id)
+    feature_group = request.query_params.get('feature_group')
+    if feature_group:
+        qs = qs.filter(feature_group=feature_group)
+    script_status = request.query_params.get('status')
+    if script_status:
+        qs = qs.filter(status=script_status)
+    serializer = ScriptSerializer(qs, many=True)
+    return Response({'scripts': serializer.data})
+
+
+@api_view(['GET'])
+def script_detail(request, pk):
+    """GET /api/scripts/<id>/ — 脚本详情"""
+    try:
+        script = Script.objects.select_related('project', 'testcase', 'source_execution').get(pk=pk)
+    except Script.DoesNotExist:
+        return Response({'error': '脚本不存在'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(ScriptSerializer(script).data)
+
+
+@api_view(['PUT'])
+def script_update(request, pk):
+    """PUT /api/scripts/<id>/ — 更新脚本"""
+    try:
+        script = Script.objects.get(pk=pk)
+    except Script.DoesNotExist:
+        return Response({'error': '脚本不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = ScriptSerializer(script, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(ScriptSerializer(script).data)
+
+
+@api_view(['DELETE'])
+def script_delete(request, pk):
+    """DELETE /api/scripts/<id>/ — 删除脚本"""
+    try:
+        script = Script.objects.get(pk=pk)
+    except Script.DoesNotExist:
+        return Response({'error': '脚本不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    script.delete()
+    return Response({'deleted': True})
+
+
+@api_view(['POST'])
+def script_convert(request):
+    """POST /api/scripts/convert/ — 从 ExecutionRecord 生成 Script"""
+    serializer = ScriptConvertRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    execution_id = serializer.validated_data['execution_id']
+    name = serializer.validated_data.get('name', '')
+    feature_group = serializer.validated_data.get('feature_group', '')
+
+    try:
+        record = ExecutionRecord.objects.select_related('project', 'testcase').get(pk=execution_id)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if record.execution_mode != 'agent':
+        return Response({'error': '仅支持转换 Agent 模式的执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+
+    terminal = ['passed', 'failed', 'error']
+    if record.status not in terminal:
+        return Response({'error': '仅支持转换已完成的执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+
+    from .script_converter import convert_execution_to_script
+    try:
+        script_data = convert_execution_to_script(record)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 同时保留 legacy replay_script 字段
+    record.replay_script = script_data
+    record.save(update_fields=['replay_script'])
+
+    script_name = name or (record.testcase.name if record.testcase else f'脚本-{record.pk}')
+    script_feature_group = feature_group or (record.testcase.feature_group if record.testcase else '')
+
+    script = Script.objects.create(
+        project=record.project,
+        testcase=record.testcase,
+        source_execution=record,
+        name=script_name,
+        feature_group=script_feature_group,
+        script_data=script_data,
+        status='active',
+        version=1,
+    )
+
+    return Response(ScriptSerializer(script).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+def script_execute(request, pk):
+    """POST /api/scripts/<id>/execute/ — 执行脚本"""
+    try:
+        script = Script.objects.select_related('project', 'testcase', 'source_execution').get(pk=pk)
+    except Script.DoesNotExist:
+        return Response({'error': '脚本不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not script.script_data:
+        return Response({'error': '脚本内容为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+    param_serializer = ScriptExecuteRequestSerializer(data=request.data)
+    param_serializer.is_valid(raise_exception=True)
+    parameter_overrides = param_serializer.validated_data.get('parameter_overrides', {})
+
+    # 查找关联的 source_execution 用于回放
+    source_record = script.source_execution
+    if not source_record:
+        return Response({'error': '脚本缺少来源执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 创建新的执行记录
+    new_record = ExecutionRecord.objects.create(
+        project=script.project,
+        testcase=script.testcase,
+        status='running',
+        execution_mode='replay',
+        source_execution=source_record,
+    )
+
+    # 闭包捕获
+    def _replay_task():
+        from .script_executor import ReplayExecutor
+        # 更新 source_record 的 replay_script（如果需要的话，保证一致性）
+        if not source_record.replay_script:
+            source_record.replay_script = script.script_data
+            source_record.save(update_fields=['replay_script'])
+        executor = ReplayExecutor(new_record, source_record)
+        executor.run(script.script_data, parameter_overrides)
+
+    _submit_agent_task(_replay_task)
+
+    return Response(
+        ExecutionRecordSerializer(new_record).data,
+        status=status.HTTP_202_ACCEPTED,
+    )
+
+
+@api_view(['GET'])
+def script_feature_groups(request):
+    """GET /api/scripts/feature-groups/ — 获取脚本的功能分组列表"""
+    project_id = request.query_params.get('project')
+    if not project_id:
+        return Response({'error': '缺少 project 参数'}, status=status.HTTP_400_BAD_REQUEST)
+
+    groups = (
+        Script.objects.filter(project_id=project_id)
+        .values('feature_group')
+        .annotate(count=Count('id'))
+        .order_by('feature_group')
+    )
+
+    result = []
+    for g in groups:
+        name = g['feature_group'] or '未分组'
+        result.append({
+            'name': name,
+            'count': g['count'],
+        })
+
+    return Response({'groups': result})
+
+
+# ══════════════════════════════════════════════════════════════════
+# Feature 分组执行 API
+# ══════════════════════════════════════════════════════════════════
+
+@api_view(['POST'])
+def execute_feature_group(request, project_id, feature_group):
+    """POST /api/projects/<id>/features/<feature_group>/execute/ — 执行指定功能下的所有用例"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not project.base_url:
+        return Response(
+            {'error': '请先在项目中配置测试目标 URL'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # feature_group 从 URL path 获取（URL decoded by Django）
+    # '未分组' 映射到空字符串
+    fg_filter = '' if feature_group == '未分组' else feature_group
+
+    testcases = project.testcases.filter(
+        feature_group=fg_filter,
+        status__in=['draft', 'ready']
+    ).order_by('sort_order')
+
+    if not testcases.exists():
+        return Response(
+            {'error': f'功能分组「{feature_group}」下没有可执行的测试用例'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    ai_model = _get_ai_model()
+    records = []
+    for tc in testcases:
+        record = ExecutionRecord.objects.create(
+            project=project,
+            testcase=tc,
+            status='running',
+            execution_mode='agent',
+            ai_model=ai_model,
+        )
+        tc.status = 'running'
+        tc.save(update_fields=['status'])
+
+        def _make_task(r, t):
+            def _agent_task():
+                result = execution_engine.execute_testcase_with_agent(t, project.base_url, execution_id=r.pk)
+                _save_agent_result(r, result)
+                t.status = result['status']
+                t.save(update_fields=['status'])
+                return result
+            return _agent_task
+
+        _submit_agent_task(_make_task(record, tc))
+        records.append(record)
+
+    return Response({
+        'feature_group': feature_group,
+        'execution_ids': [r.id for r in records],
+        'count': len(records),
+        'records': ExecutionRecordSerializer(records, many=True).data,
+    }, status=status.HTTP_202_ACCEPTED)
+
+
+# ══════════════════════════════════════════════════════════════════
+# TestPlan CRUD API
+# ══════════════════════════════════════════════════════════════════
+
+@api_view(['GET'])
+def plan_list(request):
+    """GET /api/plans/ — 方案列表（支持 project filter）"""
+    qs = TestPlan.objects.select_related('project').prefetch_related('items').all()
+    project_id = request.query_params.get('project')
+    if project_id:
+        qs = qs.filter(project_id=project_id)
+    serializer = TestPlanSerializer(qs, many=True)
+    return Response({'plans': serializer.data})
+
+
+@api_view(['POST'])
+def plan_create(request):
+    """POST /api/plans/ — 创建方案"""
+    serializer = TestPlanCreateUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    plan = serializer.save()
+    return Response(TestPlanSerializer(plan).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+def plan_detail(request, pk):
+    """GET /api/plans/<id>/ — 方案详情（含 items）"""
+    try:
+        plan = TestPlan.objects.select_related('project').prefetch_related('items__script').get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(TestPlanSerializer(plan).data)
+
+
+@api_view(['PUT'])
+def plan_update(request, pk):
+    """PUT /api/plans/<id>/ — 更新方案基本信息"""
+    try:
+        plan = TestPlan.objects.get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = TestPlanCreateUpdateSerializer(plan, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(TestPlanSerializer(plan).data)
+
+
+@api_view(['DELETE'])
+def plan_delete(request, pk):
+    """DELETE /api/plans/<id>/ — 删除方案（含所有子项）"""
+    try:
+        plan = TestPlan.objects.get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    plan.delete()
+    return Response({'deleted': True})
+
+
+@api_view(['POST'])
+def plan_add_item(request, pk):
+    """POST /api/plans/<id>/items/ — 添加方案子项"""
+    try:
+        plan = TestPlan.objects.get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = TestPlanItemCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    item_type = serializer.validated_data['item_type']
+    script_id = serializer.validated_data.get('script_id')
+    feature_group_name = serializer.validated_data.get('feature_group_name', '')
+
+    # 验证
+    if item_type == 'script' and not script_id:
+        return Response({'error': 'script 类型必须指定 script_id'}, status=status.HTTP_400_BAD_REQUEST)
+    if item_type == 'feature_group' and not feature_group_name:
+        return Response({'error': 'feature_group 类型必须指定 feature_group_name'}, status=status.HTTP_400_BAD_REQUEST)
+
+    script_obj = None
+    if script_id:
+        try:
+            script_obj = Script.objects.get(pk=script_id)
+        except Script.DoesNotExist:
+            return Response({'error': '脚本不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    # 获取当前最大 sort_order
+    max_order = plan.items.aggregate(max_order=Max('sort_order'))['max_order'] or 0
+
+    item = TestPlanItem.objects.create(
+        test_plan=plan,
+        item_type=item_type,
+        script=script_obj,
+        feature_group_name=feature_group_name,
+        sort_order=max_order + 1,
+    )
+
+    return Response(TestPlanItemSerializer(item).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PUT'])
+def plan_reorder_items(request, pk):
+    """PUT /api/plans/<id>/items/reorder/ — 重新排序方案子项"""
+    try:
+        plan = TestPlan.objects.get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = TestPlanItemsReorderSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    orders = serializer.validated_data['orders']
+    if not orders:
+        return Response({'error': '排序数据为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+    updated = 0
+    with transaction.atomic():
+        for item_data in orders:
+            item_id = item_data.get('id')
+            sort_order = item_data.get('sort_order', 0)
+            try:
+                item = plan.items.get(pk=item_id)
+                item.sort_order = sort_order
+                item.save(update_fields=['sort_order'])
+                updated += 1
+            except TestPlanItem.DoesNotExist:
+                pass
+
+    return Response({'updated': updated})
+
+
+@api_view(['DELETE'])
+def plan_delete_item(request, item_pk):
+    """DELETE /api/plans/items/<id>/ — 删除方案子项"""
+    try:
+        item = TestPlanItem.objects.get(pk=item_pk)
+    except TestPlanItem.DoesNotExist:
+        return Response({'error': '子项不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    item.delete()
+    return Response({'deleted': True})
+
+
+@api_view(['POST'])
+def plan_regenerate_token(request, pk):
+    """POST /api/plans/<id>/regenerate-token/ — 重新生成 API Token"""
+    import uuid
+    try:
+        plan = TestPlan.objects.get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    plan.api_token = uuid.uuid4()
+    plan.save(update_fields=['api_token'])
+    return Response({
+        'api_token': str(plan.api_token),
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
+# PlanExecution API (含 CI/CD 支持)
+# ══════════════════════════════════════════════════════════════════
+
+def _authenticate_plan_request(request, plan):
+    """验证方案执行请求的认证 — Django session 或 X-Plan-Token"""
+    # Django session 认证（前端 UI）
+    if request.user and request.user.is_authenticated:
+        return True
+    # API Token 认证（CI/CD）
+    token = request.headers.get('X-Plan-Token', '')
+    if token and str(plan.api_token) == token.strip():
+        return True
+    return False
+
+
+@api_view(['POST'])
+def plan_execute(request, pk):
+    """POST /api/plans/<id>/execute/ — 触发方案执行"""
+    try:
+        plan = TestPlan.objects.select_related('project').prefetch_related('items__script').get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _authenticate_plan_request(request, plan):
+        return Response({'error': '认证失败'}, status=status.HTTP_403_FORBIDDEN)
+
+    if not plan.project.base_url:
+        return Response({'error': '请先在项目中配置测试目标 URL'}, status=status.HTTP_400_BAD_REQUEST)
+
+    items = plan.items.all().order_by('sort_order')
+    if not items.exists():
+        return Response({'error': '方案没有子项'}, status=status.HTTP_400_BAD_REQUEST)
+
+    trigger_source = 'api' if request.headers.get('X-Plan-Token') else 'manual'
+
+    # 创建 PlanExecution 记录
+    from django.utils import timezone
+    plan_exec = PlanExecution.objects.create(
+        test_plan=plan,
+        project=plan.project,
+        status='running',
+        trigger_source=trigger_source,
+        summary={'total': 0, 'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0},
+        started_at=timezone.now(),
+    )
+
+    # 收集要执行的所有脚本（按 sort_order 顺序）
+    scripts_to_run = []
+    for item in items:
+        if item.item_type == 'script' and item.script:
+            if item.script.status == 'active':
+                scripts_to_run.append(item.script)
+        elif item.item_type == 'feature_group':
+            # 查找该功能分组下所有活跃脚本
+            group_scripts = Script.objects.filter(
+                project=plan.project,
+                feature_group=item.feature_group_name,
+                status='active',
+            ).order_by('sort_order')
+            scripts_to_run.extend(group_scripts)
+
+    if not scripts_to_run:
+        plan_exec.status = 'completed'
+        plan_exec.completed_at = timezone.now()
+        plan_exec.summary = {'total': 0, 'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0}
+        plan_exec.save()
+        return Response(PlanExecutionSerializer(plan_exec).data)
+
+    plan_exec.summary = {
+        'total': len(scripts_to_run),
+        'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0,
+    }
+    plan_exec.save(update_fields=['summary'])
+
+    # 同步模式：阻塞等待完成
+    sync_mode = request.query_params.get('sync', '').lower() in ('true', '1', 'yes')
+
+    if sync_mode:
+        return _execute_plan_sync(plan_exec, scripts_to_run, plan)
+    else:
+        _submit_agent_task(lambda: _execute_plan_async(plan_exec, scripts_to_run, plan))
+        return Response(PlanExecutionSerializer(plan_exec).data, status=status.HTTP_202_ACCEPTED)
+
+
+def _run_single_script(plan_exec, script, plan):
+    """执行单个脚本并返回结果状态"""
+    source_record = script.source_execution
+    if not source_record or not script.script_data:
+        return 'skipped'
+
+    new_record = ExecutionRecord.objects.create(
+        project=plan.project,
+        testcase=script.testcase,
+        status='running',
+        execution_mode='replay',
+        source_execution=source_record,
+        plan_execution=plan_exec,
+    )
+
+    if not source_record.replay_script:
+        source_record.replay_script = script.script_data
+        source_record.save(update_fields=['replay_script'])
+
+    from .script_executor import ReplayExecutor
+    executor = ReplayExecutor(new_record, source_record)
+    executor.run(script.script_data, {})
+
+    new_record.refresh_from_db()
+    return new_record.status
+
+
+def _finalize_plan_execution(plan_exec):
+    """汇总所有子执行的状态并更新 PlanExecution"""
+    from django.utils import timezone
+    records = plan_exec.execution_records.all()
+    summary = {'total': records.count(), 'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0}
+    for r in records:
+        if r.status in summary:
+            summary[r.status] += 1
+        else:
+            summary['error'] += 1
+
+    overall_status = 'completed'
+    if summary['failed'] > 0 or summary['error'] > 0:
+        overall_status = 'failed' if summary['error'] == 0 else 'error'
+
+    plan_exec.status = overall_status
+    plan_exec.summary = summary
+    plan_exec.completed_at = timezone.now()
+    plan_exec.save()
+
+
+def _execute_plan_sync(plan_exec, scripts_to_run, plan):
+    """同步执行方案（阻塞等待）"""
+    try:
+        for script in scripts_to_run:
+            _run_single_script(plan_exec, script, plan)
+        _finalize_plan_execution(plan_exec)
+    except Exception as e:
+        logger.exception("[PlanExecute] Sync execution failed")
+        plan_exec.status = 'error'
+        plan_exec.save(update_fields=['status'])
+
+    from django.http import JsonResponse
+    # 同步模式在视图函数内直接返回
+    return Response(PlanExecutionDetailSerializer(plan_exec).data)
+
+
+def _execute_plan_async(plan_exec, scripts_to_run, plan):
+    """异步执行方案（线程池内运行）"""
+    try:
+        for script in scripts_to_run:
+            _run_single_script(plan_exec, script, plan)
+        _finalize_plan_execution(plan_exec)
+    except Exception as e:
+        logger.exception("[PlanExecute] Async execution failed")
+        from django.utils import timezone
+        plan_exec.status = 'error'
+        plan_exec.completed_at = timezone.now()
+        plan_exec.save()
+
+
+@api_view(['GET'])
+def plan_execution_list(request):
+    """GET /api/plan-executions/ — 方案执行历史列表"""
+    qs = PlanExecution.objects.select_related('test_plan', 'project').all()
+    plan_id = request.query_params.get('plan')
+    if plan_id:
+        qs = qs.filter(test_plan_id=plan_id)
+    project_id = request.query_params.get('project')
+    if project_id:
+        qs = qs.filter(project_id=project_id)
+    serializer = PlanExecutionSerializer(qs, many=True)
+    return Response({'executions': serializer.data})
+
+
+@api_view(['GET'])
+def plan_execution_detail(request, pk):
+    """GET /api/plan-executions/<id>/ — 方案执行详情（含子 ExecutionRecord）"""
+    try:
+        plan_exec = PlanExecution.objects.select_related(
+            'test_plan', 'project'
+        ).prefetch_related('execution_records__testcase').get(pk=pk)
+    except PlanExecution.DoesNotExist:
+        return Response({'error': '方案执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+    return Response(PlanExecutionDetailSerializer(plan_exec).data)
+
+
+@api_view(['GET'])
+def plan_execution_status(request, pk):
+    """GET /api/plan-executions/<id>/status/ — 轻量状态查询（CI/CD polling）"""
+    try:
+        plan_exec = PlanExecution.objects.only('id', 'status', 'summary', 'started_at', 'completed_at').get(pk=pk)
+    except PlanExecution.DoesNotExist:
+        return Response({'error': '方案执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response({
+        'id': plan_exec.id,
+        'status': plan_exec.status,
+        'summary': plan_exec.summary,
+        'started_at': plan_exec.started_at,
+        'completed_at': plan_exec.completed_at,
+    })
+
+
+@api_view(['GET'])
+def plan_execution_report(request, pk):
+    """GET /api/plan-executions/<id>/report/ — JUnit XML 格式测试报告（CI/CD 集成）"""
+    try:
+        plan_exec = PlanExecution.objects.select_related('test_plan').prefetch_related(
+            'execution_records__testcase'
+        ).get(pk=pk)
+    except PlanExecution.DoesNotExist:
+        return Response({'error': '方案执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    records = plan_exec.execution_records.select_related('testcase').all()
+    summary = plan_exec.summary or {}
+
+    total = summary.get('total', records.count())
+    passed = summary.get('passed', 0)
+    failed_count = summary.get('failed', 0)
+    error_count = summary.get('error', 0)
+    skipped = summary.get('skipped', 0)
+    failures = failed_count + error_count
+
+    # 计算 duration
+    duration = 0.0
+    for r in records:
+        if r.duration:
+            duration += r.duration
+
+    plan_name = plan_exec.test_plan.name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+    xml_parts = [
+        f'<?xml version="1.0" encoding="UTF-8"?>',
+        f'<testsuites tests="{total}" failures="{failures}" errors="{error_count}" time="{duration:.3f}">',
+        f'<testsuite name="{plan_name}" tests="{total}" failures="{failures}" errors="{error_count}" skipped="{skipped}" time="{duration:.3f}">',
+    ]
+
+    for r in records:
+        tc_name = (r.testcase.name if r.testcase else f'Execution-{r.id}')
+        tc_name = tc_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        r_duration = r.duration or 0
+
+        if r.status in ('passed',):
+            xml_parts.append(f'<testcase classname="{plan_name}" name="{tc_name}" time="{r_duration:.3f}" />')
+        elif r.status in ('failed',):
+            error_msg = (r.error_message or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            xml_parts.append(f'<testcase classname="{plan_name}" name="{tc_name}" time="{r_duration:.3f}">')
+            xml_parts.append(f'<failure message="{error_msg[:200]}">{error_msg}</failure>')
+            xml_parts.append(f'</testcase>')
+        elif r.status in ('error',):
+            error_msg = (r.error_message or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            xml_parts.append(f'<testcase classname="{plan_name}" name="{tc_name}" time="{r_duration:.3f}">')
+            xml_parts.append(f'<error message="{error_msg[:200]}">{error_msg}</error>')
+            xml_parts.append(f'</testcase>')
+        else:
+            xml_parts.append(f'<testcase classname="{plan_name}" name="{tc_name}" time="{r_duration:.3f}">')
+            xml_parts.append(f'<skipped />')
+            xml_parts.append(f'</testcase>')
+
+    xml_parts.append('</testsuite>')
+    xml_parts.append('</testsuites>')
+
+    xml_content = '\n'.join(xml_parts)
+    return Response(xml_content, content_type='application/xml')
