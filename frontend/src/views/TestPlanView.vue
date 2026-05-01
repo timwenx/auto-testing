@@ -575,4 +575,16 @@ onMounted(async () => {
 .api-field label { font-weight: 600; font-size: 12px; color: #606266; white-space: nowrap; min-width: 80px; }
 .api-field code { background: #f5f7fa; padding: 2px 8px; border-radius: 3px; font-size: 12px; word-break: break-all; }
 .code-block { display: block; font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.4; }
+
+@media (max-width: 768px) {
+  .test-plan-view > div:first-child {
+    flex-direction: column;
+    height: auto !important;
+  }
+  .test-plan-view > div:first-child > .el-card {
+    width: 100% !important;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+}
 </style>

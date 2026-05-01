@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="dashboard">
     <!-- 统计卡片 -->
     <el-row :gutter="16" style="margin-bottom: 20px">
       <el-col :span="6" v-for="card in statCards" :key="card.label">
@@ -93,6 +93,9 @@
             </el-table-column>
             <el-table-column prop="created_at" label="时间" width="160" />
           </el-table>
+          <el-empty v-if="!loadingExecutions && !filteredExecutions.length" description="暂无执行记录" :image-size="60">
+            <el-button type="primary" size="small" @click="router.push('/executions')">查看全部执行</el-button>
+          </el-empty>
           <div style="display:flex;justify-content:flex-end;margin-top:12px" v-if="executionTotal > executionPageSize">
             <el-pagination small layout="prev, pager, next" :total="executionTotal" :page-size="executionPageSize" v-model:current-page="executionPage" @current-change="loadExecutions" />
           </div>
@@ -174,5 +177,12 @@ onMounted(async () => {
 }
 .stat-card:hover {
   transform: translateY(-2px);
+}
+
+@media (max-width: 768px) {
+  .dashboard :deep(.el-col) {
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+  }
 }
 </style>

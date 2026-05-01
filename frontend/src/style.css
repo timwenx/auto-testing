@@ -22,6 +22,12 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  transition: width 0.3s ease, transform 0.3s ease;
+  z-index: 1000;
+}
+
+.sidebar.collapsed {
+  width: 64px;
 }
 
 .sidebar .logo {
@@ -34,6 +40,22 @@ html, body, #app {
   color: #fff;
   background: #263445;
   letter-spacing: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar.collapsed .logo {
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.sidebar.collapsed .el-menu-item span {
+  display: none;
+}
+
+.sidebar.collapsed .el-menu-item {
+  padding: 0 !important;
+  text-align: center;
 }
 
 .main-area {
@@ -41,6 +63,7 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
 }
 
 .header {
@@ -58,6 +81,37 @@ html, body, #app {
   padding: 20px;
   background: #f5f7fa;
   overflow-y: auto;
+}
+
+/* Sidebar collapse toggle */
+.sidebar-toggle {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #606266;
+  border-radius: 4px;
+  transition: background 0.2s;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle:hover {
+  background: #f0f0f0;
+}
+
+/* Mobile overlay */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 999;
 }
 
 /* 菜单样式覆盖 */
@@ -93,4 +147,59 @@ html, body, #app {
 
 .status-tag {
   font-size: 12px;
+}
+
+/* ─── Responsive: Tablet (≤1024px) ─── */
+@media (max-width: 1024px) {
+  .content {
+    padding: 16px;
+  }
+
+  .header {
+    padding: 0 16px;
+  }
+}
+
+/* ─── Responsive: Mobile (≤768px) ─── */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 220px !important;
+    transform: translateX(-100%);
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay.visible {
+    display: block;
+  }
+
+  .content {
+    padding: 12px;
+  }
+
+  .header {
+    padding: 0 12px;
+  }
+}
+
+/* ─── Table horizontal scroll on small screens ─── */
+@media (max-width: 768px) {
+  .el-table {
+    font-size: 13px;
+  }
+
+  .el-dialog {
+    width: 92% !important;
+    margin-top: 5vh !important;
+  }
+
+  .el-drawer {
+    width: 90% !important;
+  }
 }

@@ -1098,4 +1098,10 @@ onMounted(async () => {
 .md-preview { flex: 1; min-height: 400px; padding: 12px; border: 1px solid #e4e7ed; border-radius: 4px; overflow-y: auto; background: #fafafa; }
 .group-title { display: flex; align-items: center; font-weight: 500; font-size: 14px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+
+@media (max-width: 768px) {
+  .md-editor-layout {
+    flex-direction: column;
+  }
+}
 </style>

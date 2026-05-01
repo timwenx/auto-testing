@@ -3,14 +3,16 @@
     <router-view />
   </div>
   <div v-else class="layout">
-    <div class="sidebar">
-      <div class="logo">MyTest</div>
+    <div class="sidebar-overlay" :class="{ visible: mobileMenuOpen }" @click="mobileMenuOpen = false" />
+    <div class="sidebar" :class="{ collapsed: sidebarCollapsed, 'mobile-open': mobileMenuOpen }">
+      <div class="logo">{{ sidebarCollapsed ? 'MT' : 'MyTest' }}</div>
       <el-menu
         :default-active="sidebarActive"
         router
         background-color="#304156"
         text-color="#bfcbd9"
         active-text-color="#409eff"
+        @select="handleMenuSelect"
       >
         <el-menu-item index="/">
           <el-icon><Odometer /></el-icon>
@@ -40,15 +42,20 @@
     </div>
     <div class="main-area">
       <div class="header">
-        <el-breadcrumb separator="/" class="breadcrumb">
-          <el-breadcrumb-item :to="'/'">首页</el-breadcrumb-item>
-          <el-breadcrumb-item v-if="breadcrumbs.parent" :to="breadcrumbs.parentPath">
-            {{ breadcrumbs.parent }}
-          </el-breadcrumb-item>
-          <el-breadcrumb-item v-if="breadcrumbs.current">
-            {{ breadcrumbs.current }}
-          </el-breadcrumb-item>
-        </el-breadcrumb>
+        <div style="display: flex; align-items: center">
+          <div class="sidebar-toggle" @click="toggleSidebar">
+            <el-icon :size="20"><Fold v-if="!sidebarCollapsed" /><Expand v-else /></el-icon>
+          </div>
+          <el-breadcrumb separator="/" class="breadcrumb">
+            <el-breadcrumb-item :to="'/'">首页</el-breadcrumb-item>
+            <el-breadcrumb-item v-if="breadcrumbs.parent" :to="breadcrumbs.parentPath">
+              {{ breadcrumbs.parent }}
+            </el-breadcrumb-item>
+            <el-breadcrumb-item v-if="breadcrumbs.current">
+              {{ breadcrumbs.current }}
+            </el-breadcrumb-item>
+          </el-breadcrumb>
+        </div>
         <div class="header-right">
           <span class="username">{{ currentUser }}</span>
           <el-button text @click="handleLogout">
@@ -64,12 +71,46 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
+
+const sidebarCollapsed = ref(false)
+const mobileMenuOpen = ref(false)
+const isMobile = ref(false)
+
+function checkMobile() {
+  isMobile.value = window.innerWidth <= 768
+  if (!isMobile.value) {
+    mobileMenuOpen.value = false
+  }
+}
+
+onMounted(() => {
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', checkMobile)
+})
+
+function toggleSidebar() {
+  if (isMobile.value) {
+    mobileMenuOpen.value = !mobileMenuOpen.value
+  } else {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+  }
+}
+
+function handleMenuSelect() {
+  if (isMobile.value) {
+    mobileMenuOpen.value = false
+  }
+}
 
 const currentUser = computed(() => localStorage.getItem('mytest_user') || 'admin')
 
@@ -130,6 +171,7 @@ async function handleLogout() {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 .username {
   font-size: 14px;
