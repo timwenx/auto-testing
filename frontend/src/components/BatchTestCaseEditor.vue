@@ -179,12 +179,13 @@ const props = defineProps({
   selectedItems: { type: Array, default: () => [] },
   descriptions: { type: Object, default: () => ({}) },
   preconditionId: { type: Number, default: null },
+  initialCases: { type: Array, default: null },
 })
 const emit = defineEmits(['back', 'save-complete'])
 
 const generating = ref(false)
 const saving = ref(false)
-const generatedCases = ref([])
+const generatedCases = ref(props.initialCases || [])
 
 const showPreview = ref(false)
 const previewCase = ref(null)

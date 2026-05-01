@@ -71,6 +71,11 @@ export const getRepoAnalysisList = (projectId) => api.get(`/projects/${projectId
 export const batchGenerateTestcases = (projectId, data) => aiApi.post(`/projects/${projectId}/batch-generate/`, data)
 export const batchSaveTestcases = (projectId, data) => api.post(`/projects/${projectId}/batch-save/`, data)
 
+// ─── 生成草稿（页面状态持久化） ───
+export const getGenerationDraft = (projectId) => api.get(`/projects/${projectId}/generation-draft/`)
+export const saveGenerationDraft = (projectId, draft) => api.post(`/projects/${projectId}/generation-draft/`, { draft })
+export const clearGenerationDraft = (projectId) => api.delete(`/projects/${projectId}/generation-draft/`)
+
 // ─── 前置条件模板 ───
 export const getPreconditions = () => api.get('/preconditions/')
 export const createPrecondition = (data) => api.post('/preconditions/create/', data)

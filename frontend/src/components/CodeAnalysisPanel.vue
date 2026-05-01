@@ -166,6 +166,7 @@ const selectAllPages = ref(false)
 const selectAllApis = ref(false)
 let pollTimer = null
 let pollCount = 0
+let loading = false
 const MAX_POLL_COUNT = 100 // ~5 minutes at 3s interval
 
 const pageItems = computed(() =>
@@ -181,38 +182,47 @@ const totalSelected = computed(() =>
 watch(() => props.autoStart, (val) => {
   if (val && !analysis.value && !analyzing.value) {
     // Check if there's already an analysis
-    checkExistingAnalysis()
+    loadExistingAnalysis()
   }
 })
 
 onMounted(() => {
-  if (props.autoStart) {
-    checkExistingAnalysis()
-  }
+  // Always check for existing analysis on mount
+  loadExistingAnalysis()
 })
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
 
-async function checkExistingAnalysis() {
+async function loadExistingAnalysis() {
+  if (loading) return
+  loading = true
   try {
     const { data } = await getRepoAnalysis(props.projectId)
-    if (data.analysis && data.analysis.status === 'completed') {
-      analysis.value = data.analysis
-      emit('analysis-complete')
-      return
+    if (data.analysis) {
+      if (data.analysis.status === 'completed') {
+        analysis.value = data.analysis
+        emit('analysis-complete')
+        return
+      }
+      if (data.analysis.status === 'analyzing') {
+        analyzing.value = true
+        analysis.value = data.analysis
+        startPolling()
+        return
+      }
     }
-    if (data.analysis && data.analysis.status === 'analyzing') {
-      analyzing.value = true
-      analysis.value = data.analysis
-      startPolling()
-      return
+    // No existing analysis or status is pending/failed — only start new if autoStart
+    if (props.autoStart && !analysis.value) {
+      await startAnalysis()
     }
-    // No existing analysis, start new
-    startAnalysis()
   } catch (e) {
-    startAnalysis()
+    if (props.autoStart) {
+      await startAnalysis()
+    }
+  } finally {
+    loading = false
   }
 }
 

@@ -1246,13 +1246,20 @@ def batch_generate_testcases(request, project_id):
         logger.exception("Batch generate failed for project #%s", project_id)
         return Response({'error': f'批量生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    # Save generation draft so the user can resume after page refresh
+    project.generation_draft = {
+        'selected_items': selected_items,
+        'descriptions': descriptions,
+        'precondition_id': precondition_id,
+        'generated_cases': testcases,
+        'step': 3,
+    }
+    project.save(update_fields=['generation_draft', 'updated_at'])
+
     return Response({
         'testcases': testcases,
         'count': len(testcases),
     })
-
-
-@api_view(['POST'])
 def batch_save_testcases(request, project_id):
     """POST /api/projects/<id>/batch-save/ — 批量保存确认后的测试用例"""
     try:
@@ -1288,10 +1295,37 @@ def batch_save_testcases(request, project_id):
             )
             created.append(tc)
 
+    # Clear generation draft after successful save
+    project.generation_draft = {}
+    project.save(update_fields=['generation_draft', 'updated_at'])
+
     return Response({
         'testcases': TestCaseSerializer(created, many=True).data,
         'count': len(created),
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET', 'POST', 'DELETE'])
+def generation_draft(request, project_id):
+    """GET/POST/DELETE /api/projects/<id>/generation-draft/ — 管理生成草稿状态"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        draft = project.generation_draft or {}
+        return Response({'draft': draft})
+
+    elif request.method == 'POST':
+        project.generation_draft = request.data.get('draft', request.data)
+        project.save(update_fields=['generation_draft', 'updated_at'])
+        return Response({'draft': project.generation_draft})
+
+    elif request.method == 'DELETE':
+        project.generation_draft = {}
+        project.save(update_fields=['generation_draft', 'updated_at'])
+        return Response({'draft': {}})
 
 
 @api_view(['POST'])
