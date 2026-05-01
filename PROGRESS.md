@@ -1,28 +1,29 @@
-# Progress Notes — Plan Parameter Management (Round 1/3)
+# Progress Notes — Plan Parameter Management (Round 2/3)
 
-## Status: ALL 6 TASKS COMPLETE
+## Round 2: Verification & QA
 
-### Changes Summary
+### Verification Results
+- **433 tests all pass** (370 main + 63 enriched context)
+- **Frontend builds clean** (no errors, 1.17s build time)
+- **Working tree clean** — all changes committed in round 1
+- **No issues found** — all 6 tasks fully implemented and verified
 
-1. **Task 1: Deterministic `_make_param_name`** — Replaced index-based parameter naming with selector-content hash (`_selector_hash`). Same CSS selector always produces the same parameter name across scripts. `browser_navigate` uses fixed `param_url`. `browser_assert` uses selector-based name. Added `_deduplicate_param_names()` for same-selector value conflicts.
+### Anti-Drift Check
+- Reviewed all 6 tasks marked as Done in round 1:
+  - Task 1 (`_make_param_name` deterministic): Verified `_selector_hash()` + index-agnostic naming ✓
+  - Task 2 (Plan parameters API): `GET /api/plans/<id>/parameters/` works, 8 tests pass ✓
+  - Task 3 (Plan execute with overrides): `PlanExecuteRequestSerializer` + `_run_single_script` filtering ✓
+  - Task 4 (Frontend dialog): Parameter dialog with input/assertion groups, conflict warnings ✓
+  - Task 5 (Batch normalization): `normalize_parameter_names()` called in `batch_convert_scripts` ✓
+  - Task 6 (Unit tests): 23 new tests across 4 test classes, all pass ✓
 
-2. **Task 2: Plan Parameters API** — New `GET /api/plans/<id>/parameters/` endpoint. Collects parameters from all scripts in plan, deduplicates by name, detects conflicts (same name, different defaults). Returns `parameters` dict with sources info and `all_script_params` per-script mapping.
-
-3. **Task 3: Plan Execute with Overrides** — `plan_execute` now accepts optional `parameter_overrides` dict in request body. `_run_single_script` filters overrides to only params the script uses before passing to `ReplayExecutor`. Backward compatible: empty body = same behavior.
-
-4. **Task 4: Frontend Parameter Dialog** — Modified `handleExecutePlan` to fetch parameters first. If params exist, shows editing dialog with input/assertion groups, conflict warnings, reset-to-default. Passes only changed values as `parameter_overrides`. Updated API examples with `-d` body.
-
-5. **Task 5: Batch Normalization** — Added `normalize_parameter_names()` post-processor in `batch_convert_scripts`. Groups by label+default, renames to first occurrence's name, updates both parameters dict and template references in steps.
-
-6. **Task 6: Unit Tests** — 23 new tests across 4 test classes: deterministic naming (6), parameter aggregation (8), override handling (4), normalization (5). Total: 370 + 63 = 433 tests passing.
-
-### Files Changed
-| File | Changes |
-|------|---------|
-| `core/script_converter.py` | `_selector_hash()`, `_make_param_name()` deterministic, `_deduplicate_param_names()`, `normalize_parameter_names()` |
-| `core/views.py` | `plan_parameters()` view, `plan_execute` body parsing, `_run_single_script` overrides filtering |
-| `core/serializers.py` | `PlanExecuteRequestSerializer` |
-| `core/urls.py` | `plans/<id>/parameters/` route |
-| `core/tests.py` | 23 new tests in 4 classes |
-| `frontend/src/api.js` | `getPlanParameters()`, updated `executePlan()` |
-| `frontend/src/views/TestPlanView.vue` | Parameter dialog, execute flow, conflict UI |
+### Commits (from round 1)
+1. `195c840` — feat: deterministic parameter naming via selector hash
+2. `cc1b7c8` — feat: add plan parameter aggregation API endpoint
+3. `70a2eee` — claude-p: round 2 (plan execute overrides)
+4. `ea05a52` — feat: plan execution supports parameter_overrides
+5. `0fd061a` — fix: add feature_description field to old-format fallback items
+6. `1df123f` — feat: plan execution parameter dialog in frontend
+7. `d6a9f89` — feat: batch parameter name normalization across scripts
+8. `888c661` — test: add 23 tests for plan parameters and parameter naming
+9. `a0ed432` — claude-p: round 1 (final commit)
