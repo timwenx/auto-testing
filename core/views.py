@@ -1285,36 +1285,75 @@ def batch_generate_testcases(request, project_id):
     if not selected_items:
         return Response({'error': '请至少选择一个目标'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 加载前置条件模板
-    precondition = None
-    if precondition_id:
-        try:
-            precondition = PreconditionTemplate.objects.get(pk=precondition_id)
-        except PreconditionTemplate.DoesNotExist:
-            return Response({'error': '前置条件模板不存在'}, status=status.HTTP_404_NOT_FOUND)
-
     try:
-        from .batch_generator import generate_testcases_for_items
-        testcases = generate_testcases_for_items(
-            project, selected_items, descriptions, precondition
-        )
-    except Exception as e:
-        logger.exception("Batch generate failed for project #%s", project_id)
-        return Response({'error': f'批量生成失败: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        precondition = PreconditionTemplate.objects.get(pk=precondition_id)
+    except PreconditionTemplate.DoesNotExist:
+        return Response({'error': '前置条件模板不存在'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Save generation draft so the user can resume after page refresh
+    # Save generation draft as 'generating' status immediately
     project.generation_draft = {
         'selected_items': selected_items,
         'descriptions': descriptions,
         'precondition_id': precondition_id,
-        'generated_cases': testcases,
+        'status': 'generating',
         'step': 3,
     }
     project.save(update_fields=['generation_draft', 'updated_at'])
 
+    # Run generation in background thread to avoid blocking ASGI
+    _project_id = project.id
+    _selected_items = selected_items
+    _descriptions = descriptions
+    _precondition_id = precondition_id
+
+    def _do_generate():
+        from .models import Project as _Project
+        from .batch_generator import generate_testcases_for_items
+        from django.db import close_old_connections
+        try:
+            close_old_connections()
+            proj = _Project.objects.get(pk=_project_id)
+            prec = None
+            if _precondition_id:
+                try:
+                    prec = PreconditionTemplate.objects.get(pk=_precondition_id)
+                except PreconditionTemplate.DoesNotExist:
+                    pass
+            testcases = generate_testcases_for_items(
+                proj, _selected_items, _descriptions, prec
+            )
+            close_old_connections()
+            proj = _Project.objects.get(pk=_project_id)
+            proj.generation_draft = {
+                'selected_items': _selected_items,
+                'descriptions': _descriptions,
+                'precondition_id': _precondition_id,
+                'generated_cases': testcases,
+                'status': 'completed',
+                'step': 3,
+            }
+            proj.save(update_fields=['generation_draft', 'updated_at'])
+        except Exception as e:
+            logger.exception("Background batch generate failed for project #%s", _project_id)
+            try:
+                close_old_connections()
+                proj = _Project.objects.get(pk=_project_id)
+                proj.generation_draft = {
+                    **proj.generation_draft,
+                    'status': 'failed',
+                    'error': str(e),
+                }
+                proj.save(update_fields=['generation_draft', 'updated_at'])
+            except Exception:
+                logger.exception("Failed to save error state for project #%s", _project_id)
+
+    import threading
+    t = threading.Thread(target=_do_generate, daemon=True)
+    t.start()
+
     return Response({
-        'testcases': testcases,
-        'count': len(testcases),
+        'status': 'generating',
+        'message': '已开始生成，请稍候轮询结果',
     })
 @api_view(['POST'])
 def batch_save_testcases(request, project_id):
