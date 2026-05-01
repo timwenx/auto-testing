@@ -228,3 +228,38 @@ All 6 tasks fully implemented and verified:
 ### Status
 - All 164 tests pass (148 original + 16 new)
 - Commit pending
+
+## Round 2/3 — Bug fixes and test coverage (Repo Analysis plan)
+
+### Issues Found and Fixed
+
+1. **`repo_analyze` duplicate RepoAnalysis records** (`views.py`):
+   - View created one RepoAnalysis + analyze_repo internally created another
+   - Fixed: removed view-level creation, let analyze_repo be the single record creator
+   - Response now returns `status: 'analyzing'` instead of `analysis_id`
+
+2. **`RepoStatusCard` stale project data** (`RepoStatusCard.vue`):
+   - After pull, `local_repo_path` wasn't refreshed, showing "未拉取" instead of "已就绪"
+   - Fixed: refresh project data via getProject() after successful pull
+
+3. **`PreconditionSelector` v-model reactivity** (`PreconditionSelector.vue`):
+   - Used `ref(props.selectedId)` + two watches — fragile pattern
+   - Fixed: replaced with `computed({ get, set })` for proper v-model binding
+
+4. **`_parse_testcases_response` non-list safety** (`batch_generator.py`):
+   - If Claude returns a JSON object instead of array, result was passed through
+   - Fixed: added `isinstance(result, list)` check, returns `[]` for non-list
+
+5. **`_get_model` missing mock in RepoAnalyzerTest** (`tests.py`):
+   - Test could trigger DB query for model name
+   - Fixed: added `@mock.patch('core.repo_analyzer._get_model', return_value='test-model')`
+
+### New Tests (11 added)
+- `BatchGeneratorParserTest` (5 tests) — valid, markdown-wrapped, invalid, non-list, bracket fallback
+- `RepoAnalyzerParserEdgeTest` (4 tests) — missing fields, method preserved, non-dict, curly brace fallback
+- `BatchSaveEdgeTest` (2 tests) — default values, project isolation
+
+### Status
+- All 210 tests pass (199 previous + 11 new)
+- Frontend builds successfully
+- Commit: `41f0080`
