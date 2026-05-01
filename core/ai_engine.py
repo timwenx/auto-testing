@@ -242,13 +242,15 @@ ADJUST_PROMPT = """你是一个专业的 QA 测试工程师。你正在与用户
 - expected_result: 预期结果
 - priority: 优先级（P0/P1/P2）
 - test_type: 测试类型（功能/边界/异常/安全）
+- feature_group: 所属功能模块（保持原有分组不变，新增用例归入合适的分组）
 - markdown_content: 完整的 Markdown 测试用例文档
 
 要求：
 1. 保留用户未要求修改的部分
 2. 根据反馈新增、修改或删除用例
 3. 确保 markdown_content 是完整的测试用例文档
-4. 只返回 JSON 数组，不要其他文字
+4. 保持 feature_group 的一致性，不要随意重命名已有分组
+5. 只返回 JSON 数组，不要其他文字
 """
 
 ANALYZE_PROMPT = """你是一个专业的 QA 测试工程师。请分析以下测试执行结果，给出分析报告。

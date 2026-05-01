@@ -724,6 +724,7 @@ def ai_adjust_testcase(request):
                 tc.markdown_content = item.get('markdown_content', tc.markdown_content)
                 tc.priority = item.get('priority', tc.priority)
                 tc.test_type = item.get('test_type', tc.test_type)
+                tc.feature_group = item.get('feature_group', tc.feature_group)
                 tc.version = (tc.version or 1) + 1
                 tc.save()
 

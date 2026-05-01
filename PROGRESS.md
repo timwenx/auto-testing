@@ -383,3 +383,59 @@ All 6 tasks fully implemented and verified:
 - Django check: 0 issues
 - Commit: `0013ca9`
 - Django check: 0 issues
+
+## Round 7 — Feature Group + Sort Order (Plan 7)
+
+### Tasks Completed (12/12)
+
+All tasks from the feature group + sort order plan implemented.
+
+### Backend Changes
+
+1. **TestCase model** — Added `feature_group` (CharField) and `sort_order` (IntegerField) fields
+   - Migration `0013_add_feature_group_sort_order.py`
+   - Updated `Meta.ordering` to `['feature_group', 'sort_order', '-updated_at']`
+   - Added composite index `idx_tc_group_order` on `(feature_group, sort_order)`
+
+2. **Serializers** — Added `feature_group` and `sort_order` to `TestCaseSerializer.Meta.fields`
+   - New `TestCaseReorderItemSerializer` and `TestCaseReorderSerializer` for batch reorder
+
+3. **Reorder API** — `POST /api/projects/<id>/testcases/reorder/`
+   - Validates testcase ownership, uses `transaction.atomic()` for batch updates
+
+4. **Feature Groups API** — `GET /api/projects/<id>/feature-groups/`
+   - Returns deduplicated feature groups with counts
+
+5. **Batch execution ordering** — `execute_project_agent` now orders by `feature_group, sort_order`
+
+6. **AI generation** — Updated prompts in `ai_engine.py` and `batch_generator.py` to output `feature_group`
+   - `_generate_and_save_testcases` assigns auto-incremented `sort_order`
+   - `batch_save_testcases` preserves `feature_group` and `sort_order` from batch data
+
+### Frontend Changes
+
+7. **api.js** — Added `reorderTestcases()` and `getFeatureGroups()` functions
+
+8. **ProjectDetail.vue** — Major UI overhaul:
+   - Toggle button between "分组视图" (collapse) and "列表视图" (flat table)
+   - Grouped view: `el-collapse` with group name + count, inner `el-table` per group
+   - Flat view: new `feature_group` column + `sort_order` column
+   - Edit dialog: `feature_group` autocomplete + `sort_order` number input
+   - Create dialog: `feature_group` autocomplete
+   - Move up/down (↑/↓) buttons per testcase in grouped view
+
+9. **BatchTestCaseEditor.vue** — Added `feature_group` column in table + field in edit dialog
+
+### Tests (17 new)
+- `FeatureGroupModelTest` (3 tests) — defaults, ordering, serializer
+- `FeatureGroupSerializerTest` (3 tests) — valid data, missing orders, defaults
+- `ReorderAPITest` (5 tests) — success, 404, empty, wrong project, atomic
+- `FeatureGroupsAPITest` (3 tests) — grouped counts, empty, 404
+- `ExecuteProjectOrderingTest` (1 test) — execution respects sort order
+- `BatchSaveFeatureGroupTest` (2 tests) — saves feature_group + sort_order, default sort_order
+
+### Status
+- All **246 tests pass** (229 + 17 new)
+- Frontend builds successfully
+- Django check: 0 issues
+- Commit: `ccd4f71`
