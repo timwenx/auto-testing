@@ -26,6 +26,9 @@
         <div class="card-header">
           <span>测试用例</span>
           <div>
+            <el-button size="small" @click="goToTestCaseManager">
+              <el-icon><FolderOpened /></el-icon> 用例管理
+            </el-button>
             <el-button size="small" type="success" @click="showAIGenerate = true">
               <el-icon><MagicStick /></el-icon> AI 生成
             </el-button>
@@ -467,7 +470,7 @@ const handleExecuteAgent = async (row) => {
 }
 
 function goToTestCaseManager() {
-  router.push({ name: 'TestCaseManager', params: { id: projectId.value } })
+  router.push({ name: 'TestCaseManager', params: { id: projectId } })
 }
 
 const handleExecuteAllAgent = async () => {

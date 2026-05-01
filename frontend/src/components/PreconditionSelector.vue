@@ -24,6 +24,16 @@
             <el-button
               v-if="!tpl.is_default"
               size="small"
+              type="primary"
+              link
+              style="margin-top: 4px; margin-right: 8px"
+              @click.stop="openEditDialog(tpl)"
+            >
+              编辑
+            </el-button>
+            <el-button
+              v-if="!tpl.is_default"
+              size="small"
               type="danger"
               link
               style="margin-top: 4px"
@@ -62,13 +72,37 @@
         <el-button type="primary" @click="handleCreate" :loading="creating">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- 编辑模板对话框 -->
+    <el-dialog v-model="showEditDialog" title="编辑前置条件模板" width="500px">
+      <el-form label-width="80px" size="small">
+        <el-form-item label="名称">
+          <el-input v-model="editTemplate.name" placeholder="如：SSO 统一登录" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="editTemplate.description" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="前置步骤">
+          <el-input v-model="editTemplate.steps" type="textarea" :rows="5"
+            placeholder="自然语言描述的前置步骤" />
+        </el-form-item>
+        <el-form-item label="Markdown">
+          <el-input v-model="editTemplate.markdown_content" type="textarea" :rows="4"
+            placeholder="可选：完整的 Markdown 格式前置条件" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleEdit" :loading="saving">保存</el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getPreconditions, createPrecondition, deletePrecondition } from '../api.js'
+import { getPreconditions, createPrecondition, updatePrecondition, deletePrecondition } from '../api.js'
 
 const props = defineProps({
   selectedId: { type: Number, default: null },
@@ -84,6 +118,15 @@ const preconditions = ref([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const creating = ref(false)
+const showEditDialog = ref(false)
+const saving = ref(false)
+const editTemplate = ref({
+  id: null,
+  name: '',
+  description: '',
+  steps: '',
+  markdown_content: '',
+})
 const newTemplate = ref({
   name: '',
   description: '',
@@ -120,6 +163,29 @@ async function handleCreate() {
     ElMessage.error(e.response?.data?.error || '创建失败')
   } finally {
     creating.value = false
+  }
+}
+
+function openEditDialog(tpl) {
+  editTemplate.value = JSON.parse(JSON.stringify(tpl))
+  showEditDialog.value = true
+}
+
+async function handleEdit() {
+  if (!editTemplate.value.name || !editTemplate.value.steps) {
+    return ElMessage.warning('请填写名称和前置步骤')
+  }
+  saving.value = true
+  try {
+    const { id, name, description, steps, markdown_content } = editTemplate.value
+    await updatePrecondition(id, { name, description, steps, markdown_content })
+    ElMessage.success('模板更新成功')
+    showEditDialog.value = false
+    await loadPreconditions()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '更新失败')
+  } finally {
+    saving.value = false
   }
 }
 
