@@ -70,12 +70,16 @@
               </div>
               <div class="api-field">
                 <label>触发执行:</label>
-                <code class="code-block">curl -X POST {{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/ -H "X-Plan-Token: {{ selectedPlan.api_token }}"</code>
+                <code class="code-block">curl -X POST {{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/ -H "X-Plan-Token: {{ selectedPlan.api_token }}" -H "Content-Type: application/json"</code>
                 <el-button size="small" text @click="copyCurlExec">复制</el-button>
               </div>
               <div class="api-field">
+                <label>带参数执行:</label>
+                <code class="code-block">curl -X POST {{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/ -H "X-Plan-Token: {{ selectedPlan.api_token }}" -H "Content-Type: application/json" -d '{"parameter_overrides": {"param_xxx": "值"}}'</code>
+              </div>
+              <div class="api-field">
                 <label>同步执行:</label>
-                <code class="code-block">curl -X POST "{{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/?sync=true" -H "X-Plan-Token: {{ selectedPlan.api_token }}"</code>
+                <code class="code-block">curl -X POST "{{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/?sync=true" -H "X-Plan-Token: {{ selectedPlan.api_token }}" -H "Content-Type: application/json"</code>
                 <el-button size="small" text @click="copyCurlSync">复制</el-button>
               </div>
               <div class="api-field">
@@ -577,7 +581,7 @@ async function handleExecutePlan() {
       // Show parameter dialog
       planParams.value = data
       // Initialize edit values with defaults
-      for (const [pname, pinfo of Object.entries(params)) {
+      for (const [pname, pinfo] of Object.entries(params)) {
         paramEditValues[pname] = String(pinfo.default ?? '')
       }
       showParamDialog.value = true
@@ -725,6 +729,9 @@ onMounted(async () => {
 .api-field label { font-weight: 600; font-size: 12px; color: #606266; white-space: nowrap; min-width: 80px; }
 .api-field code { background: #f5f7fa; padding: 2px 8px; border-radius: 3px; font-size: 12px; word-break: break-all; }
 .code-block { display: block; font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.4; }
+.param-input-row { display: flex; align-items: center; gap: 4px; width: 100%; }
+.param-input-row .el-input { flex: 1; }
+.param-conflict-warning { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #e6a23c; margin-top: 4px; }
 
 @media (max-width: 768px) {
   .test-plan-view > div:first-child {
