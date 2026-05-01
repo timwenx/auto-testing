@@ -1787,6 +1787,9 @@ def build_test_execution_system_prompt(testcase, base_url: str, project) -> str:
     if project.repo_url:
         repo_info = f"- Git 仓库: {project.repo_url}\n- 本地路径: {project.local_repo_path or '未克隆'}"
 
+    # 准备 test_context_section
+    test_context_section = _format_test_context(testcase)
+
     return template.format(
         project_name=project.name,
         base_url=base_url,
@@ -1796,7 +1799,116 @@ def build_test_execution_system_prompt(testcase, base_url: str, project) -> str:
         testcase_steps=testcase.steps or '无步骤',
         testcase_expected=testcase.expected_result or '无预期结果',
         markdown_section=markdown_section,
+        test_context_section=test_context_section,
     )
+
+
+def _format_test_context(testcase) -> str:
+    """
+    格式化 testcase.test_context 为 prompt section。
+
+    页面类型 context:
+      列出选择器、类型、label，提示 Agent 优先使用已知选择器。
+    API 类型 context:
+      列出参数和响应字段，提示 Agent 直接构造请求。
+
+    如果 test_context 为空，返回空字符串（Agent 退回到探索模式）。
+    """
+    ctx = testcase.test_context
+    if not ctx or not isinstance(ctx, dict):
+        return ''
+
+    context_type = ctx.get('context_type', '')
+    if context_type == 'page':
+        return _format_page_context(ctx)
+    elif context_type == 'api':
+        return _format_api_context(ctx)
+
+    # 尝试根据 elements/params 自动推断类型
+    elements = ctx.get('elements', [])
+    params = ctx.get('params', [])
+    if elements:
+        return _format_page_context(ctx)
+    if params:
+        return _format_api_context(ctx)
+
+    return ''
+
+
+def _format_page_context(ctx) -> str:
+    """格式化页面类型的 test_context"""
+    lines = ['## 页面元素信息（来自代码分析，可直接使用这些选择器）']
+    path = ctx.get('path', '')
+    source_file = ctx.get('source_file', '')
+    if path:
+        lines.append(f'- 页面路径: {path}')
+    if source_file:
+        lines.append(f'- 来源文件: {source_file}')
+
+    elements = ctx.get('elements', [])
+    if elements:
+        lines.append('')
+        lines.append('**优先使用这些已知选择器，无需重新用 list_files/read_file 探索源代码：**')
+        lines.append('')
+        for elem in elements:
+            selector = elem.get('selector', '')
+            elem_type = elem.get('type', '')
+            label = elem.get('label', '')
+            desc = elem.get('description', '')
+            line = f'- {label or "元素"}: `{selector}` ({elem_type})'
+            if desc:
+                line += f' — {desc}'
+            lines.append(line)
+    else:
+        lines.append('')
+        lines.append('（未提取到具体元素信息，请通过 browser_snapshot 探索页面）')
+
+    return '\n'.join(lines)
+
+
+def _format_api_context(ctx) -> str:
+    """格式化 API 类型的 test_context"""
+    lines = ['## API 参数信息（来自代码分析）']
+    path = ctx.get('path', '')
+    method = ctx.get('method', '')
+    source_file = ctx.get('source_file', '')
+    if method and path:
+        lines.append(f'- 端点: {method} {path}')
+    elif path:
+        lines.append(f'- 端点: {path}')
+    if source_file:
+        lines.append(f'- 来源文件: {source_file}')
+
+    params = ctx.get('params', [])
+    if params:
+        lines.append('')
+        lines.append('**请求参数：**')
+        for param in params:
+            p_name = param.get('name', '')
+            p_in = param.get('in', '')
+            p_type = param.get('type', '')
+            p_required = param.get('required', False)
+            p_desc = param.get('description', '')
+            req_mark = '必填' if p_required else '可选'
+            line = f'- `{p_name}` ({p_in}, {p_type}, {req_mark})'
+            if p_desc:
+                line += f' — {p_desc}'
+            lines.append(line)
+
+    response_fields = ctx.get('response_fields', [])
+    if response_fields:
+        lines.append('')
+        lines.append('**响应字段：**')
+        for field in response_fields:
+            f_name = field.get('name', '')
+            f_type = field.get('type', '')
+            f_desc = field.get('description', '')
+            line = f'- `{f_name}` ({f_type})'
+            if f_desc:
+                line += f' — {f_desc}'
+            lines.append(line)
+
+    return '\n'.join(lines)
 
 
 def _get_fallback_template() -> str:
@@ -1808,5 +1920,6 @@ def _get_fallback_template() -> str:
         "用例: {testcase_name}\n描述: {testcase_description}\n\n"
         "步骤:\n{testcase_steps}\n\n预期结果:\n{testcase_expected}\n\n"
         "{markdown_section}\n\n"
+        "{test_context_section}\n\n"
         "工作流程: 探索代码 → 规划测试 → 执行操作 → report_result 报告结果。"
     )

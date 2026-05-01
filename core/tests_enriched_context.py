@@ -1,0 +1,513 @@
+"""
+测试 — Enriched Context (discovered_items 扩展 + test_context 注入)
+
+覆盖:
+- _parse_analysis_response: 新旧 JSON 格式
+- _format_test_context / _format_page_context / _format_api_context: Agent prompt 注入
+- batch_save_testcases: test_context 保存
+- _generate_batch: prompt 中包含 elements/params
+"""
+import json
+import os
+import sys
+import django
+
+# 确保 Django settings 加载
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+django.setup()
+
+from django.test import TestCase, TransactionTestCase
+from django.test.utils import override_settings
+
+from core.repo_analyzer import _parse_analysis_response
+from core.agent_tools import (
+    _format_test_context,
+    _format_page_context,
+    _format_api_context,
+    build_test_execution_system_prompt,
+)
+from core.models import Project, TestCase as TestCaseModel
+from unittest.mock import MagicMock
+
+
+# ══════════════════════════════════════════════════════════════════
+# _parse_analysis_response 测试
+# ══════════════════════════════════════════════════════════════════
+
+class ParseAnalysisResponseEnrichedTest(TestCase):
+    """测试 _parse_analysis_response 对新 enriched JSON 格式的解析"""
+
+    def test_enriched_page_with_elements(self):
+        """页面包含 elements 数组"""
+        raw = json.dumps({
+            "pages": [{
+                "path": "/users",
+                "name": "用户管理",
+                "description": "用户列表",
+                "source_file": "src/views/Users.vue",
+                "elements": [
+                    {"selector": "#search-input", "type": "input", "label": "搜索框", "description": "模糊搜索"},
+                    {"selector": ".btn-add", "type": "button", "label": "新增用户"},
+                ]
+            }],
+            "apis": []
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        page = items[0]
+        self.assertEqual(page['type'], 'page')
+        self.assertEqual(page['path'], '/users')
+        self.assertEqual(len(page['elements']), 2)
+        self.assertEqual(page['elements'][0]['selector'], '#search-input')
+        self.assertEqual(page['elements'][0]['type'], 'input')
+        self.assertEqual(page['elements'][1]['label'], '新增用户')
+        # API 字段应为空
+        self.assertEqual(page['params'], [])
+        self.assertEqual(page['response_fields'], [])
+
+    def test_enriched_api_with_params_and_response_fields(self):
+        """API 包含 params 和 response_fields"""
+        raw = json.dumps({
+            "pages": [],
+            "apis": [{
+                "path": "/api/users",
+                "method": "GET",
+                "name": "获取用户列表",
+                "description": "分页查询",
+                "source_file": "src/controllers/UserController.java",
+                "params": [
+                    {"name": "page", "in": "query", "type": "integer", "required": False, "description": "页码"},
+                    {"name": "size", "in": "query", "type": "integer", "required": False, "description": "每页数量"},
+                ],
+                "response_fields": [
+                    {"name": "id", "type": "integer", "description": "用户ID"},
+                    {"name": "username", "type": "string", "description": "用户名"},
+                ]
+            }]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        api = items[0]
+        self.assertEqual(api['type'], 'api')
+        self.assertEqual(api['method'], 'GET')
+        self.assertEqual(len(api['params']), 2)
+        self.assertEqual(api['params'][0]['name'], 'page')
+        self.assertEqual(api['params'][0]['in'], 'query')
+        self.assertFalse(api['params'][0]['required'])
+        self.assertEqual(len(api['response_fields']), 2)
+        self.assertEqual(api['response_fields'][1]['name'], 'username')
+        # 页面字段应为空
+        self.assertEqual(api['elements'], [])
+
+    def test_backward_compatible_old_format(self):
+        """旧格式（无 elements/params/response_fields）仍然正常解析"""
+        raw = json.dumps({
+            "pages": [
+                {"path": "/home", "name": "首页", "description": "首页", "source_file": "src/views/Home.vue"}
+            ],
+            "apis": [
+                {"path": "/api/health", "method": "GET", "name": "健康检查", "description": "检查服务状态",
+                 "source_file": "src/controllers/HealthController.java"}
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 2)
+
+        page = items[0]
+        self.assertEqual(page['type'], 'page')
+        self.assertEqual(page['path'], '/home')
+        self.assertEqual(page['elements'], [])
+        self.assertEqual(page['params'], [])
+        self.assertEqual(page['response_fields'], [])
+
+        api = items[1]
+        self.assertEqual(api['type'], 'api')
+        self.assertEqual(api['path'], '/api/health')
+        self.assertEqual(api['params'], [])
+        self.assertEqual(api['response_fields'], [])
+        self.assertEqual(api['elements'], [])
+
+    def test_mixed_enriched_and_old_items(self):
+        """混合: 有的 page 有 elements, 有的没有"""
+        raw = json.dumps({
+            "pages": [
+                {
+                    "path": "/users",
+                    "name": "用户管理",
+                    "description": "用户列表",
+                    "source_file": "src/views/Users.vue",
+                    "elements": [{"selector": "#btn", "type": "button", "label": "按钮"}]
+                },
+                {
+                    "path": "/settings",
+                    "name": "设置页",
+                    "description": "系统设置",
+                    "source_file": "src/views/Settings.vue"
+                    # 没有 elements
+                }
+            ],
+            "apis": []
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(len(items[0]['elements']), 1)
+        self.assertEqual(items[0]['elements'][0]['selector'], '#btn')
+        self.assertEqual(items[1]['elements'], [])
+
+    def test_empty_elements_treated_as_empty_list(self):
+        """elements 为 null 或空数组都应返回空列表"""
+        raw = json.dumps({
+            "pages": [
+                {"path": "/a", "name": "A", "elements": None},
+                {"path": "/b", "name": "B", "elements": []},
+            ],
+            "apis": []
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]['elements'], [])
+        self.assertEqual(items[1]['elements'], [])
+
+    def test_invalid_json_returns_empty(self):
+        """无效 JSON 返回空列表"""
+        items = _parse_analysis_response("not json at all no curly braces here")
+        self.assertEqual(items, [])
+
+    def test_invalid_json_with_curly_braces_returns_empty(self):
+        """包含花括号但不是有效 JSON 也返回空列表"""
+        items = _parse_analysis_response("some text {not valid json} more text")
+        self.assertEqual(items, [])
+
+    def test_json_in_markdown_code_block(self):
+        """JSON 包在 markdown 代码块中也能解析"""
+        raw = '```json\n{"pages":[{"path":"/test","name":"测试","description":"","source_file":""}],"apis":[]}\n```'
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['path'], '/test')
+
+    def test_max_10_elements_enforced_by_prompt(self):
+        """验证解析器能处理超过 10 个 elements（prompt 限制由 AI 控制，解析器不做截断）"""
+        elements = [{"selector": f"#el-{i}", "type": "input", "label": f"元素{i}"} for i in range(15)]
+        raw = json.dumps({
+            "pages": [{"path": "/big", "name": "大页面", "description": "", "elements": elements}],
+            "apis": []
+        })
+        items = _parse_analysis_response(raw)
+        # 解析器不截断，全部返回
+        self.assertEqual(len(items[0]['elements']), 15)
+
+
+# ══════════════════════════════════════════════════════════════════
+# _format_test_context 测试 (Agent prompt 注入)
+# ══════════════════════════════════════════════════════════════════
+
+class FormatTestContextTest(TestCase):
+    """测试 _format_test_context 格式化逻辑"""
+
+    def test_empty_context_returns_empty_string(self):
+        """空 test_context 返回空字符串"""
+        tc = MagicMock()
+        tc.test_context = {}
+        self.assertEqual(_format_test_context(tc), '')
+
+    def test_none_context_returns_empty_string(self):
+        """None test_context 返回空字符串"""
+        tc = MagicMock()
+        tc.test_context = None
+        self.assertEqual(_format_test_context(tc), '')
+
+    def test_page_context_format(self):
+        """页面类型 context 格式化包含选择器和标签"""
+        tc = MagicMock()
+        tc.test_context = {
+            'context_type': 'page',
+            'path': '/users',
+            'source_file': 'src/views/Users.vue',
+            'elements': [
+                {'selector': '#search-input', 'type': 'input', 'label': '搜索框', 'description': '模糊搜索'},
+                {'selector': '.btn-add', 'type': 'button', 'label': '新增用户'},
+            ]
+        }
+        result = _format_test_context(tc)
+        self.assertIn('页面元素信息', result)
+        self.assertIn('#search-input', result)
+        self.assertIn('搜索框', result)
+        self.assertIn('.btn-add', result)
+        self.assertIn('新增用户', result)
+        self.assertIn('优先使用这些已知选择器', result)
+        self.assertIn('/users', result)
+
+    def test_page_context_no_elements(self):
+        """页面类型 context 但无 elements"""
+        tc = MagicMock()
+        tc.test_context = {
+            'context_type': 'page',
+            'path': '/users',
+            'elements': []
+        }
+        result = _format_test_context(tc)
+        self.assertIn('页面元素信息', result)
+        self.assertIn('未提取到具体元素信息', result)
+
+    def test_api_context_format(self):
+        """API 类型 context 格式化包含参数和响应字段"""
+        tc = MagicMock()
+        tc.test_context = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'GET',
+            'source_file': 'src/controllers/UserController.java',
+            'params': [
+                {'name': 'page', 'in': 'query', 'type': 'integer', 'required': False, 'description': '页码'},
+                {'name': 'size', 'in': 'query', 'type': 'integer', 'required': True, 'description': '每页数量'},
+            ],
+            'response_fields': [
+                {'name': 'id', 'type': 'integer', 'description': '用户ID'},
+                {'name': 'username', 'type': 'string', 'description': '用户名'},
+            ]
+        }
+        result = _format_test_context(tc)
+        self.assertIn('API 参数信息', result)
+        self.assertIn('GET /api/users', result)
+        self.assertIn('page', result)
+        self.assertIn('size', result)
+        self.assertIn('必填', result)
+        self.assertIn('可选', result)
+        self.assertIn('响应字段', result)
+        self.assertIn('id', result)
+        self.assertIn('username', result)
+
+    def test_api_context_no_params_no_response(self):
+        """API 类型 context 但无参数和响应字段"""
+        tc = MagicMock()
+        tc.test_context = {
+            'context_type': 'api',
+            'path': '/api/health',
+            'method': 'GET',
+            'params': [],
+            'response_fields': []
+        }
+        result = _format_test_context(tc)
+        self.assertIn('API 参数信息', result)
+        self.assertIn('GET /api/health', result)
+        self.assertNotIn('请求参数', result)
+        self.assertNotIn('响应字段', result)
+
+    def test_auto_detect_page_type_by_elements(self):
+        """无 context_type 但有 elements 时自动识别为 page"""
+        tc = MagicMock()
+        tc.test_context = {
+            'path': '/users',
+            'elements': [{'selector': '#btn', 'type': 'button', 'label': '按钮'}]
+        }
+        result = _format_test_context(tc)
+        self.assertIn('页面元素信息', result)
+
+    def test_auto_detect_api_type_by_params(self):
+        """无 context_type 但有 params 时自动识别为 api"""
+        tc = MagicMock()
+        tc.test_context = {
+            'path': '/api/users',
+            'params': [{'name': 'id', 'in': 'path', 'type': 'integer', 'required': True}]
+        }
+        result = _format_test_context(tc)
+        self.assertIn('API 参数信息', result)
+
+
+# ══════════════════════════════════════════════════════════════════
+# build_test_execution_system_prompt 集成测试
+# ══════════════════════════════════════════════════════════════════
+
+class BuildPromptWithContextTest(TestCase):
+    """测试 build_test_execution_system_prompt 注入 test_context"""
+
+    def setUp(self):
+        self.project = MagicMock()
+        self.project.name = '测试项目'
+        self.project.repo_url = ''
+        self.project.local_repo_path = ''
+
+    def test_prompt_with_page_context(self):
+        """包含页面 context 的 prompt"""
+        tc = MagicMock()
+        tc.name = '搜索用户测试'
+        tc.description = '测试搜索功能'
+        tc.steps = '1. 打开用户页面 2. 输入搜索'
+        tc.expected_result = '显示搜索结果'
+        tc.markdown_content = ''
+        tc.test_context = {
+            'context_type': 'page',
+            'path': '/users',
+            'elements': [
+                {'selector': '#search-input', 'type': 'input', 'label': '搜索框'},
+                {'selector': '.btn-search', 'type': 'button', 'label': '搜索按钮'},
+            ]
+        }
+        prompt = build_test_execution_system_prompt(tc, 'http://localhost:3000', self.project)
+        self.assertIn('页面元素信息', prompt)
+        self.assertIn('#search-input', prompt)
+        self.assertIn('.btn-search', prompt)
+        self.assertIn('优先使用这些已知选择器', prompt)
+
+    def test_prompt_with_api_context(self):
+        """包含 API context 的 prompt"""
+        tc = MagicMock()
+        tc.name = '获取用户列表'
+        tc.description = 'API 测试'
+        tc.steps = '1. 发送 GET 请求'
+        tc.expected_result = '返回用户列表'
+        tc.markdown_content = ''
+        tc.test_context = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'GET',
+            'params': [
+                {'name': 'page', 'in': 'query', 'type': 'integer', 'required': False},
+            ],
+            'response_fields': [
+                {'name': 'id', 'type': 'integer', 'description': '用户ID'},
+            ]
+        }
+        prompt = build_test_execution_system_prompt(tc, 'http://localhost:3000', self.project)
+        self.assertIn('API 参数信息', prompt)
+        self.assertIn('GET /api/users', prompt)
+        self.assertIn('page', prompt)
+        self.assertIn('响应字段', prompt)
+
+    def test_prompt_without_context_degrades_gracefully(self):
+        """无 context 的 prompt 仍正常生成（降级到探索模式）"""
+        tc = MagicMock()
+        tc.name = '手动创建的用例'
+        tc.description = '描述'
+        tc.steps = '步骤'
+        tc.expected_result = '预期结果'
+        tc.markdown_content = ''
+        tc.test_context = {}
+        prompt = build_test_execution_system_prompt(tc, 'http://localhost:3000', self.project)
+        # 注入的 context section 为空时不应包含"优先使用这些已知选择器"
+        # (模板本身可能有通用文字，但具体注入的格式化内容不应出现)
+        self.assertNotIn('优先使用这些已知选择器', prompt)
+        self.assertNotIn('请求参数：', prompt)
+        self.assertNotIn('响应字段：', prompt)
+        # 但应包含基本用例信息
+        self.assertIn('手动创建的用例', prompt)
+        self.assertIn('http://localhost:3000', prompt)
+
+
+# ══════════════════════════════════════════════════════════════════
+# TestCase model test_context 字段测试
+# ══════════════════════════════════════════════════════════════════
+
+class TestCaseTestContextFieldTest(TestCase):
+    """测试 TestCase.test_context 字段存储和读取"""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='测试项目', base_url='http://localhost:3000')
+
+    def test_default_empty_dict(self):
+        """默认值为空 dict"""
+        tc = TestCaseModel.objects.create(
+            project=self.project,
+            name='测试用例',
+            steps='步骤',
+            expected_result='预期结果',
+        )
+        tc.refresh_from_db()
+        self.assertEqual(tc.test_context, {})
+
+    def test_store_page_context(self):
+        """存储页面类型 context"""
+        ctx = {
+            'context_type': 'page',
+            'path': '/users',
+            'source_file': 'src/views/Users.vue',
+            'elements': [
+                {'selector': '#search-input', 'type': 'input', 'label': '搜索框'},
+            ]
+        }
+        tc = TestCaseModel.objects.create(
+            project=self.project,
+            name='搜索用户',
+            steps='输入搜索',
+            expected_result='显示结果',
+            test_context=ctx,
+        )
+        tc.refresh_from_db()
+        self.assertEqual(tc.test_context['context_type'], 'page')
+        self.assertEqual(len(tc.test_context['elements']), 1)
+        self.assertEqual(tc.test_context['elements'][0]['selector'], '#search-input')
+
+    def test_store_api_context(self):
+        """存储 API 类型 context"""
+        ctx = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'GET',
+            'params': [
+                {'name': 'page', 'in': 'query', 'type': 'integer', 'required': False},
+            ],
+            'response_fields': [
+                {'name': 'id', 'type': 'integer', 'description': '用户ID'},
+            ]
+        }
+        tc = TestCaseModel.objects.create(
+            project=self.project,
+            name='API 测试',
+            steps='发送请求',
+            expected_result='返回数据',
+            test_context=ctx,
+        )
+        tc.refresh_from_db()
+        self.assertEqual(tc.test_context['context_type'], 'api')
+        self.assertEqual(tc.test_context['method'], 'GET')
+        self.assertEqual(len(tc.test_context['params']), 1)
+        self.assertEqual(len(tc.test_context['response_fields']), 1)
+
+    def test_update_context(self):
+        """更新 context"""
+        tc = TestCaseModel.objects.create(
+            project=self.project,
+            name='测试',
+            steps='步骤',
+            expected_result='预期',
+        )
+        self.assertEqual(tc.test_context, {})
+
+        tc.test_context = {'context_type': 'page', 'path': '/new', 'elements': []}
+        tc.save(update_fields=['test_context'])
+        tc.refresh_from_db()
+        self.assertEqual(tc.test_context['path'], '/new')
+
+
+# ══════════════════════════════════════════════════════════════════
+# batch_generator prompt 构造测试
+# ══════════════════════════════════════════════════════════════════
+
+class BatchGeneratorPromptTest(TestCase):
+    """测试 _generate_batch 的 prompt 构造包含 elements/params 信息"""
+
+    def test_targets_desc_includes_elements(self):
+        """构建的 prompt 包含页面元素信息"""
+        from core.batch_generator import BATCH_GENERATE_SYSTEM_PROMPT
+
+        # 验证 system prompt 要求返回 test_context
+        self.assertIn('test_context', BATCH_GENERATE_SYSTEM_PROMPT)
+        self.assertIn('elements', BATCH_GENERATE_SYSTEM_PROMPT)
+        self.assertIn('params', BATCH_GENERATE_SYSTEM_PROMPT)
+
+    def test_targets_desc_includes_params(self):
+        """构建的 prompt 包含 API 参数信息"""
+        from core.batch_generator import BATCH_GENERATE_SYSTEM_PROMPT
+
+        self.assertIn('response_fields', BATCH_GENERATE_SYSTEM_PROMPT)
+        self.assertIn('context_type', BATCH_GENERATE_SYSTEM_PROMPT)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 运行入口
+# ══════════════════════════════════════════════════════════════════
+
+if __name__ == '__main__':
+    import unittest
+    unittest.main()
