@@ -9,6 +9,7 @@
               <el-option label="Script" value="script" />
               <el-option label="Agent" value="agent" />
               <el-option label="Replay" value="replay" />
+              <el-option label="方案" value="plan" />
             </el-select>
             <el-select v-model="filters.status" placeholder="状态" clearable size="small" style="width: 120px; margin-right: 8px">
               <el-option label="通过" value="passed" />
@@ -22,13 +23,97 @@
           </div>
         </div>
       </template>
-      <el-table :data="filteredExecutions" style="width: 100%" v-loading="loading">
+      <el-table
+        :data="filteredExecutions"
+        style="width: 100%"
+        v-loading="loading"
+        row-key="id"
+      >
+        <!-- 展开行 -->
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="expand-content">
+              <!-- 步骤时间线 -->
+              <template v-if="row.step_logs && row.step_logs.length">
+                <h4 class="expand-section-title">执行步骤</h4>
+                <el-timeline style="margin: 12px 0 16px">
+                  <el-timeline-item
+                    v-for="step in row.step_logs"
+                    :key="step.step_num"
+                    :timestamp="step.timestamp || ''"
+                    placement="top"
+                    :type="step.action === '报告结果' ? 'success' : 'primary'"
+                  >
+                    <div class="step-item">
+                      <strong>Step {{ step.step_num }}</strong>: {{ step.action }}
+                      <span v-if="step.target" class="step-target">→ {{ step.target }}</span>
+                      <el-button
+                        v-if="step.screenshot_path"
+                        size="small" text type="primary"
+                        @click="previewImage(step.screenshot_path)"
+                        style="margin-left: 8px"
+                      >查看截图</el-button>
+                    </div>
+                    <div v-if="step.result" class="step-result">{{ truncate(step.result, 200) }}</div>
+                  </el-timeline-item>
+                </el-timeline>
+              </template>
+
+              <!-- 截图画廊 -->
+              <ScreenshotGallery
+                v-if="row.screenshots && row.screenshots.length"
+                :screenshots="row.screenshots"
+                :show-title="true"
+              />
+
+              <!-- Agent 响应 -->
+              <template v-if="row.agent_response && row.agent_response.response_text">
+                <h4 class="expand-section-title">Agent 响应</h4>
+                <pre class="log-block agent-response">{{ row.agent_response.response_text }}</pre>
+              </template>
+
+              <!-- 错误信息 -->
+              <template v-if="row.error_message">
+                <h4 class="expand-section-title" style="color: #f56c6c">错误信息</h4>
+                <pre class="log-block error">{{ row.error_message }}</pre>
+              </template>
+
+              <!-- 方案子记录 -->
+              <template v-if="row._plan_sub_records && row._plan_sub_records.length">
+                <h4 class="expand-section-title">方案子执行记录</h4>
+                <el-table :data="row._plan_sub_records" size="small" border style="margin-bottom: 12px">
+                  <el-table-column prop="testcase_name" label="用例" min-width="160" show-overflow-tooltip />
+                  <el-table-column prop="execution_mode" label="模式" width="80">
+                    <template #default="{ row: sub }">
+                      <el-tag :type="sub.execution_mode === 'agent' ? 'primary' : 'info'" size="small">
+                        {{ sub.execution_mode || 'script' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="status" label="状态" width="80">
+                    <template #default="{ row: sub }">
+                      <el-tag :type="statusType(sub.status)" size="small">{{ sub.status }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="duration" label="耗时" width="70">
+                    <template #default="{ row: sub }">
+                      {{ sub.duration ? sub.duration + 's' : '-' }}
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </template>
+
+              <el-empty v-if="!hasExpandContent(row)" description="无详情数据" :image-size="48" />
+            </div>
+          </template>
+        </el-table-column>
+
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="project_name" label="项目" width="130" />
         <el-table-column prop="testcase_name" label="用例" width="180" show-overflow-tooltip />
         <el-table-column prop="execution_mode" label="模式" width="80">
           <template #default="{ row }">
-            <el-tag :type="row.execution_mode === 'agent' ? 'primary' : 'info'" size="small">
+            <el-tag :type="executionModeType(row)" size="small">
               {{ row.execution_mode || 'script' }}
             </el-tag>
           </template>
@@ -49,7 +134,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="执行时间" width="170" />
-        <el-table-column label="操作" min-width="280" fixed="right">
+        <el-table-column label="操作" min-width="240" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.status === 'running'"
@@ -207,7 +292,11 @@ const filteredExecutions = computed(() => {
     result = result.filter(r => r.status === filters.value.status)
   }
   if (filters.value.execution_mode) {
-    result = result.filter(r => (r.execution_mode || 'script') === filters.value.execution_mode)
+    if (filters.value.execution_mode === 'plan') {
+      result = result.filter(r => r.plan_execution)
+    } else {
+      result = result.filter(r => (r.execution_mode || 'script') === filters.value.execution_mode)
+    }
   }
   return result
 })
@@ -217,11 +306,27 @@ const statusType = (s) => {
   return map[s] || 'info'
 }
 
+const executionModeType = (row) => {
+  if (row.plan_execution) return 'warning'
+  const mode = row.execution_mode || 'script'
+  return mode === 'agent' ? 'primary' : 'info'
+}
+
 const screenshotUrl = (path) => `/api/executions/screenshots/?path=${encodeURIComponent(path)}`
 
 const truncate = (text, len) => {
   if (!text) return ''
   return text.length > len ? text.slice(0, len) + '...' : text
+}
+
+const hasExpandContent = (row) => {
+  return (
+    (row.step_logs && row.step_logs.length) ||
+    (row.screenshots && row.screenshots.length) ||
+    (row.agent_response && row.agent_response.response_text) ||
+    row.error_message ||
+    (row._plan_sub_records && row._plan_sub_records.length)
+  )
 }
 
 const previewImage = (path) => {
@@ -296,6 +401,14 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.expand-content {
+  padding: 12px 24px;
+}
+.expand-section-title {
+  margin: 8px 0;
+  font-size: 14px;
+  font-weight: 600;
 }
 .log-block {
   background: #1e1e1e;
