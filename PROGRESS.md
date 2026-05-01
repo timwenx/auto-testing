@@ -1,35 +1,28 @@
-# Progress Notes — Round 2 (CLI Dual-Engine)
+# Progress Notes — Round 4 (CLI Dual-Engine — Verification & Bug Fixes)
 
-## Status: All 6 tasks already completed in Round 1
+## Status: All 6 plan tasks completed in Round 1. Round 4 fixed bugs and verified.
 
-Round 1 fully implemented all 6 tasks from the plan. Round 2 verified the implementation.
+### Verification & Fixes Applied
+
+1. **`resolve_claude_bin()` wired up** — The function was defined in `cli_service.py` but never called. Now integrated into both `is_cli_available()` and `call_cli()` so the CLI path is properly resolved on Windows (searches APPDATA/npm, uses `which`/`shutil.which`).
+
+2. **`batch_save_testcases` missing `@api_view` decorator** — View used `request.data` (DRF attribute) but wasn't decorated with `@api_view(['POST'])`, causing `AttributeError: 'WSGIRequest' object has no attribute 'data'`. Fixed by adding the decorator. All 9 BatchSave tests now pass.
+
+3. **Test mock fixes** — Two tests (`test_is_cli_available_success`, `test_cli_check_default_path`) failed after wiring `resolve_claude_bin` because the function resolves the actual Windows `claude.exe` path, breaking assertion `['claude', '--version']`. Fixed by mocking `resolve_claude_bin` to pass through input unchanged.
+
+4. **Cleaned up stray file** — Removed accidentally created `My_Test/core/cli_service.py`.
 
 ### Verification Results
-- **334 tests total**: 326 pass, 8 pre-existing BatchSave errors (unrelated)
+- **334 tests total**: ALL PASS ✅
 - **18 CLI-specific tests**: all pass
-  - `CliServiceTest` (10): available/not-found/nonzero, call_cli success/model/timeout/not-found/nonzero, get_settings defaults/custom
-  - `RepoAnalyzerCliModeTest` (4): calls_cli, skips_code_collection, parses_json, handles_failure
-  - `RepoAnalyzerSdkModeTest` (1): uses_api
-  - `CliCheckEndpointTest` (3): available, not_available, default_path
-- **Frontend build**: succeeds
-- **Django check**: 0 issues
+- **9 BatchSave tests**: all pass (were broken before this round)
+- **Frontend build**: succeeds ✅
+- **Django check**: 0 issues ✅
 
-### Implementation Summary (from Round 1)
-
-| # | Task | Files Changed |
-|---|------|---------------|
-| 1 | System Settings | `core/models.py` — 3 new DEFAULTS entries |
-| 2 | CLI Service | `core/cli_service.py` — new file (131 lines) |
-| 3 | Repo Analyzer Refactor | `core/repo_analyzer.py` — `_analyze_with_cli()` + `_analyze_with_sdk()` routing |
-| 4 | CLI Check Endpoint | `core/views.py`, `core/urls.py`, `frontend/src/api.js`, `CodeAnalysisPanel.vue` |
-| 5 | Settings UI | `frontend/src/views/Settings.vue` — CLI/SDK radio, path input, detection button, timeout |
-| 6 | Unit Tests | `core/tests.py` — 18 new tests |
-
-### Additional Round 1 Changes (not in original plan)
-- `backend/settings.py`: LOGGING config added
-- `core/migrations/0019_repoanalysis_heartbeat.py`: heartbeat fields on RepoAnalysis
-- `core/serializers.py`: started_at/last_heartbeat added to RepoAnalysisSerializer
-- `frontend/src/components/BatchTestCaseEditor.vue`: minor fix
-
-### KB Updated
-- `.claudepotter/kb/README.md` — added dual-engine architecture section, CLI settings, test count update
+### Files Changed This Round
+| File | Change |
+|------|--------|
+| `core/cli_service.py` | Wire `resolve_claude_bin()` into `is_cli_available()` and `call_cli()` |
+| `core/views.py` | Add `@api_view(['POST'])` decorator to `batch_save_testcases` |
+| `core/tests.py` | Mock `resolve_claude_bin` in 2 tests to prevent Windows path resolution interference |
+| `.claudepotter/kb/README.md` | Update test count (334 all pass), add resolve_claude_bin docs |
