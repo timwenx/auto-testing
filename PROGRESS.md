@@ -1,6 +1,51 @@
 # Progress
 
-## Round 1/3 — Repo Analysis & Batch Test Case Generation
+## Round 1/3 — Script, TestPlan, PlanExecution Architecture
+
+### Tasks Completed (16/16)
+
+All tasks from the plan implemented: 4 new models, 20+ API endpoints, 4 new frontend components, 52 tests.
+
+#### Backend Changes
+
+**Models (3 new):**
+1. **Script** — Independent reusable test script model. Fields: project FK, testcase FK (nullable), source_execution FK, name, feature_group, sort_order, script_data JSONField, status (draft/active/archived), version, timestamps. Migration 0014.
+2. **TestPlan + TestPlanItem** — Plan orchestration with API token (UUID auto). TestPlanItem supports script or feature_group types with sort_order. Migration 0015.
+3. **PlanExecution** — Plan execution tracking. Fields: test_plan FK, project FK, status (pending/running/completed/failed/error), trigger_source (manual/api), summary JSONField (counts), timestamps. ExecutionRecord gains `plan_execution` FK (nullable). Migration 0016.
+
+**API Endpoints (20+ new):**
+- Script: list, detail, update, delete, convert (from ExecutionRecord), execute, feature-groups
+- Feature: `POST projects/<id>/features/<group>/execute/`, enhanced `GET feature-groups/` with `?detailed=true`
+- TestPlan: list, create, detail, update, delete, add-item, reorder-items, delete-item, regenerate-token
+- PlanExecution: `POST plans/<id>/execute/` (sync/async), list, detail, status (lightweight), report (JUnit XML)
+- Auth: X-Plan-Token header for CI/CD
+
+#### Frontend Changes
+
+1. **FeatureTree.vue** — el-tree component with feature→testcase hierarchy, execute buttons on feature nodes
+2. **TestPlanView.vue** — Full plan management page: CRUD, item management, execution, API info with curl examples, execution history
+3. **PlanExecutionDetail.vue** — Execution detail with summary cards (total/passed/failed/skipped), sub-execution records table
+4. **PlanExecutionDetailPage.vue** — Standalone page wrapper for plan execution detail
+5. **api.js** — 18 new API functions
+6. **router** — `/plans` and `/plan-executions/:id` routes
+7. **App.vue** — "用例方案" sidebar nav item
+8. **ScriptList.vue** — "转脚本" button to convert execution record to Script model
+9. **Executions.vue** — Added Replay mode filter
+
+#### Tests (52 new, total 298)
+- ScriptModelTest (3): create, defaults, ordering
+- ScriptAPITest (9): list, filter, detail, update, delete, convert, convert validation
+- ScriptExecuteTest (2): execute with source, no source rejection
+- TestPlanModelTest (4): create, unique token, script/feature items, ordering
+- TestPlanAPITest (13): full CRUD, items, reorder, token regeneration, validation
+- PlanExecutionModelTest (3): create, FK relation, string representation
+- PlanExecutionAPITest (10): list, detail, status, async/sync execute, token auth, JUnit report
+- FeatureGroupExecutionTest (4): execute group, empty group, no URL, detailed view
+- FeatureGroupExecutionUngroupedTest (1): ungrouped (empty string) execution
+
+### Commits
+- `3a116f2` — Backend: models, serializers, views, URLs, migrations, admin
+- `ca58541` — Frontend: components, views, API, router, tests (52 new)
 
 ### Tasks Completed (12/12)
 
