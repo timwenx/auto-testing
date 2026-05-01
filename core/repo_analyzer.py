@@ -197,7 +197,7 @@ def _parse_analysis_response(raw_text: str) -> list:
     items = []
 
     # 处理 pages
-    for page in data.get('pages', []):
+    for page in data.get('pages') or []:
         items.append({
             'type': 'page',
             'path': page.get('path', ''),
@@ -208,7 +208,7 @@ def _parse_analysis_response(raw_text: str) -> list:
         })
 
     # 处理 apis
-    for api in data.get('apis', []):
+    for api in data.get('apis') or []:
         items.append({
             'type': 'api',
             'path': api.get('path', ''),

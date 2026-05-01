@@ -165,6 +165,8 @@ const descriptions = ref({})
 const selectAllPages = ref(false)
 const selectAllApis = ref(false)
 let pollTimer = null
+let pollCount = 0
+const MAX_POLL_COUNT = 100 // ~5 minutes at 3s interval
 
 const pageItems = computed(() =>
   (analysis.value?.discovered_items || []).filter(i => i.type === 'page')
@@ -228,7 +230,16 @@ async function startAnalysis() {
 
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer)
+  pollCount = 0
   pollTimer = setInterval(async () => {
+    pollCount++
+    if (pollCount > MAX_POLL_COUNT) {
+      clearInterval(pollTimer)
+      pollTimer = null
+      analyzing.value = false
+      ElMessage.warning('分析超时，请稍后重试')
+      return
+    }
     try {
       const { data } = await getRepoAnalysis(props.projectId)
       if (data.analysis) {

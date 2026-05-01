@@ -2446,6 +2446,21 @@ class RepoAnalyzerParserEdgeTest(TestCase):
         items = _parse_analysis_response(raw)
         self.assertEqual(len(items), 1)
 
+    def test_null_pages_and_apis(self):
+        """null values for pages/apis should not crash"""
+        from .repo_analyzer import _parse_analysis_response
+        raw = json.dumps({'pages': None, 'apis': None})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items, [])
+
+    def test_null_pages_with_valid_apis(self):
+        """null pages should still process valid apis"""
+        from .repo_analyzer import _parse_analysis_response
+        raw = json.dumps({'pages': None, 'apis': [{'path': '/api/x', 'method': 'GET'}]})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['type'], 'api')
+
 
 class BatchSaveEdgeTest(TestCase):
     """batch_save 边界测试"""
