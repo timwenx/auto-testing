@@ -53,3 +53,47 @@
 - Django system check: 0 issues
 - Frontend build: success (built in 2.18s)
 - No test files present in codebase (tests.py was deleted prior to this round)
+
+---
+
+## Round 3 (Final): Remaining Tasks
+
+### Agent Testcase Support in Plan Execution
+- **Model**: Added `testcase` FK and `agent_testcase` item type to `TestPlanItem.ITEM_TYPE_CHOICES`
+- **Migration**: `0020_add_testcase_to_plan_item.py` — adds testcase field, extends item_type choices
+- **Serializer**: `TestPlanItemSerializer` now includes `testcase`, `testcase_name` fields. `TestPlanItemCreateSerializer` accepts `testcase_id`
+- **Views**: `plan_add_item` validates testcase_id for agent_testcase type. `plan_execute` collects `agent_testcases_to_run` alongside scripts. New `_run_single_agent_testcase()` function executes via `execution_engine.execute_testcase_with_agent()`
+- **Frontend**: TestPlanView "add item" dialog now has 3 radio options (脚本/功能分组/Agent用例). Loads testcases per project. Item table shows agent_testcase type with green tag
+
+### Mobile/Small Screen Adaptation
+- **App.vue**: Added sidebar toggle button (Fold/Expand icons), collapsible sidebar with `collapsed` state, mobile overlay with `mobile-open` state, `isMobile` detection via resize listener
+- **style.css**: Responsive breakpoints at 768px (mobile) and 1024px (tablet). Sidebar becomes fixed overlay on mobile. Dialogs use 92% width. Content padding adjusts
+- **Dashboard.vue**: Columns stack vertically on mobile. Added `dashboard` class for scoped responsive rules. Added el-empty for executions table
+- **TestPlanView.vue**: Plan list card stacks vertically on mobile
+- **ProjectDetail.vue**: Markdown editor layout stacks on mobile
+
+### Empty State Gaps Fixed
+- **Dashboard.vue**: Added `el-empty` for executions table with "查看全部执行" action button
+
+### Files Changed (8 files)
+| File | Change |
+|------|--------|
+| core/models.py | Added testcase FK to TestPlanItem, agent_testcase item type |
+| core/serializers.py | testcase/testcase_name in item serializers, testcase_id in create serializer |
+| core/views.py | plan_add_item handles agent_testcase, plan_execute runs agent testcases |
+| core/migrations/0020_add_testcase_to_plan_item.py | New migration |
+| frontend/src/App.vue | Sidebar toggle, mobile overlay, responsive layout |
+| frontend/src/style.css | Responsive CSS with 768px/1024px breakpoints |
+| frontend/src/views/TestPlanView.vue | Agent testcase radio/selector, responsive styles |
+| frontend/src/views/Dashboard.vue | el-empty for executions, responsive column stacking |
+| frontend/src/views/ProjectDetail.vue | Responsive markdown editor |
+
+### All Plan Tasks Complete
+All 24 tasks across 7 phases verified DONE:
+- Phase 1: Plan auth fix ✅, AI state persistence ✅, Route guard ✅
+- Phase 2: Sidebar rename ✅, App layout redesign ✅
+- Phase 3: ProjectDetail tabs ✅, Dialog→Drawer ✅, TestCaseManager merged ✅
+- Phase 4: Dashboard ✅, TestPlanView ✅, ScriptList ✅, Executions ✅, Login ✅
+- Phase 5: API error interceptor ✅, Plan item filter ✅, Executions pagination ✅, AI state ✅
+- Phase 6: Status utils ✅, Column widths ✅, Empty states ✅, Mobile adaptation ✅
+- Phase 7: Plan execute agent ✅, Executions API optimization ✅, AIAssistant removed ✅
