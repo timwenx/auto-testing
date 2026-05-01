@@ -84,12 +84,7 @@
         <template #label>
           <span>测试用例 <el-badge :value="testcases.length" type="info" /></span>
         </template>
-        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center">
-          <el-button-group size="small">
-            <el-button :type="viewMode === 'tree' ? 'primary' : ''" @click="viewMode = 'tree'">树形</el-button>
-            <el-button :type="viewMode === 'grouped' ? 'primary' : ''" @click="viewMode = 'grouped'">分组</el-button>
-            <el-button :type="viewMode === 'flat' ? 'primary' : ''" @click="viewMode = 'flat'">列表</el-button>
-          </el-button-group>
+        <div style="margin-bottom: 12px; display: flex; justify-content: flex-end; align-items: center">
           <div>
             <el-button size="small" type="success" @click="showAIGenerate = true">
               <el-icon><MagicStick /></el-icon> AI 生成
@@ -100,162 +95,72 @@
           </div>
         </div>
 
-        <!-- 树形视图 -->
-        <template v-if="viewMode === 'tree'">
-          <div style="display: flex; gap: 16px; min-height: 400px">
-            <div style="width: 320px; flex-shrink: 0; border-right: 1px solid #ebeef5; padding-right: 16px">
-              <FeatureTree
-                :groups="featureTreeData"
-                :executing-feature="executingFeature"
-                @select-feature="handleTreeSelectFeature"
-                @select-testcase="handleTreeSelectTestcase"
-                @execute-feature="handleTreeExecuteFeature"
-              />
-            </div>
-            <div style="flex: 1; overflow-y: auto; max-height: 70vh">
-              <template v-if="treeSelection?.type === 'feature'">
-                <h4 style="margin: 0 0 12px">{{ treeSelection.label || '未分组' }}</h4>
-                <el-descriptions :column="2" size="small" border style="margin-bottom: 12px">
-                  <el-descriptions-item label="用例数">{{ treeSelection.count }}</el-descriptions-item>
-                  <el-descriptions-item label="操作">
-                    <el-button size="small" type="primary" @click="handleTreeExecuteFeature(treeSelection.rawName)" :loading="executingFeature === treeSelection.rawName">
-                      <el-icon><VideoPlay /></el-icon> 执行全部
-                    </el-button>
-                  </el-descriptions-item>
-                </el-descriptions>
-                <el-table :data="treeSelection.testcases || []" size="small">
-                  <el-table-column prop="name" label="用例名称" min-width="180" />
-                  <el-table-column prop="status" label="状态" width="80">
-                    <template #default="{ row }">
-                      <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="240" fixed="right">
-                    <template #default="{ row }">
-                      <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
-                      <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
-                      <el-button size="small" text @click="openCaseDrawer(row)">详情</el-button>
-                      <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
-                    </template>
-                  </el-table-column>
-                </el-table>
-              </template>
-              <template v-else-if="treeSelection?.type === 'testcase'">
-                <el-descriptions :column="2" size="small" border style="margin-bottom: 12px">
-                  <el-descriptions-item label="名称">{{ treeSelection.raw?.name }}</el-descriptions-item>
-                  <el-descriptions-item label="状态">
-                    <el-tag :type="statusType(treeSelection.raw?.status)" size="small">{{ treeSelection.raw?.status }}</el-tag>
-                  </el-descriptions-item>
-                </el-descriptions>
-                <div style="margin-bottom: 12px">
-                  <el-button size="small" type="warning" @click="handleExecuteAgent(treeSelection.raw)">Agent 执行</el-button>
-                  <el-button size="small" type="success" @click="handleAgentRefine(treeSelection.raw)">AI 调整</el-button>
-                  <el-button size="small" @click="openEditor(treeSelection.raw)">编辑</el-button>
-                  <el-button size="small" @click="openCaseDrawer(treeSelection.raw)">查看详情</el-button>
-                </div>
-                <div v-if="treeSelection.raw?.markdown_content" class="markdown-body" style="max-height: 50vh" v-html="renderCaseMarkdown(treeSelection.raw.markdown_content)" />
-                <el-descriptions v-else :column="1" border size="small">
-                  <el-descriptions-item label="描述">{{ treeSelection.raw?.description || '-' }}</el-descriptions-item>
-                  <el-descriptions-item label="测试步骤">
-                    <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.steps }}</pre>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="预期结果">
-                    <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.expected_result }}</pre>
-                  </el-descriptions-item>
-                </el-descriptions>
-              </template>
-              <el-empty v-else description="选择左侧功能或用例查看详情" :image-size="80" />
-            </div>
+        <!-- 树形视图（唯一视图模式） -->
+        <div style="display: flex; gap: 16px; min-height: 400px">
+          <div style="width: 320px; flex-shrink: 0; border-right: 1px solid #ebeef5; padding-right: 16px">
+            <FeatureTree
+              :groups="featureTreeData"
+              :executing-feature="executingFeature"
+              @select-feature="handleTreeSelectFeature"
+              @select-testcase="handleTreeSelectTestcase"
+              @execute-feature="handleTreeExecuteFeature"
+            />
           </div>
-        </template>
-
-        <!-- 分组视图 -->
-        <template v-if="viewMode === 'grouped'">
-          <el-collapse v-model="activeCollapse">
-            <el-collapse-item v-for="groupName in groupNames" :key="groupName" :name="groupName">
-              <template #title>
-                <div class="group-title">
-                  <el-icon style="margin-right: 6px"><Folder /></el-icon>
-                  <span>{{ groupName }}</span>
-                  <el-tag size="small" type="info" style="margin-left: 8px">{{ groupedTestcases[groupName]?.length || 0 }}</el-tag>
-                </div>
-              </template>
-              <el-table :data="groupedTestcases[groupName] || []" size="small">
+          <div style="flex: 1; overflow-y: auto; max-height: 70vh">
+            <template v-if="treeSelection?.type === 'feature'">
+              <h4 style="margin: 0 0 12px">{{ treeSelection.label || '未分组' }}</h4>
+              <el-descriptions :column="2" size="small" border style="margin-bottom: 12px">
+                <el-descriptions-item label="用例数">{{ treeSelection.count }}</el-descriptions-item>
+                <el-descriptions-item label="操作">
+                  <el-button size="small" type="primary" @click="handleTreeExecuteFeature(treeSelection.rawName)" :loading="executingFeature === treeSelection.rawName">
+                    <el-icon><VideoPlay /></el-icon> 执行全部
+                  </el-button>
+                </el-descriptions-item>
+              </el-descriptions>
+              <el-table :data="treeSelection.testcases || []" size="small">
                 <el-table-column prop="name" label="用例名称" min-width="180" />
-                <el-table-column prop="priority" label="优先级" width="70">
-                  <template #default="{ row }">
-                    <el-tag v-if="row.priority === 'P0'" type="danger" size="small">P0</el-tag>
-                    <el-tag v-else-if="row.priority === 'P1'" type="warning" size="small">P1</el-tag>
-                    <el-tag v-else-if="row.priority === 'P2'" type="info" size="small">P2</el-tag>
-                    <span v-else style="color: #c0c4cc">-</span>
-                  </template>
-                </el-table-column>
                 <el-table-column prop="status" label="状态" width="80">
                   <template #default="{ row }">
                     <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column prop="sort_order" label="序号" width="60" />
                 <el-table-column label="操作" width="240" fixed="right">
                   <template #default="{ row }">
-                    <el-button size="small" text type="primary" @click="openEditor(row)">编辑</el-button>
                     <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
+                    <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
                     <el-button size="small" text @click="openCaseDrawer(row)">详情</el-button>
                     <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
                   </template>
                 </el-table-column>
               </el-table>
-            </el-collapse-item>
-          </el-collapse>
-          <el-empty v-if="!groupNames.length" description="暂无测试用例">
-            <el-button type="primary" @click="showCreate = true">创建第一个用例</el-button>
-          </el-empty>
-        </template>
-
-        <!-- 扁平列表视图 -->
-        <template v-if="viewMode === 'flat'">
-          <el-table :data="testcases" style="width: 100%">
-            <el-table-column prop="feature_group" label="功能点" width="120">
-              <template #default="{ row }">
-                <el-tag v-if="row.feature_group" size="small" effect="plain">{{ row.feature_group }}</el-tag>
-                <span v-else style="color: #c0c4cc">-</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="name" label="用例名称" />
-            <el-table-column prop="priority" label="优先级" width="90">
-              <template #default="{ row }">
-                <el-tag v-if="row.priority === 'P0'" type="danger" size="small">P0</el-tag>
-                <el-tag v-else-if="row.priority === 'P1'" type="warning" size="small">P1</el-tag>
-                <el-tag v-else-if="row.priority === 'P2'" type="info" size="small">P2</el-tag>
-                <span v-else style="color: #c0c4cc">-</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="status" label="状态" width="100">
-              <template #default="{ row }">
-                <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="is_ai_generated" label="来源" width="80">
-              <template #default="{ row }">
-                <el-tag v-if="row.is_ai_generated" type="info" size="small">AI</el-tag>
-                <span v-else>手动</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="sort_order" label="序号" width="70" />
-            <el-table-column prop="execution_count" label="执行次数" width="90" />
-            <el-table-column label="操作" width="240" fixed="right">
-              <template #default="{ row }">
-                <el-button size="small" text type="primary" @click="openEditor(row)">编辑</el-button>
-                <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
-                <el-button size="small" text @click="openCaseDrawer(row)">详情</el-button>
-                <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!testcases.length" description="暂无测试用例">
-            <el-button type="primary" @click="showCreate = true">创建第一个用例</el-button>
-          </el-empty>
-        </template>
+            </template>
+            <template v-else-if="treeSelection?.type === 'testcase'">
+              <el-descriptions :column="2" size="small" border style="margin-bottom: 12px">
+                <el-descriptions-item label="名称">{{ treeSelection.raw?.name }}</el-descriptions-item>
+                <el-descriptions-item label="状态">
+                  <el-tag :type="statusType(treeSelection.raw?.status)" size="small">{{ treeSelection.raw?.status }}</el-tag>
+                </el-descriptions-item>
+              </el-descriptions>
+              <div style="margin-bottom: 12px">
+                <el-button size="small" type="warning" @click="handleExecuteAgent(treeSelection.raw)">Agent 执行</el-button>
+                <el-button size="small" type="success" @click="handleAgentRefine(treeSelection.raw)">AI 调整</el-button>
+                <el-button size="small" @click="openEditor(treeSelection.raw)">编辑</el-button>
+                <el-button size="small" @click="openCaseDrawer(treeSelection.raw)">查看详情</el-button>
+              </div>
+              <div v-if="treeSelection.raw?.markdown_content" class="markdown-body" style="max-height: 50vh" v-html="renderCaseMarkdown(treeSelection.raw.markdown_content)" />
+              <el-descriptions v-else :column="1" border size="small">
+                <el-descriptions-item label="描述">{{ treeSelection.raw?.description || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="测试步骤">
+                  <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.steps }}</pre>
+                </el-descriptions-item>
+                <el-descriptions-item label="预期结果">
+                  <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.expected_result }}</pre>
+                </el-descriptions-item>
+              </el-descriptions>
+            </template>
+            <el-empty v-else description="选择左侧功能或用例查看详情" :image-size="80" />
+          </div>
+        </div>
       </el-tab-pane>
 
       <!-- ═══ 代码分析标签页（集成 TestCaseManager 向导） ═══ -->
@@ -596,9 +501,7 @@ const projectExecutions = ref([])
 const loadingExecutions = ref(false)
 
 // ─── Testcase list state ───
-const viewMode = ref('grouped')
 const featureGroups = ref([])
-const activeCollapse = ref([])
 const featureTreeData = ref([])
 const treeSelection = ref(null)
 const executingFeature = ref('')
@@ -653,21 +556,6 @@ const form = ref({ name: '', description: '', steps: '', expected_result: '', fe
 // ─── Computed ───
 marked.setOptions({ breaks: true, gfm: true })
 
-const groupedTestcases = computed(() => {
-  const groups = {}
-  for (const tc of testcases.value) {
-    const key = tc.feature_group || '未分组'
-    if (!groups[key]) groups[key] = []
-    groups[key].push(tc)
-  }
-  for (const key of Object.keys(groups)) {
-    groups[key].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
-  }
-  return groups
-})
-
-const groupNames = computed(() => Object.keys(groupedTestcases.value))
-
 const editPreview = computed(() => {
   if (!editingTC.value?.markdown_content) return '<span style="color:#999">预览区域</span>'
   return marked.parse(editingTC.value.markdown_content)
@@ -699,7 +587,6 @@ const loadData = async () => {
     testcases.value = tc.data.results || tc.data
     featureGroups.value = fg.data.groups || []
     featureTreeData.value = fgd.data.groups || []
-    activeCollapse.value = Object.keys(groupedTestcases.value)
   } finally {
     loading.value = false
   }
@@ -926,29 +813,6 @@ async function handleSaveProject() {
   } catch (e) { ElMessage.error(e.response?.data?.error || '更新失败') } finally { savingProject.value = false }
 }
 
-// ─── Reorder ───
-async function handleMoveUp(row) {
-  const group = row.feature_group || '未分组'
-  const members = groupedTestcases.value[group] || []
-  const idx = members.findIndex(tc => tc.id === row.id)
-  if (idx <= 0) return
-  const reordered = [...members]
-  ;[reordered[idx - 1], reordered[idx]] = [reordered[idx], reordered[idx - 1]]
-  try { await reorderTestcases(projectId, reordered.map((tc, i) => ({ id: tc.id, feature_group: tc.feature_group || '', sort_order: i + 1 }))); await loadData() }
-  catch (e) { ElMessage.error(e.response?.data?.error || '排序失败') }
-}
-
-async function handleMoveDown(row) {
-  const group = row.feature_group || '未分组'
-  const members = groupedTestcases.value[group] || []
-  const idx = members.findIndex(tc => tc.id === row.id)
-  if (idx < 0 || idx >= members.length - 1) return
-  const reordered = [...members]
-  ;[reordered[idx], reordered[idx + 1]] = [reordered[idx + 1], reordered[idx]]
-  try { await reorderTestcases(projectId, reordered.map((tc, i) => ({ id: tc.id, feature_group: tc.feature_group || '', sort_order: i + 1 }))); await loadData() }
-  catch (e) { ElMessage.error(e.response?.data?.error || '排序失败') }
-}
-
 // ─── Tree view handlers ───
 function handleTreeSelectFeature(rawName) {
   const group = featureTreeData.value.find(g => (g.name === '未分组' ? '' : g.name) === rawName)
@@ -1096,7 +960,6 @@ onMounted(async () => {
 }
 .md-textarea:focus { border-color: #409eff; }
 .md-preview { flex: 1; min-height: 400px; padding: 12px; border: 1px solid #e4e7ed; border-radius: 4px; overflow-y: auto; background: #fafafa; }
-.group-title { display: flex; align-items: center; font-weight: 500; font-size: 14px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 
 @media (max-width: 768px) {

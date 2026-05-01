@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from django.http import FileResponse, Http404
 from django.db.models import Count, Max
 from django.db import transaction
-from rest_framework import generics, status
+from rest_framework import generics, status, serializers as drf_serializers
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
@@ -1747,6 +1747,90 @@ def script_execute(request, pk):
         ExecutionRecordSerializer(new_record).data,
         status=status.HTTP_202_ACCEPTED,
     )
+
+
+class BatchConvertRequestSerializer(drf_serializers.Serializer):
+    """批量脚本转换请求"""
+    project_id = drf_serializers.IntegerField(help_text='项目 ID')
+    feature_group = drf_serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='功能点名称，空字符串表示未分组',
+    )
+
+
+@api_view(['POST'])
+def batch_convert_scripts(request):
+    """POST /api/scripts/batch-convert/ — 按功能点批量将 Agent 执行记录转为 Script"""
+    serializer = BatchConvertRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    project_id = serializer.validated_data['project_id']
+    feature_group = serializer.validated_data.get('feature_group', '')
+
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    # 查找该功能点下所有 Agent 执行记录（已完成的终端状态）
+    fg_filter = '' if feature_group == '未分组' else feature_group
+    records = ExecutionRecord.objects.filter(
+        project=project,
+        execution_mode='agent',
+        status__in=['passed', 'failed', 'error'],
+        testcase__feature_group=fg_filter,
+    ).select_related('project', 'testcase')
+
+    if not records.exists():
+        return Response({'error': '该功能点下没有可转换的 Agent 执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 查找已存在的 Script（按 source_execution）去重
+    existing_source_ids = set(
+        Script.objects.filter(
+            project=project,
+            source_execution__in=records,
+        ).values_list('source_execution_id', flat=True)
+    )
+
+    from .script_converter import convert_execution_to_script
+    created_scripts = []
+    skipped = 0
+
+    for record in records:
+        if record.pk in existing_source_ids:
+            skipped += 1
+            continue
+
+        try:
+            script_data = convert_execution_to_script(record)
+        except ValueError:
+            skipped += 1
+            continue
+
+        # 同时保留 legacy replay_script 字段
+        record.replay_script = script_data
+        record.save(update_fields=['replay_script'])
+
+        script_name = record.testcase.name if record.testcase else f'脚本-{record.pk}'
+        script_feature_group = record.testcase.feature_group if record.testcase else ''
+
+        script = Script.objects.create(
+            project=record.project,
+            testcase=record.testcase,
+            source_execution=record,
+            name=script_name,
+            feature_group=script_feature_group,
+            script_data=script_data,
+            status='active',
+            version=1,
+        )
+        created_scripts.append(script)
+
+    return Response({
+        'scripts': ScriptSerializer(created_scripts, many=True).data,
+        'created': len(created_scripts),
+        'skipped': skipped,
+    }, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
