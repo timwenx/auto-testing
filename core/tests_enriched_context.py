@@ -28,7 +28,9 @@ from core.agent_tools import (
     build_test_execution_system_prompt,
 )
 from core.models import Project, TestCase as TestCaseModel
-from unittest.mock import MagicMock
+from rest_framework.test import APIClient
+from rest_framework import status as drf_status
+from unittest.mock import MagicMock, patch
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -502,6 +504,251 @@ class BatchGeneratorPromptTest(TestCase):
 
         self.assertIn('response_fields', BATCH_GENERATE_SYSTEM_PROMPT)
         self.assertIn('context_type', BATCH_GENERATE_SYSTEM_PROMPT)
+
+
+class BatchGeneratorGenerateBatchMockTest(TestCase):
+    """测试 _generate_batch 构造的 user_message 包含 elements/params 信息"""
+
+    def test_user_message_includes_elements_for_page_item(self):
+        """_generate_batch 的 user_message 应包含页面元素选择器"""
+        from core.batch_generator import _generate_batch
+
+        project = MagicMock()
+        project.name = '测试项目'
+        project.base_url = 'http://localhost:3000'
+
+        items = [{
+            'type': 'page',
+            'path': '/users',
+            'name': '用户管理',
+            'description': '用户列表页面',
+            'source_file': 'src/views/Users.vue',
+            'elements': [
+                {'selector': '#search-input', 'type': 'input', 'label': '搜索框', 'description': '模糊搜索'},
+                {'selector': '.btn-add', 'type': 'button', 'label': '新增用户'},
+            ]
+        }]
+        user_descriptions = {}
+        precondition_template = None
+        template = None
+
+        # 捕获传给 Claude API 的 messages 参数
+        captured_kwargs = {}
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='[]')]
+
+        def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        mock_client = MagicMock()
+        mock_client.messages.create = fake_create
+
+        with patch('core.batch_generator._get_client', return_value=mock_client):
+            with patch('core.batch_generator._get_model', return_value='test-model'):
+                _generate_batch(project, items, user_descriptions, precondition_template, template)
+
+        user_msg = captured_kwargs.get('messages', [{}])[0].get('content', '')
+        self.assertIn('#search-input', user_msg)
+        self.assertIn('搜索框', user_msg)
+        self.assertIn('.btn-add', user_msg)
+        self.assertIn('新增用户', user_msg)
+        self.assertIn('页面元素', user_msg)
+
+    def test_user_message_includes_params_for_api_item(self):
+        """_generate_batch 的 user_message 应包含 API 参数信息"""
+        from core.batch_generator import _generate_batch
+
+        project = MagicMock()
+        project.name = '测试项目'
+        project.base_url = 'http://localhost:3000'
+
+        items = [{
+            'type': 'api',
+            'path': '/api/users',
+            'method': 'GET',
+            'name': '获取用户列表',
+            'description': '分页查询',
+            'source_file': 'src/controllers/UserController.java',
+            'params': [
+                {'name': 'page', 'in': 'query', 'type': 'integer', 'required': False, 'description': '页码'},
+            ],
+            'response_fields': [
+                {'name': 'id', 'type': 'integer', 'description': '用户ID'},
+            ]
+        }]
+
+        captured_kwargs = {}
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='[]')]
+
+        def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        mock_client = MagicMock()
+        mock_client.messages.create = fake_create
+
+        with patch('core.batch_generator._get_client', return_value=mock_client):
+            with patch('core.batch_generator._get_model', return_value='test-model'):
+                _generate_batch(project, items, {}, None, None)
+
+        user_msg = captured_kwargs.get('messages', [{}])[0].get('content', '')
+        self.assertIn('page', user_msg)
+        self.assertIn('query', user_msg)
+        self.assertIn('请求参数', user_msg)
+        self.assertIn('响应字段', user_msg)
+        self.assertIn('id', user_msg)
+
+    def test_user_message_no_context_when_empty(self):
+        """elements/params 为空时不输出相关 section"""
+        from core.batch_generator import _generate_batch
+
+        project = MagicMock()
+        project.name = '测试项目'
+        project.base_url = 'http://localhost:3000'
+
+        items = [{
+            'type': 'page',
+            'path': '/home',
+            'name': '首页',
+            'description': '首页',
+        }]
+
+        captured_kwargs = {}
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='[]')]
+
+        def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        mock_client = MagicMock()
+        mock_client.messages.create = fake_create
+
+        with patch('core.batch_generator._get_client', return_value=mock_client):
+            with patch('core.batch_generator._get_model', return_value='test-model'):
+                _generate_batch(project, items, {}, None, None)
+
+        user_msg = captured_kwargs.get('messages', [{}])[0].get('content', '')
+        self.assertNotIn('页面元素', user_msg)
+        self.assertNotIn('请求参数', user_msg)
+
+
+# ══════════════════════════════════════════════════════════════════
+# batch_save_testcases test_context 保存测试
+# ══════════════════════════════════════════════════════════════════
+
+class BatchSaveTestContextTest(TestCase):
+    """测试 batch_save_testcases 端点正确保存 test_context 字段"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='测试项目')
+
+    def test_batch_save_stores_page_test_context(self):
+        """batch_save 正确保存页面类型 test_context"""
+        test_context = {
+            'context_type': 'page',
+            'path': '/users',
+            'source_file': 'src/views/Users.vue',
+            'elements': [
+                {'selector': '#search-input', 'type': 'input', 'label': '搜索框'},
+                {'selector': '.btn-add', 'type': 'button', 'label': '新增用户'},
+            ]
+        }
+        data = {
+            'testcases': [{
+                'name': '搜索用户测试',
+                'description': '测试搜索功能',
+                'steps': '在搜索框输入用户名',
+                'expected_result': '显示搜索结果',
+                'test_context': test_context,
+            }]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        tc = TestCaseModel.objects.get(project=self.project, name='搜索用户测试')
+        self.assertEqual(tc.test_context['context_type'], 'page')
+        self.assertEqual(len(tc.test_context['elements']), 2)
+        self.assertEqual(tc.test_context['elements'][0]['selector'], '#search-input')
+
+    def test_batch_save_stores_api_test_context(self):
+        """batch_save 正确保存 API 类型 test_context"""
+        test_context = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'GET',
+            'params': [
+                {'name': 'page', 'in': 'query', 'type': 'integer', 'required': False},
+            ],
+            'response_fields': [
+                {'name': 'id', 'type': 'integer', 'description': '用户ID'},
+            ]
+        }
+        data = {
+            'testcases': [{
+                'name': 'API 获取用户列表',
+                'steps': '发送 GET 请求',
+                'expected_result': '返回用户列表',
+                'test_context': test_context,
+            }]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        tc = TestCaseModel.objects.get(project=self.project)
+        self.assertEqual(tc.test_context['context_type'], 'api')
+        self.assertEqual(tc.test_context['method'], 'GET')
+        self.assertEqual(len(tc.test_context['params']), 1)
+        self.assertEqual(len(tc.test_context['response_fields']), 1)
+
+    def test_batch_save_without_test_context_defaults_to_empty(self):
+        """未提供 test_context 时默认为空 dict"""
+        data = {
+            'testcases': [{
+                'name': '普通用例',
+                'steps': '步骤',
+                'expected_result': '结果',
+            }]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        tc = TestCaseModel.objects.get(project=self.project)
+        self.assertEqual(tc.test_context, {})
+
+    def test_batch_save_multiple_with_mixed_context(self):
+        """批量保存混合 test_context（有/无）"""
+        data = {
+            'testcases': [
+                {
+                    'name': '有 context 的用例',
+                    'steps': '步骤',
+                    'expected_result': '结果',
+                    'test_context': {'context_type': 'page', 'path': '/a', 'elements': []},
+                },
+                {
+                    'name': '无 context 的用例',
+                    'steps': '步骤',
+                    'expected_result': '结果',
+                },
+            ]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['count'], 2)
+        tcs = TestCaseModel.objects.filter(project=self.project).order_by('name')
+        tc_with = tcs.get(name='有 context 的用例')
+        tc_without = tcs.get(name='无 context 的用例')
+        self.assertEqual(tc_with.test_context['context_type'], 'page')
+        self.assertEqual(tc_without.test_context, {})
 
 
 # ══════════════════════════════════════════════════════════════════
