@@ -171,12 +171,14 @@ def generate_testcases_single(project, item, user_description, precondition=None
 def _parse_testcases_response(raw_text: str) -> list:
     """从 Claude 响应中解析测试用例 JSON 数组"""
     try:
-        return json.loads(raw_text)
+        result = json.loads(raw_text)
+        return result if isinstance(result, list) else []
     except json.JSONDecodeError:
         match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw_text)
         if match:
             try:
-                return json.loads(match.group(1).strip())
+                result = json.loads(match.group(1).strip())
+                return result if isinstance(result, list) else []
             except json.JSONDecodeError:
                 pass
         match = re.search(r'\[[\s\S]*\]', raw_text)

@@ -67,6 +67,11 @@ async function handlePull() {
   pulling.value = true
   try {
     await repoPull(props.project.id)
+    // 刷新项目数据以更新 local_repo_path
+    try {
+      const { data } = await getProject(props.project.id)
+      Object.assign(props.project, data)
+    } catch { /* ignore refresh error */ }
     ElMessage.success('仓库拉取成功')
     emit('ready')
   } catch (e) {

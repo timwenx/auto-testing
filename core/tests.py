@@ -2113,8 +2113,7 @@ class RepoAnalyzeViewTest(TestCase):
     def test_repo_analyze_starts_async(self, mock_submit):
         resp = self.client.post(f'/api/projects/{self.project.id}/repo/analyze/')
         self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
-        self.assertIn('analysis_id', resp.data)
-        self.assertEqual(resp.data['status'], 'pending')
+        self.assertEqual(resp.data['status'], 'analyzing')
         mock_submit.assert_called_once()
 
     def test_repo_analyze_no_repo(self):
@@ -2347,9 +2346,10 @@ class RepoAnalyzerTest(TestCase):
         items = _parse_analysis_response('not valid json at all')
         self.assertEqual(items, [])
 
+    @mock.patch('core.repo_analyzer._get_model', return_value='test-model')
     @mock.patch('core.repo_analyzer._get_client')
     @mock.patch('core.repo_analyzer.repo_service')
-    def test_analyze_repo_success(self, mock_repo_service, mock_get_client):
+    def test_analyze_repo_success(self, mock_repo_service, mock_get_client, mock_model):
         from .repo_analyzer import analyze_repo
 
         mock_repo_service.clone_or_update_repo.return_value = '/tmp/repos/project_1'
@@ -2382,3 +2382,102 @@ class RepoAnalyzerTest(TestCase):
         result = analyze_repo(self.project)
         self.assertEqual(result.status, 'failed')
         self.assertIn('Clone failed', result.analysis_log)
+
+
+class BatchGeneratorParserTest(TestCase):
+    """batch_generator._parse_testcases_response 边界测试"""
+
+    def test_valid_json_array(self):
+        from .batch_generator import _parse_testcases_response
+        raw = json.dumps([{'name': 'TC1'}, {'name': 'TC2'}])
+        result = _parse_testcases_response(raw)
+        self.assertEqual(len(result), 2)
+
+    def test_markdown_wrapped_json(self):
+        from .batch_generator import _parse_testcases_response
+        raw = '```json\n[{"name": "TC1"}]\n```'
+        result = _parse_testcases_response(raw)
+        self.assertEqual(len(result), 1)
+
+    def test_returns_empty_on_invalid(self):
+        from .batch_generator import _parse_testcases_response
+        result = _parse_testcases_response('not json at all')
+        self.assertEqual(result, [])
+
+    def test_returns_empty_on_non_list_json(self):
+        """If AI returns a JSON object instead of array, return []"""
+        from .batch_generator import _parse_testcases_response
+        result = _parse_testcases_response('{"error": "something"}')
+        self.assertEqual(result, [])
+
+    def test_bracket_extraction_fallback(self):
+        from .batch_generator import _parse_testcases_response
+        raw = 'Here are the testcases:\n[{"name": "TC1"}]\nEnd.'
+        result = _parse_testcases_response(raw)
+        self.assertEqual(len(result), 1)
+
+
+class RepoAnalyzerParserEdgeTest(TestCase):
+    """repo_analyzer._parse_analysis_response 边界测试"""
+
+    def test_pages_with_missing_fields(self):
+        from .repo_analyzer import _parse_analysis_response
+        raw = json.dumps({'pages': [{'path': '/x'}], 'apis': []})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['name'], '')
+        self.assertIsNone(items[0]['method'])
+
+    def test_api_method_preserved(self):
+        from .repo_analyzer import _parse_analysis_response
+        raw = json.dumps({'pages': [], 'apis': [{'path': '/api/x', 'method': 'POST'}]})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items[0]['method'], 'POST')
+
+    def test_non_dict_response(self):
+        """If top-level JSON is a list, return []"""
+        from .repo_analyzer import _parse_analysis_response
+        items = _parse_analysis_response('[1, 2, 3]')
+        self.assertEqual(items, [])
+
+    def test_curly_brace_fallback(self):
+        from .repo_analyzer import _parse_analysis_response
+        raw = 'Some text {"pages": [{"path": "/a", "name": "A"}], "apis": []} more text'
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+
+
+class BatchSaveEdgeTest(TestCase):
+    """batch_save 边界测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='Edge Test')
+
+    def test_batch_save_default_values(self):
+        """Items missing optional fields get defaults"""
+        data = {
+            'testcases': [{'name': 'Minimal TC'}]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        tc = TC_Model.objects.get(project=self.project)
+        self.assertEqual(tc.name, 'Minimal TC')
+        self.assertEqual(tc.description, '')
+        self.assertEqual(tc.status, 'draft')
+        self.assertTrue(tc.is_ai_generated)
+        self.assertEqual(tc.created_by, 'claude_cli')
+
+    def test_batch_save_multiple_projects_isolation(self):
+        """Saving to one project doesn't affect another"""
+        project2 = Project.objects.create(name='Other Project')
+        data = {
+            'testcases': [{'name': 'TC-Edge'}]
+        }
+        self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(TC_Model.objects.filter(project=project2).count(), 0)
+        self.assertEqual(TC_Model.objects.filter(project=self.project).count(), 1)

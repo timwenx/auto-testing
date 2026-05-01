@@ -65,7 +65,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getPreconditions, createPrecondition, deletePrecondition } from '../api.js'
 
@@ -74,7 +74,11 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:selectedId'])
 
-const selectedId = ref(props.selectedId)
+const selectedId = computed({
+  get: () => props.selectedId,
+  set: (val) => emit('update:selectedId', val),
+})
+
 const preconditions = ref([])
 const showCreateDialog = ref(false)
 const creating = ref(false)
@@ -84,11 +88,6 @@ const newTemplate = ref({
   steps: '',
   markdown_content: '',
 })
-
-// Sync v-model
-import { watch } from 'vue'
-watch(() => props.selectedId, (val) => { selectedId.value = val })
-watch(selectedId, (val) => { emit('update:selectedId', val) })
 
 onMounted(() => { loadPreconditions() })
 
