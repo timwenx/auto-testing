@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 REPLAYABLE_TOOLS = {
     'browser_navigate', 'browser_click', 'browser_fill',
     'browser_fill_form', 'browser_select', 'browser_press_key',
-    'browser_batch_action',
+    'browser_batch_action', 'browser_assert',
 }
 
 # 探索/观察类工具（跳过）
@@ -215,6 +215,21 @@ def _reconstruct_input(tool_name, slog):
                     actions.append({'type': t})
             return {'actions': actions, 'delay_between': 20}
         return {'actions': [], 'delay_between': 20}
+
+    elif tool_name == 'browser_assert':
+        # action 格式如 "验证 count(sel) gte 1" 或 "验证 text(sel) contains xxx"
+        assert_type = 'element_count'
+        selector = target.split(': ', 1)[-1] if ': ' in target else target
+        operator = ''
+        expected = ''
+        # 尝试从 action 解析: "验证 count(selector) op expected"
+        m = re.match(r'验证\s+(\w+)\((.+?)\)\s+(\w+)\s+(.+)', action)
+        if m:
+            assert_type = 'element_count' if m.group(1) == 'count' else 'text_content'
+            selector = m.group(2)
+            operator = m.group(3)
+            expected = m.group(4).strip('"').strip("'")
+        return {'assert_type': assert_type, 'selector': selector, 'operator': operator, 'expected': expected, 'message': ''}
 
     return {}
 
@@ -430,6 +445,36 @@ def _convert_step(tool_name, tool_input, step_num, execution_id):
                 'delay_between': delay,
             },
             'parameters': list(params.keys()),
+        }
+
+    elif tool_name == 'browser_assert':
+        assert_type = tool_input.get('assert_type', '')
+        selector = tool_input.get('selector', '')
+        operator = tool_input.get('operator', '')
+        expected = tool_input.get('expected', '')
+        message = tool_input.get('message', '')
+
+        pname = f'param_expected_{step_num}'
+        params = {pname: {
+            'label': f'预期值 ({selector[:20]})',
+            'type': 'string',
+            'default': str(expected),
+        }}
+
+        desc = message or f'验证 {assert_type}: {selector} {operator} {expected}'
+        step = {
+            'step_num': step_num,
+            'enabled': True,
+            'tool_name': 'browser_assert',
+            'description': desc,
+            'inputs': {
+                'assert_type': assert_type,
+                'selector': selector,
+                'operator': operator,
+                'expected': '{{' + pname + '}}',
+                'message': message,
+            },
+            'parameters': [pname],
         }
 
     else:

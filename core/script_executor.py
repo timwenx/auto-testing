@@ -13,6 +13,27 @@ import threading
 logger = logging.getLogger(__name__)
 
 
+def _compare(actual, expected, operator):
+    """数值比较"""
+    ops = {
+        'eq': lambda a, e: a == e, 'gt': lambda a, e: a > e,
+        'gte': lambda a, e: a >= e, 'lt': lambda a, e: a < e,
+        'lte': lambda a, e: a <= e, 'neq': lambda a, e: a != e,
+    }
+    fn = ops.get(operator)
+    return fn(actual, expected) if fn else False
+
+
+def _compare_text(actual, expected, operator):
+    """文本比较"""
+    ops = {
+        'equals': lambda a, e: a == e, 'contains': lambda a, e: e in a,
+        'not_equals': lambda a, e: a != e, 'not_contains': lambda a, e: e not in a,
+    }
+    fn = ops.get(operator)
+    return fn(actual, expected) if fn else False
+
+
 class ReplayExecutor:
     """脚本回放执行器，复用 AgentRunner 的 Playwright 生命周期模式"""
 
@@ -241,6 +262,27 @@ class ReplayExecutor:
                     page.wait_for_timeout(act.get('timeout', 5000))
                 if delay > 0:
                     page.wait_for_timeout(delay)
+
+        elif tool_name == 'browser_assert':
+            assert_type = inputs.get('assert_type', '')
+            selector = inputs.get('selector', '')
+            operator = inputs.get('operator', '')
+            expected = inputs.get('expected', '')
+            message = inputs.get('message', '')
+
+            if assert_type == 'element_count':
+                actual = page.locator(selector).count()
+                expected_int = int(expected)
+                if not _compare(actual, expected_int, operator):
+                    desc = message or f'元素数量断言失败: count("{selector}") {operator} {expected_int}, 实际={actual}'
+                    raise AssertionError(desc)
+            elif assert_type == 'text_content':
+                text = page.locator(selector).first.text_content(timeout=10000)
+                actual = (text or '').strip()
+                expected_str = str(expected)
+                if not _compare_text(actual, expected_str, operator):
+                    desc = message or f'文本断言失败: text("{selector}") {operator} "{expected_str}", 实际="{actual}"'
+                    raise AssertionError(desc)
 
     def _auto_screenshot(self, step_num):
         """自动截图"""

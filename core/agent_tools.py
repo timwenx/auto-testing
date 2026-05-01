@@ -1241,6 +1241,56 @@ def _execute_browser_batch_action(input_dict, context):
             pass
 
 
+def _execute_browser_assert(input_dict, context):
+    """程序化断言：验证页面元素数量或文本内容"""
+    page = context.get('page')
+    if not page:
+        return "Error: 浏览器未初始化"
+
+    assert_type = input_dict.get('assert_type', '')
+    selector = input_dict.get('selector', '')
+    operator = input_dict.get('operator', '')
+    expected = input_dict.get('expected', '')
+    message = input_dict.get('message', '')
+
+    try:
+        if assert_type == 'element_count':
+            actual = page.locator(selector).count()
+            expected_int = int(expected)
+            ops = {'eq': lambda a, e: a == e, 'gt': lambda a, e: a > e,
+                   'gte': lambda a, e: a >= e, 'lt': lambda a, e: a < e,
+                   'lte': lambda a, e: a <= e, 'neq': lambda a, e: a != e}
+            if operator not in ops:
+                return f"Error: 未知操作符 '{operator}'，可选: {', '.join(ops.keys())}"
+            if not ops[operator](actual, expected_int):
+                desc = message or f'元素数量断言失败: count("{selector}") {operator} {expected_int}, 实际={actual}'
+                raise AssertionError(desc)
+            desc = message or f'count("{selector}") {operator} {expected_int}'
+            return f"ASSERTION PASSED: {desc} (实际={actual})"
+
+        elif assert_type == 'text_content':
+            text = page.locator(selector).first.text_content(timeout=10000)
+            actual = (text or '').strip()
+            expected_str = str(expected)
+            ops = {'equals': lambda a, e: a == e, 'contains': lambda a, e: e in a,
+                   'not_equals': lambda a, e: a != e, 'not_contains': lambda a, e: e not in a}
+            if operator not in ops:
+                return f"Error: 未知操作符 '{operator}'，可选: {', '.join(ops.keys())}"
+            if not ops[operator](actual, expected_str):
+                desc = message or f'文本断言失败: text("{selector}") {operator} "{expected_str}", 实际="{actual}"'
+                raise AssertionError(desc)
+            desc = message or f'text("{selector}") {operator} "{expected_str}"'
+            return f"ASSERTION PASSED: {desc} (实际={actual})"
+
+        else:
+            return f"Error: 未知断言类型 '{assert_type}'，可选: element_count, text_content"
+
+    except AssertionError:
+        raise
+    except Exception as e:
+        return f"Error: 断言执行失败 - {e}"
+
+
 def _execute_browser_get_form(input_dict, context):
     """提取页面表单数据为结构化 JSON"""
     page = context.get('page')
@@ -1583,6 +1633,48 @@ BROWSER_TOOLS = [
             },
         },
         'execute': _execute_browser_get_form,
+    },
+    {
+        'schema': {
+            'name': 'browser_assert',
+            'description': (
+                '程序化断言工具，用于验证页面状态是否符合预期。'
+                '支持两种断言：element_count（元素数量）和 text_content（文本内容）。\n'
+                '在执行完测试步骤后，必须使用此工具进行验证，然后再调用 report_result。\n'
+                '示例：\n'
+                '- 新增后验证: browser_assert(assert_type="element_count", selector="tr:has-text(\'新记录\')", operator="gte", expected=1)\n'
+                '- 删除后验证: browser_assert(assert_type="element_count", selector="tr:has-text(\'已删除\')", operator="eq", expected=0)\n'
+                '- 文本验证: browser_assert(assert_type="text_content", selector=".success-msg", operator="contains", expected="保存成功")'
+            ),
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'assert_type': {
+                        'type': 'string',
+                        'enum': ['element_count', 'text_content'],
+                        'description': '断言类型：element_count=验证匹配元素数量，text_content=验证元素文本内容',
+                    },
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS 选择器，如 ".success-msg"、"tr:has-text(\'新记录\')"',
+                    },
+                    'operator': {
+                        'type': 'string',
+                        'description': '比较操作符。element_count 用: eq/gt/gte/lt/lte/neq；text_content 用: equals/contains/not_equals/not_contains',
+                    },
+                    'expected': {
+                        'description': '预期值。element_count 为整数，text_content 为字符串',
+                    },
+                    'message': {
+                        'type': 'string',
+                        'description': '可选，自定义断言描述，用于错误提示',
+                        'default': '',
+                    },
+                },
+                'required': ['assert_type', 'selector', 'operator', 'expected'],
+            },
+        },
+        'execute': _execute_browser_assert,
     },
 ]
 

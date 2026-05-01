@@ -156,7 +156,7 @@ function toolLabel(name) {
   const map = {
     browser_navigate: '导航', browser_click: '点击', browser_fill: '填写',
     browser_fill_form: '表单', browser_select: '选择', browser_press_key: '按键',
-    browser_batch_action: '批量',
+    browser_batch_action: '批量', browser_assert: '断言',
   }
   return map[name] || name
 }
@@ -165,7 +165,7 @@ function toolTagType(name) {
   const map = {
     browser_navigate: 'primary', browser_click: 'success', browser_fill: 'warning',
     browser_fill_form: 'warning', browser_select: 'info', browser_press_key: '',
-    browser_batch_action: 'danger',
+    browser_batch_action: 'danger', browser_assert: 'success',
   }
   return map[name] || 'info'
 }
