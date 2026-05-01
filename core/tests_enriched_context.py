@@ -968,6 +968,192 @@ class ParseAnalysisResponseEdgeCaseTest(TestCase):
         self.assertEqual(api['params'], [])
 
 
+class ParseFeatureGroupFormatTest(TestCase):
+    """测试 _parse_analysis_response 对新 {features: [...]} 格式的解析"""
+
+    def test_features_format_basic(self):
+        """新格式：features 数组正确解析并展平"""
+        raw = json.dumps({
+            "features": [
+                {
+                    "name": "用户管理",
+                    "description": "用户增删改查",
+                    "pages": [
+                        {"path": "/users", "name": "用户列表", "description": "用户管理页", "source_file": "views/Users.vue"},
+                    ],
+                    "apis": [
+                        {"path": "/api/users", "method": "GET", "name": "获取用户", "description": "列表API", "source_file": "views/api.py"},
+                    ],
+                }
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 2)
+
+        page = items[0]
+        self.assertEqual(page['type'], 'page')
+        self.assertEqual(page['path'], '/users')
+        self.assertEqual(page['feature_group'], '用户管理')
+
+        api = items[1]
+        self.assertEqual(api['type'], 'api')
+        self.assertEqual(api['path'], '/api/users')
+        self.assertEqual(api['method'], 'GET')
+        self.assertEqual(api['feature_group'], '用户管理')
+
+    def test_features_format_multiple_groups(self):
+        """新格式：多个功能组各自带 feature_group"""
+        raw = json.dumps({
+            "features": [
+                {
+                    "name": "用户管理",
+                    "pages": [{"path": "/users", "name": "用户列表"}],
+                    "apis": [{"path": "/api/users", "method": "GET", "name": "用户API"}],
+                },
+                {
+                    "name": "系统设置",
+                    "pages": [{"path": "/settings", "name": "设置页"}],
+                    "apis": [],
+                },
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 3)
+        self.assertEqual(items[0]['feature_group'], '用户管理')
+        self.assertEqual(items[1]['feature_group'], '用户管理')
+        self.assertEqual(items[2]['feature_group'], '系统设置')
+
+    def test_features_format_with_elements_and_params(self):
+        """新格式：elements 和 params 正确传递"""
+        raw = json.dumps({
+            "features": [
+                {
+                    "name": "用户管理",
+                    "pages": [{
+                        "path": "/users",
+                        "name": "用户列表",
+                        "elements": [
+                            {"selector": "#search", "type": "input", "label": "搜索"},
+                        ],
+                    }],
+                    "apis": [{
+                        "path": "/api/users",
+                        "method": "POST",
+                        "name": "创建用户",
+                        "params": [
+                            {"name": "name", "in": "body", "type": "string", "required": True},
+                        ],
+                        "response_fields": [
+                            {"name": "id", "type": "integer", "description": "用户ID"},
+                        ],
+                    }],
+                },
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        page = items[0]
+        self.assertEqual(len(page['elements']), 1)
+        self.assertEqual(page['elements'][0]['selector'], '#search')
+        self.assertEqual(page['params'], [])
+
+        api = items[1]
+        self.assertEqual(len(api['params']), 1)
+        self.assertEqual(api['params'][0]['name'], 'name')
+        self.assertEqual(len(api['response_fields']), 1)
+        self.assertEqual(api['elements'], [])
+
+    def test_features_format_empty_features_array(self):
+        """新格式：空的 features 数组返回空列表"""
+        raw = json.dumps({"features": []})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items, [])
+
+    def test_features_format_empty_pages_and_apis(self):
+        """新格式：feature 下 pages 和 apis 均为空"""
+        raw = json.dumps({
+            "features": [
+                {"name": "空模块", "pages": [], "apis": []},
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items, [])
+
+    def test_features_format_null_pages_and_apis(self):
+        """新格式：feature 下 pages/apis 为 null 不崩溃"""
+        raw = json.dumps({
+            "features": [
+                {"name": "模块A", "pages": None, "apis": None},
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items, [])
+
+    def test_features_format_non_dict_feature_skipped(self):
+        """新格式：非 dict 的 feature 项被跳过"""
+        raw = json.dumps({
+            "features": [
+                "not a dict",
+                42,
+                {"name": "有效模块", "pages": [{"path": "/x", "name": "X"}], "apis": []},
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['feature_group'], '有效模块')
+
+    def test_features_format_markdown_wrapped(self):
+        """新格式：被 markdown 代码块包裹时正确提取"""
+        raw = '```json\n{"features": [{"name": "模块", "pages": [{"path": "/a", "name": "A"}], "apis": []}]}\n```'
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['feature_group'], '模块')
+
+    def test_old_format_backward_compatible(self):
+        """旧格式仍然兼容，feature_group 为空字符串"""
+        raw = json.dumps({
+            "pages": [{"path": "/users", "name": "用户列表"}],
+            "apis": [{"path": "/api/users", "method": "GET", "name": "用户API"}],
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]['feature_group'], '')
+        self.assertEqual(items[1]['feature_group'], '')
+
+    def test_old_format_no_feature_group_key(self):
+        """旧格式 item 不含 feature_group 键时默认为空字符串"""
+        raw = json.dumps({
+            "pages": [{"path": "/home", "name": "首页"}],
+            "apis": [],
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items[0]['feature_group'], '')
+
+    def test_features_format_missing_name_defaults_empty(self):
+        """新格式：feature 缺少 name 时 feature_group 为空字符串"""
+        raw = json.dumps({
+            "features": [
+                {"pages": [{"path": "/x", "name": "X"}], "apis": []},
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['feature_group'], '')
+
+    def test_features_priority_over_old_format(self):
+        """同时有 features 和 pages/apis 时，features 优先"""
+        raw = json.dumps({
+            "features": [
+                {"name": "新模块", "pages": [{"path": "/new", "name": "新页面"}], "apis": []},
+            ],
+            "pages": [{"path": "/old", "name": "旧页面"}],
+            "apis": [],
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['path'], '/new')
+        self.assertEqual(items[0]['feature_group'], '新模块')
+
+
 # ══════════════════════════════════════════════════════════════════
 # 运行入口
 # ══════════════════════════════════════════════════════════════════

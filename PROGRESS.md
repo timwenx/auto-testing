@@ -1,49 +1,34 @@
-# Progress Notes — Plan: Enriched Context for Repo Analysis & Agent Execution
+# Progress Notes — Feature Group Analysis (Round 1/3)
 
-## Status: ALL 7 TASKS COMPLETE (Round 7 Verified)
+## Status: ALL 8 TASKS COMPLETE
 
-All tasks were implemented in previous rounds (1-4). Round 7 verified everything is working correctly.
+### Changes Summary
 
-## Task Completion Summary
+1. **Task 1: ANALYSIS_SYSTEM_PROMPT** — Rewrote AI prompt to output `{features: [{name, description, pages, apis}]}` format instead of flat `{pages, apis}`. Added feature grouping instructions with constraints (2-10 items per group, business-domain grouping).
 
-1. ✅ **Task 1: Extended discovered_items JSON Schema** — `repo_analyzer.py` ANALYSIS_SYSTEM_PROMPT updated with elements/params/response_fields. `_parse_analysis_response()` handles new fields with backward compatibility (defaults to empty arrays).
+2. **Task 2: `_parse_analysis_response()`** — Now detects `features` key first (new format), flattens to items with `feature_group` field. Falls back to old `pages`+`apis` format with empty `feature_group` for backward compatibility.
 
-2. ✅ **Task 2: Optimized CLI analysis Prompt** — Prompt includes detailed element extraction rules (CSS selector priority: #id > [name=xxx] > [data-testid=xxx] > .class-name), API parameter extraction from annotations/serializers, max 10 per category. SDK mode adds `_FORM_KEYWORDS` second-pass search.
+3. **Task 3: CLI/SDK user prompts** — Updated wording to "识别功能模块，并提取所有前端页面路由和 REST API 端点，按功能分组归类".
 
-3. ✅ **Task 3: TestCase.test_context field** — Migration 0021 adds `test_context = models.JSONField(default=dict)` to TestCase model.
+4. **Task 4: CodeAnalysisPanel.vue** — Replaced el-tabs (pages/apis) with el-collapse showing feature groups. Each group has collapsible panel with items table. Old data without `feature_group` shows as "未分组".
 
-4. ✅ **Task 4: Batch generation passes enriched context** — `_generate_batch()` injects elements/params/response_fields into target descriptions. BATCH_GENERATE_SYSTEM_PROMPT instructs Claude to use selectors directly. `batch_save_testcases()` saves test_context from generated items.
+5. **Task 5: Selection state** — Changed from `$index`-based tracking to `path`-based Set. Added group-level select/deselect with indeterminate state. Global select-all/deselect-all button.
 
-5. ✅ **Task 5: Agent execution prompt with test_context** — `_format_test_context()` in agent_tools.py formats page context (CSS selectors) and API context (params/response_fields). Injected via `{test_context_section}` placeholder in agent_execute_prompt.md. Graceful degradation when empty.
+6. **Task 6: batch_generator** — Added `feature_group` field injection into target descriptions for better AI context.
 
-6. ✅ **Task 6: Frontend CodeAnalysisPanel enriched results** — Expandable rows showing elements (selector, type, label) for pages and params (name, in, type, required) + response_fields for APIs. Count badges in table columns.
+7. **Task 7: Tests** — 12 new tests in `ParseFeatureGroupFormatTest`: new format parsing, multiple groups, elements/params, empty/null, backward compat, priority over old format. All 347 tests pass (335 existing + 12 new).
 
-7. ✅ **Task 7: Tests** — Edge case tests in `tests_enriched_context.py` covering parse analysis, context formatting, prompt building, TestCase.test_context CRUD, batch generator prompt construction. Total: 395 tests all passing.
+8. **Task 8: Frontend build** — Verified clean build (738ms).
 
-## Round 7 Verification (Current Plan)
-All 7 phases of the current UI/UX plan are verified complete:
-- **Phase 1**: `testcase_feature_group` field in `ExecutionRecordListSerializer`
-- **Phase 2**: `batch_convert_scripts` endpoint + `BatchConvertRequestSerializer` in views.py
-- **Phase 3**: `batchConvertScripts()` function in api.js
-- **Phase 4**: Executions.vue redesigned with feature group collapse + batch convert button
-- **Phase 5**: ProjectDetail.vue tree-only view (no viewMode toggle)
-- **Phase 6**: TestPlanView.vue bug fix (form reset before await, API response unwrap)
-- **Phase 7**: 12 tests (3 serializer + 9 batch convert) + frontend build ✅
+### Files Changed
+| File | Lines Changed |
+|------|-------------|
+| `core/repo_analyzer.py` | +121/-27 (prompt + parser) |
+| `core/batch_generator.py` | +3 (feature_group injection) |
+| `core/tests_enriched_context.py` | +186 (12 new tests) |
+| `frontend/src/components/CodeAnalysisPanel.vue` | +265/-43 (group display) |
 
-## Cleanup (Round 7)
-- Removed stray `frontend/core/templates/` directory (duplicate of `core/templates/`)
-- Committed pending edge case tests in `tests_enriched_context.py` (217 new lines)
-
-## Round 5 Verification (This Round)
-- Re-verified all 395 tests pass
-- Frontend build: ✅ (938ms)
-- Django check: 0 issues
-- Anti-drift check on all completed tasks — no issues found
-- Confirmed `core/templates/agent_execute_prompt.md` exists with `{test_context_section}` placeholder
-- Confirmed `CodeAnalysisPanel.vue` has correct expandable rows for elements/params
-
-## Verification (Round 7)
-- **395 tests** all passing
-- **Frontend build**: ✅ (1.27s)
-- **Django check**: 0 issues
-- **Working tree**: clean
+### Key Design Decisions
+- `discovered_items` remains a flat array with `feature_group` string field — downstream code unchanged
+- Frontend groups by computed property, emits flat array — TestCaseManager interface unchanged
+- New format takes priority when `features` key exists; old format is fallback
