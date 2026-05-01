@@ -38,16 +38,45 @@
 
     <!-- 编辑器主体 -->
     <div v-else-if="script" class="editor-body">
-      <!-- 参数面板 -->
-      <div class="params-section" v-if="paramKeys.length > 0">
+      <!-- 动态参数面板 -->
+      <div class="params-section" v-if="inputParamKeys.length > 0">
         <div class="section-title">
           <el-icon><Setting /></el-icon>
           <span>动态参数</span>
-          <el-tag size="small" type="info">{{ paramKeys.length }} 个</el-tag>
+          <el-tag size="small" type="info">{{ inputParamKeys.length }} 个</el-tag>
         </div>
         <el-form :model="paramValues" label-width="auto" size="small" class="params-form">
           <el-row :gutter="16">
-            <el-col :span="12" v-for="key in paramKeys" :key="key">
+            <el-col :span="12" v-for="key in inputParamKeys" :key="key">
+              <el-form-item :label="script.parameters[key].label || key">
+                <div class="param-input-row">
+                  <el-input
+                    v-model="paramValues[key]"
+                    :placeholder="script.parameters[key].default"
+                    clearable
+                    @clear="paramValues[key] = script.parameters[key].default"
+                  />
+                  <el-button
+                    size="small" text
+                    @click="paramValues[key] = script.parameters[key].default"
+                  >重置</el-button>
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form>
+      </div>
+
+      <!-- 预期结果参数面板 -->
+      <div class="params-section" v-if="assertParamKeys.length > 0">
+        <div class="section-title">
+          <el-icon><CircleCheck /></el-icon>
+          <span>预期结果</span>
+          <el-tag size="small" type="success">{{ assertParamKeys.length }} 个</el-tag>
+        </div>
+        <el-form :model="paramValues" label-width="auto" size="small" class="params-form">
+          <el-row :gutter="16">
+            <el-col :span="12" v-for="key in assertParamKeys" :key="key">
               <el-form-item :label="script.parameters[key].label || key">
                 <div class="param-input-row">
                   <el-input
@@ -103,12 +132,19 @@
           </el-table-column>
           <el-table-column label="参数" min-width="150" v-if="!showAdvanced">
             <template #default="{ row }">
-              <template v-for="pName in (row.parameters || [])" :key="pName">
-                <el-tag size="small" type="warning" class="param-tag">
-                  {{ script.parameters[pName]?.label || pName }}
+              <template v-if="row.tool_name === 'browser_assert'">
+                <el-tag size="small" type="success" class="param-tag">
+                  {{ row.inputs?.operator }} {{ row.inputs?.expected }}
                 </el-tag>
               </template>
-              <span v-if="!row.parameters?.length" class="no-params">-</span>
+              <template v-else>
+                <template v-for="pName in (row.parameters || [])" :key="pName">
+                  <el-tag size="small" type="warning" class="param-tag">
+                    {{ script.parameters[pName]?.label || pName }}
+                  </el-tag>
+                </template>
+                <span v-if="!row.parameters?.length" class="no-params">-</span>
+              </template>
             </template>
           </el-table-column>
           <el-table-column label="排序" width="80">
@@ -135,7 +171,7 @@ import { ElMessage } from 'element-plus'
 import {
   getReplayScript, convertToScript, updateReplayScript, replayExecute,
 } from '../api'
-import { Refresh, Check, VideoPlay, Setting, List, Loading } from '@element-plus/icons-vue'
+import { Refresh, Check, VideoPlay, Setting, List, Loading, CircleCheck } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -149,8 +185,10 @@ const executing = ref(false)
 const showAdvanced = ref(false)
 const paramValues = reactive({})
 
-const paramKeys = computed(() => Object.keys(script.value?.parameters || {}))
-const paramCount = computed(() => paramKeys.value.length)
+const allParamKeys = computed(() => Object.keys(script.value?.parameters || {}))
+const inputParamKeys = computed(() => allParamKeys.value.filter(k => script.value.parameters[k]?.group !== 'assertion'))
+const assertParamKeys = computed(() => allParamKeys.value.filter(k => script.value.parameters[k]?.group === 'assertion'))
+const paramCount = computed(() => allParamKeys.value.length)
 
 function toolLabel(name) {
   const map = {
