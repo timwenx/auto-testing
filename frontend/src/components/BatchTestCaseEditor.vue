@@ -60,6 +60,7 @@
             <span v-else style="color: #c0c4cc">-</span>
           </template>
         </el-table-column>
+        <el-table-column prop="sort_order" label="序号" width="60" />
         <el-table-column prop="target_page_or_api" label="目标" min-width="120">
           <template #default="{ row }">
             <span style="color: #909399; font-size: 12px">{{ row.target_page_or_api || '-' }}</span>
@@ -128,6 +129,9 @@
         </el-form-item>
         <el-form-item label="功能点">
           <el-input v-model="editingCase.feature_group" placeholder="输入功能点，如「用户登录」" />
+        </el-form-item>
+        <el-form-item label="排序序号">
+          <el-input-number v-model="editingCase.sort_order" :min="0" :max="9999" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="editingCase.description" type="textarea" :rows="2" />
