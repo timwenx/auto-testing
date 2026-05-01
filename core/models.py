@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 from django.conf import settings
 
@@ -155,6 +156,11 @@ class ExecutionRecord(models.Model):
         related_name='replay_runs', verbose_name='来源执行记录',
         help_text='回放执行时指向源脚本所在的执行记录'
     )
+    plan_execution = models.ForeignKey(
+        'PlanExecution', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='execution_records', verbose_name='所属方案执行',
+        help_text='该记录属于哪个方案执行（独立执行时为空）'
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
 
     class Meta:
@@ -164,7 +170,8 @@ class ExecutionRecord(models.Model):
 
     def __str__(self):
         tc_name = self.testcase.name if self.testcase else '批量执行'
-        return f"[{self.status}] {tc_name} @ {self.created_at:%Y-%m-%d %H:%M}"
+        plan_info = f' (方案:{self.plan_execution.test_plan.name})' if self.plan_execution else ''
+        return f"[{self.status}] {tc_name}{plan_info} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
 def _screenshot_upload_path(instance, filename):
@@ -293,6 +300,158 @@ class PreconditionTemplate(models.Model):
     def __str__(self):
         prefix = '[内置] ' if self.is_default else ''
         return f"{prefix}{self.name}"
+
+
+class Script(models.Model):
+    """可复用的结构化测试脚本 — 从 ExecutionRecord.replay_script 提升为独立模型"""
+    STATUS_CHOICES = [
+        ('draft', '草稿'),
+        ('active', '活跃'),
+        ('archived', '已归档'),
+    ]
+
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name='scripts', verbose_name='所属项目'
+    )
+    testcase = models.ForeignKey(
+        TestCase, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='scripts', verbose_name='关联用例',
+        help_text='可选，关联被脚本化的原始测试用例'
+    )
+    source_execution = models.ForeignKey(
+        ExecutionRecord, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='generated_scripts', verbose_name='来源执行记录',
+        help_text='生成此脚本的 Agent 执行记录'
+    )
+    name = models.CharField('脚本名称', max_length=300, help_text='默认继承用例名称')
+    feature_group = models.CharField(
+        '功能分组', max_length=200, blank=True, default='',
+        help_text='脚本所属功能模块'
+    )
+    sort_order = models.IntegerField('排序序号', default=0)
+    script_data = models.JSONField(
+        '脚本内容', default=dict,
+        help_text='结构化脚本内容，含 parameters 和 steps'
+    )
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='draft')
+    version = models.IntegerField('版本号', default=1)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['feature_group', 'sort_order', '-updated_at']
+        verbose_name = '测试脚本'
+        verbose_name_plural = '测试脚本'
+
+    def __str__(self):
+        return f"[{self.status}] {self.name} (v{self.version})"
+
+
+class TestPlan(models.Model):
+    """用例方案 — 将多个脚本/功能分组编排为一个可执行的测试方案"""
+    STATUS_CHOICES = [
+        ('draft', '草稿'),
+        ('active', '活跃'),
+        ('archived', '已归档'),
+    ]
+
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name='test_plans', verbose_name='所属项目'
+    )
+    name = models.CharField('方案名称', max_length=300)
+    description = models.TextField('方案描述', blank=True, default='')
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='draft')
+    api_token = models.UUIDField(
+        'API Token', default=uuid.uuid4, unique=True,
+        help_text='CI/CD 调用凭证，通过 X-Plan-Token header 传递'
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        verbose_name = '用例方案'
+        verbose_name_plural = '用例方案'
+
+    def __str__(self):
+        return f"[{self.status}] {self.name}"
+
+
+class TestPlanItem(models.Model):
+    """方案子项 — 支持脚本或功能分组类型的编排"""
+    ITEM_TYPE_CHOICES = [
+        ('script', '脚本'),
+        ('feature_group', '功能分组'),
+    ]
+
+    test_plan = models.ForeignKey(
+        TestPlan, on_delete=models.CASCADE, related_name='items', verbose_name='所属方案'
+    )
+    item_type = models.CharField(
+        '子项类型', max_length=20, choices=ITEM_TYPE_CHOICES,
+        help_text='script: 单个脚本, feature_group: 执行该分组下所有活跃脚本'
+    )
+    script = models.ForeignKey(
+        Script, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='plan_items', verbose_name='关联脚本',
+        help_text='item_type=script 时关联的脚本'
+    )
+    feature_group_name = models.CharField(
+        '功能分组名称', max_length=200, blank=True, default='',
+        help_text='item_type=feature_group 时要执行的分组名称'
+    )
+    sort_order = models.IntegerField('排序序号', default=0, help_text='执行顺序，数字越小越先执行')
+
+    class Meta:
+        ordering = ['sort_order']
+        verbose_name = '方案子项'
+        verbose_name_plural = '方案子项'
+
+    def __str__(self):
+        if self.item_type == 'script':
+            return f"[Script] {self.script.name if self.script else '?'}"
+        return f"[Feature] {self.feature_group_name}"
+
+
+class PlanExecution(models.Model):
+    """方案执行记录 — 记录一次方案的完整执行过程"""
+    STATUS_CHOICES = [
+        ('pending', '等待中'),
+        ('running', '运行中'),
+        ('completed', '已完成'),
+        ('failed', '失败'),
+        ('error', '异常'),
+    ]
+    TRIGGER_SOURCE_CHOICES = [
+        ('manual', '手动触发'),
+        ('api', 'API 调用'),
+    ]
+
+    test_plan = models.ForeignKey(
+        TestPlan, on_delete=models.CASCADE, related_name='executions', verbose_name='关联方案'
+    )
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name='plan_executions', verbose_name='所属项目'
+    )
+    status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='pending')
+    trigger_source = models.CharField(
+        '触发来源', max_length=20, choices=TRIGGER_SOURCE_CHOICES, default='manual'
+    )
+    summary = models.JSONField(
+        '执行摘要', default=dict, blank=True,
+        help_text='包含 total/passed/failed/error/skipped 计数'
+    )
+    started_at = models.DateTimeField('开始时间', null=True, blank=True)
+    completed_at = models.DateTimeField('完成时间', null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '方案执行记录'
+        verbose_name_plural = '方案执行记录'
+
+    def __str__(self):
+        return f"[{self.status}] 方案「{self.test_plan.name}」@ {self.created_at:%Y-%m-%d %H:%M}"
 
 
 class AIConversation(models.Model):

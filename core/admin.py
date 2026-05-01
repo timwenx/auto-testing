@@ -1,5 +1,9 @@
 from django.contrib import admin
-from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate
+from .models import (
+    Project, TestCase, ExecutionRecord, AIConversation, SystemSetting,
+    Screenshot, RepoAnalysis, PreconditionTemplate,
+    Script, TestPlan, TestPlanItem, PlanExecution,
+)
 
 
 @admin.register(Project)
@@ -54,3 +58,29 @@ class PreconditionTemplateAdmin(admin.ModelAdmin):
     list_display = ['name', 'is_default', 'created_at', 'updated_at']
     list_filter = ['is_default']
     search_fields = ['name']
+
+
+@admin.register(Script)
+class ScriptAdmin(admin.ModelAdmin):
+    list_display = ['id', 'name', 'project', 'feature_group', 'status', 'version', 'created_at']
+    list_filter = ['status', 'project']
+    search_fields = ['name']
+
+
+@admin.register(TestPlan)
+class TestPlanAdmin(admin.ModelAdmin):
+    list_display = ['id', 'name', 'project', 'status', 'api_token', 'created_at']
+    list_filter = ['status', 'project']
+    search_fields = ['name']
+
+
+@admin.register(TestPlanItem)
+class TestPlanItemAdmin(admin.ModelAdmin):
+    list_display = ['id', 'test_plan', 'item_type', 'script', 'feature_group_name', 'sort_order']
+    list_filter = ['item_type']
+
+
+@admin.register(PlanExecution)
+class PlanExecutionAdmin(admin.ModelAdmin):
+    list_display = ['id', 'test_plan', 'project', 'status', 'trigger_source', 'started_at', 'completed_at']
+    list_filter = ['status', 'trigger_source', 'project']

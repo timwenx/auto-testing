@@ -56,6 +56,36 @@ urlpatterns = [
     path('preconditions/<int:pk>/', views.precondition_update, name='precondition-update'),
     path('preconditions/<int:pk>/delete/', views.precondition_delete, name='precondition-delete'),
 
+    # ─── Script API ───
+    path('scripts/', views.script_list, name='script-list'),
+    path('scripts/<int:pk>/', views.script_detail, name='script-detail'),
+    path('scripts/<int:pk>/update/', views.script_update, name='script-update'),
+    path('scripts/<int:pk>/delete/', views.script_delete, name='script-delete'),
+    path('scripts/convert/', views.script_convert, name='script-convert'),
+    path('scripts/<int:pk>/execute/', views.script_execute, name='script-execute'),
+    path('scripts/feature-groups/', views.script_feature_groups, name='script-feature-groups'),
+
+    # ─── Feature 分组执行 ───
+    path('projects/<int:project_id>/features/<str:feature_group>/execute/', views.execute_feature_group, name='execute-feature-group'),
+
+    # ─── TestPlan API ───
+    path('plans/', views.plan_list, name='plan-list'),
+    path('plans/create/', views.plan_create, name='plan-create'),
+    path('plans/<int:pk>/', views.plan_detail, name='plan-detail'),
+    path('plans/<int:pk>/update/', views.plan_update, name='plan-update'),
+    path('plans/<int:pk>/delete/', views.plan_delete, name='plan-delete'),
+    path('plans/<int:pk>/items/', views.plan_add_item, name='plan-add-item'),
+    path('plans/<int:pk>/items/reorder/', views.plan_reorder_items, name='plan-reorder-items'),
+    path('plans/items/<int:item_pk>/delete/', views.plan_delete_item, name='plan-delete-item'),
+    path('plans/<int:pk>/regenerate-token/', views.plan_regenerate_token, name='plan-regenerate-token'),
+
+    # ─── PlanExecution API ───
+    path('plans/<int:pk>/execute/', views.plan_execute, name='plan-execute'),
+    path('plan-executions/', views.plan_execution_list, name='plan-execution-list'),
+    path('plan-executions/<int:pk>/', views.plan_execution_detail, name='plan-execution-detail'),
+    path('plan-executions/<int:pk>/status/', views.plan_execution_status, name='plan-execution-status'),
+    path('plan-executions/<int:pk>/report/', views.plan_execution_report, name='plan-execution-report'),
+
     # 系统
     path('health/', views.health_check, name='health-check'),
     path('stats/', views.system_stats, name='system-stats'),

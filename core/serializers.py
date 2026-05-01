@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import (
     Project, TestCase, ExecutionRecord, AIConversation, SystemSetting,
     RepoAnalysis, PreconditionTemplate,
+    Script, TestPlan, TestPlanItem, PlanExecution,
 )
 
 
@@ -59,7 +60,7 @@ class ExecutionRecordSerializer(serializers.ModelSerializer):
             'status', 'execution_mode', 'tool_calls_count', 'ai_model',
             'log', 'screenshot_path', 'duration',
             'error_message', 'screenshots', 'step_logs', 'agent_response',
-            'replay_script', 'source_execution', 'created_at',
+            'replay_script', 'source_execution', 'plan_execution', 'created_at',
         ]
 
 
@@ -217,3 +218,137 @@ class TestCaseReorderSerializer(serializers.Serializer):
         child=TestCaseReorderItemSerializer(),
         help_text='用例排序信息列表 [{id, feature_group, sort_order}]',
     )
+
+
+# ─── Script Serializer ───
+
+class ScriptSerializer(serializers.ModelSerializer):
+    testcase_name = serializers.CharField(source='testcase.name', read_only=True, default='')
+    project_name = serializers.CharField(source='project.name', read_only=True)
+
+    class Meta:
+        model = Script
+        fields = [
+            'id', 'project', 'project_name', 'testcase', 'testcase_name',
+            'source_execution', 'name', 'feature_group', 'sort_order',
+            'script_data', 'status', 'version',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'source_execution', 'created_at', 'updated_at']
+
+
+class ScriptConvertRequestSerializer(serializers.Serializer):
+    """从 ExecutionRecord 生成 Script 的请求"""
+    execution_id = serializers.IntegerField(help_text='Agent 执行记录 ID')
+    name = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='脚本名称，默认继承用例名'
+    )
+    feature_group = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='功能分组'
+    )
+
+
+class ScriptExecuteRequestSerializer(serializers.Serializer):
+    """执行脚本的请求"""
+    parameter_overrides = serializers.DictField(
+        required=False, default=dict,
+        help_text='参数覆盖 key-value'
+    )
+
+
+# ─── TestPlan Serializer ───
+
+class TestPlanItemSerializer(serializers.ModelSerializer):
+    script_name = serializers.CharField(source='script.name', read_only=True, default='')
+    script_feature_group = serializers.CharField(source='script.feature_group', read_only=True, default='')
+
+    class Meta:
+        model = TestPlanItem
+        fields = [
+            'id', 'test_plan', 'item_type', 'script', 'script_name',
+            'script_feature_group', 'feature_group_name', 'sort_order',
+        ]
+        read_only_fields = ['id']
+
+
+class TestPlanSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    items = TestPlanItemSerializer(many=True, read_only=True)
+    item_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TestPlan
+        fields = [
+            'id', 'project', 'project_name', 'name', 'description',
+            'status', 'api_token', 'items', 'item_count',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'api_token', 'created_at', 'updated_at']
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+
+class TestPlanCreateUpdateSerializer(serializers.ModelSerializer):
+    """用于创建/更新方案，不含嵌套 items（items 通过独立 API 管理）"""
+    project_name = serializers.CharField(source='project.name', read_only=True)
+
+    class Meta:
+        model = TestPlan
+        fields = [
+            'id', 'project', 'project_name', 'name', 'description',
+            'status', 'api_token', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'api_token', 'created_at', 'updated_at']
+
+
+class TestPlanItemCreateSerializer(serializers.Serializer):
+    """添加方案子项请求"""
+    item_type = serializers.ChoiceField(choices=['script', 'feature_group'])
+    script_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    feature_group_name = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='item_type=feature_group 时必填'
+    )
+
+
+class TestPlanItemsReorderSerializer(serializers.Serializer):
+    """方案子项重排序请求"""
+    orders = serializers.ListField(
+        child=serializers.DictField(),
+        help_text='[{id: int, sort_order: int}]',
+    )
+
+
+# ─── PlanExecution Serializer ───
+
+class PlanExecutionSerializer(serializers.ModelSerializer):
+    plan_name = serializers.CharField(source='test_plan.name', read_only=True)
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    execution_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PlanExecution
+        fields = [
+            'id', 'test_plan', 'plan_name', 'project', 'project_name',
+            'status', 'trigger_source', 'summary',
+            'execution_count', 'started_at', 'completed_at', 'created_at',
+        ]
+
+    def get_execution_count(self, obj):
+        return obj.execution_records.count()
+
+
+class PlanExecutionDetailSerializer(PlanExecutionSerializer):
+    """方案执行详情 — 包含子 ExecutionRecord 列表"""
+    execution_records = serializers.SerializerMethodField()
+
+    class Meta(PlanExecutionSerializer.Meta):
+        fields = PlanExecutionSerializer.Meta.fields + ['execution_records']
+
+    def get_execution_records(self, obj):
+        from .serializers import ExecutionRecordSerializer
+        records = obj.execution_records.select_related('testcase', 'project').all()
+        return ExecutionRecordSerializer(records, many=True).data
