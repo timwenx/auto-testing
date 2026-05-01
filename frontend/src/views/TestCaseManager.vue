@@ -51,6 +51,7 @@
             :selected-items="selectedItems"
             :descriptions="itemDescriptions"
             :precondition-id="selectedPreconditionId"
+            :initial-cases="initialDraftCases"
             @back="activeStep = 2"
             @save-complete="onSaveComplete"
           />
@@ -81,7 +82,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getProject } from '../api.js'
+import { getProject, getRepoAnalysis, getGenerationDraft, clearGenerationDraft } from '../api.js'
 import RepoStatusCard from '../components/RepoStatusCard.vue'
 import CodeAnalysisPanel from '../components/CodeAnalysisPanel.vue'
 import PreconditionSelector from '../components/PreconditionSelector.vue'
@@ -100,18 +101,82 @@ const savedCount = ref(0)
 const analysisKey = ref(0)
 const batchKey = ref(0)
 
+// Initial draft data from server (used to restore BatchTestCaseEditor state)
+const initialDraftCases = ref(null)
+const initialDraftItems = ref(null)
+const initialDraftDescriptions = ref(null)
+const initialDraftPreconditionId = ref(null)
+
 onMounted(async () => {
   try {
     const { data } = await getProject(projectId.value)
     project.value = data
-    // 如果已有本地仓库路径，直接进入步骤1完成状态
-    if (data.local_repo_path) {
-      // 保持在步骤0，但显示已就绪状态
-    }
+
+    // Auto-restore wizard state based on persisted data
+    await restoreWizardState(data)
   } catch (e) {
     ElMessage.error('加载项目失败')
   }
 })
+
+async function restoreWizardState(projectData) {
+  // Step 0: Check if repo is already pulled
+  if (!projectData.local_repo_path) {
+    // No repo yet, stay at step 0
+    return
+  }
+
+  // Check for existing generation draft first (highest priority - has generated cases)
+  try {
+    const { data } = await getGenerationDraft(projectId.value)
+    const draft = data.draft || {}
+    if (draft.generated_cases && draft.generated_cases.length > 0) {
+      // Restore all state from the draft
+      initialDraftCases.value = draft.generated_cases
+      initialDraftItems.value = draft.selected_items || []
+      initialDraftDescriptions.value = draft.descriptions || {}
+      initialDraftPreconditionId.value = draft.precondition_id || null
+      selectedItems.value = draft.selected_items || []
+      itemDescriptions.value = draft.descriptions || {}
+      selectedPreconditionId.value = draft.precondition_id || null
+      activeStep.value = 3
+      return
+    }
+  } catch (e) {
+    // Draft fetch failed, continue with analysis check
+  }
+
+  // Check for existing repo analysis
+  try {
+    const { data } = await getRepoAnalysis(projectId.value)
+    const analysis = data.analysis
+
+    if (!analysis) {
+      // Repo pulled but no analysis yet → step 0 (user clicks "next" to start)
+      return
+    }
+
+    if (analysis.status === 'analyzing') {
+      // Analysis in progress → step 1
+      activeStep.value = 1
+      return
+    }
+
+    if (analysis.status === 'completed') {
+      // Analysis completed → step 2 (user can select targets)
+      activeStep.value = 2
+      return
+    }
+
+    if (analysis.status === 'failed') {
+      // Analysis failed → step 1 (show failure, allow retry)
+      activeStep.value = 1
+      return
+    }
+  } catch (e) {
+    // Analysis check failed, stay at step 0
+  }
+}
 
 function onRepoReady() {
   activeStep.value = 1
@@ -145,9 +210,15 @@ function restart() {
   selectedItems.value = []
   itemDescriptions.value = {}
   selectedPreconditionId.value = null
+  initialDraftCases.value = null
+  initialDraftItems.value = null
+  initialDraftDescriptions.value = null
+  initialDraftPreconditionId.value = null
   // Force child components to remount with fresh state
   analysisKey.value++
   batchKey.value++
+  // Clear the server-side draft
+  clearGenerationDraft(projectId.value).catch(() => {})
 }
 </script>
 

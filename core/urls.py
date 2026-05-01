@@ -47,6 +47,7 @@ urlpatterns = [
     path('projects/<int:project_id>/repo/analysis/list/', views.repo_analysis_list, name='repo-analysis-list'),
     path('projects/<int:project_id>/batch-generate/', views.batch_generate_testcases, name='batch-generate'),
     path('projects/<int:project_id>/batch-save/', views.batch_save_testcases, name='batch-save'),
+    path('projects/<int:project_id>/generation-draft/', views.generation_draft, name='generation-draft'),
     path('projects/<int:project_id>/testcases/reorder/', views.testcase_reorder, name='testcase-reorder'),
     path('projects/<int:project_id>/feature-groups/', views.project_feature_groups, name='feature-groups'),
 

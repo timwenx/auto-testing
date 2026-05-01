@@ -15,6 +15,10 @@ class Project(models.Model):
     github_url = models.CharField('GitHub 地址', max_length=500, blank=True, default='')
     github_token = models.CharField('GitHub Token', max_length=500, blank=True, default='')
     local_repo_path = models.CharField('本地仓库路径', max_length=500, blank=True, default='')
+    generation_draft = models.JSONField(
+        '生成草稿', default=dict, blank=True,
+        help_text='用例批量生成过程中的临时草稿数据，用于页面刷新后恢复状态',
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
