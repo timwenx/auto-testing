@@ -30,6 +30,9 @@
           <span>测试用例</span>
           <div>
             <el-button-group size="small" style="margin-right: 8px">
+              <el-button :type="viewMode === 'tree' ? 'primary' : ''" @click="viewMode = 'tree'">
+                树形视图
+              </el-button>
               <el-button :type="viewMode === 'grouped' ? 'primary' : ''" @click="viewMode = 'grouped'">
                 分组视图
               </el-button>
@@ -46,6 +49,87 @@
             <el-button size="small" type="primary" @click="showCreate = true">
               <el-icon><Plus /></el-icon> 新建用例
             </el-button>
+          </div>
+        </div>
+      </template>
+
+      <!-- 树形视图（左侧功能树 + 右侧内容面板） -->
+      <template v-if="viewMode === 'tree'">
+        <div style="display: flex; gap: 16px; min-height: 400px">
+          <div style="width: 320px; flex-shrink: 0; border-right: 1px solid #ebeef5; padding-right: 16px">
+            <FeatureTree
+              :groups="featureTreeData"
+              :executing-feature="executingFeature"
+              @select-feature="handleTreeSelectFeature"
+              @select-testcase="handleTreeSelectTestcase"
+              @execute-feature="handleTreeExecuteFeature"
+            />
+          </div>
+          <div style="flex: 1; overflow-y: auto; max-height: 70vh">
+            <!-- 选中功能 -->
+            <template v-if="treeSelection?.type === 'feature'">
+              <h4 style="margin: 0 0 12px">{{ treeSelection.label || '未分组' }}</h4>
+              <el-descriptions :column="2" size="small" border style="margin-bottom: 12px">
+                <el-descriptions-item label="用例数">{{ treeSelection.count }}</el-descriptions-item>
+                <el-descriptions-item label="操作">
+                  <el-button size="small" type="primary" @click="handleTreeExecuteFeature(treeSelection.rawName)" :loading="executingFeature === treeSelection.rawName">
+                    <el-icon><VideoPlay /></el-icon> 执行全部
+                  </el-button>
+                </el-descriptions-item>
+              </el-descriptions>
+              <el-table :data="treeSelection.testcases || []" size="small">
+                <el-table-column prop="name" label="用例名称" min-width="180" />
+                <el-table-column prop="status" label="状态" width="80">
+                  <template #default="{ row }">
+                    <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="最近执行" width="100">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.latest_execution_status" :type="statusType(row.latest_execution_status)" size="small" effect="plain">
+                      {{ row.latest_execution_status }}
+                    </el-tag>
+                    <span v-else style="color: #c0c4cc">-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="240" fixed="right">
+                  <template #default="{ row }">
+                    <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
+                    <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
+                    <el-button size="small" text @click="showDetail(row)">详情</el-button>
+                    <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+            <!-- 选用例 -->
+            <template v-else-if="treeSelection?.type === 'testcase'">
+              <el-descriptions :column="2" size="small" border style="margin-bottom: 12px">
+                <el-descriptions-item label="名称">{{ treeSelection.raw?.name }}</el-descriptions-item>
+                <el-descriptions-item label="状态">
+                  <el-tag :type="statusType(treeSelection.raw?.status)" size="small">{{ treeSelection.raw?.status }}</el-tag>
+                </el-descriptions-item>
+              </el-descriptions>
+              <div style="margin-bottom: 12px">
+                <el-button size="small" type="warning" @click="handleExecuteAgent(treeSelection.raw)">Agent 执行</el-button>
+                <el-button size="small" type="success" @click="handleAgentRefine(treeSelection.raw)">AI 调整</el-button>
+                <el-button size="small" @click="openEditor(treeSelection.raw)">编辑</el-button>
+                <el-button size="small" @click="showDetail(treeSelection.raw)">查看详情</el-button>
+                <el-button size="small" type="info" @click="handleViewExecutions(treeSelection.raw)">执行记录</el-button>
+              </div>
+              <div v-if="treeSelection.raw?.markdown_content" class="markdown-body" style="max-height: 50vh" v-html="renderCaseMarkdown(treeSelection.raw.markdown_content)" />
+              <el-descriptions v-else :column="1" border size="small">
+                <el-descriptions-item label="描述">{{ treeSelection.raw?.description || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="测试步骤">
+                  <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.steps }}</pre>
+                </el-descriptions-item>
+                <el-descriptions-item label="预期结果">
+                  <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.expected_result }}</pre>
+                </el-descriptions-item>
+              </el-descriptions>
+            </template>
+            <!-- 默认空状态 -->
+            <el-empty v-else description="选择左侧功能或用例查看详情" :image-size="80" />
           </div>
         </div>
       </template>
@@ -479,11 +563,12 @@ import {
   executeTestCaseAgent, executeProjectAgent,
   aiGenerateTestCase, aiAdjustTestCase,
   getExecutions,
-  reorderTestcases, getFeatureGroups,
+  reorderTestcases, getFeatureGroups, getFeatureGroupsDetail, executeFeatureGroup,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AgentRefineDialog from './AgentRefineDialog.vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
+import FeatureTree from '../components/FeatureTree.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -523,9 +608,14 @@ const savingProject = ref(false)
 const editProjectForm = ref({ name: '', description: '', base_url: '', repo_url: '', repo_username: '', repo_password: '', github_url: '', github_token: '', local_repo_path: '' })
 
 // 分组视图相关
-const viewMode = ref('grouped')  // 'grouped' | 'flat'
+const viewMode = ref('grouped')  // 'tree' | 'grouped' | 'flat'
 const featureGroups = ref([])  // [{ name, count }]
 const activeCollapse = ref([])
+
+// 树形视图相关
+const featureTreeData = ref([])  // [{ name, count, testcases: [...] }]
+const treeSelection = ref(null)  // { type: 'feature'|'testcase', ... }
+const executingFeature = ref('')
 
 // 分组 computed
 const groupedTestcases = computed(() => {
@@ -598,14 +688,16 @@ const statusType = (s) => {
 const loadData = async () => {
   loading.value = true
   try {
-    const [p, tc, fg] = await Promise.all([
+    const [p, tc, fg, fgd] = await Promise.all([
       getProject(projectId),
       getProjectTestCases(projectId),
       getFeatureGroups(projectId),
+      getFeatureGroupsDetail(projectId),
     ])
     project.value = p.data
     testcases.value = tc.data.results || tc.data
     featureGroups.value = (fg.data.groups || [])
+    featureTreeData.value = (fgd.data.groups || [])
     // 默认展开所有分组
     activeCollapse.value = Object.keys(groupedTestcases.value)
   } finally {
@@ -867,6 +959,47 @@ async function handleMoveDown(row) {
     await loadData()
   } catch (e) {
     ElMessage.error(e.response?.data?.error || '排序失败')
+  }
+}
+
+// ─── 树形视图处理 ───
+
+function handleTreeSelectFeature(rawName) {
+  const group = featureTreeData.value.find(g => {
+    const effective = g.name === '未分组' ? '' : g.name
+    return effective === rawName
+  })
+  if (group) {
+    treeSelection.value = {
+      type: 'feature',
+      label: group.name,
+      rawName,
+      count: group.count,
+      testcases: group.testcases || [],
+    }
+  }
+}
+
+function handleTreeSelectTestcase(tc) {
+  treeSelection.value = {
+    type: 'testcase',
+    label: tc.name,
+    raw: tc,
+  }
+}
+
+async function handleTreeExecuteFeature(featureGroup) {
+  if (!featureGroup && featureGroup !== '') return
+  executingFeature.value = featureGroup
+  try {
+    const encoded = encodeURIComponent(featureGroup)
+    const { data } = await executeFeatureGroup(projectId, featureGroup)
+    ElMessage.success(`功能分组执行已提交，${data.submitted || 0} 个用例`)
+    await loadData()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '功能分组执行失败')
+  } finally {
+    executingFeature.value = ''
   }
 }
 
