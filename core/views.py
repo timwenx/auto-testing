@@ -3,8 +3,8 @@ import logging
 import os
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor
-from django.http import JsonResponse, FileResponse, Http404
-from django.db.models import Count, Q, Max
+from django.http import FileResponse, Http404
+from django.db.models import Count, Max
 from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
@@ -1564,7 +1564,16 @@ def script_execute(request, pk):
     # 查找关联的 source_execution 用于回放
     source_record = script.source_execution
     if not source_record:
-        return Response({'error': '脚本缺少来源执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+        # 如果没有 source_execution，创建一个虚拟执行记录以支持回放
+        source_record = ExecutionRecord.objects.create(
+            project=script.project,
+            testcase=script.testcase,
+            status='completed',
+            execution_mode='replay',
+            replay_script=script.script_data,
+        )
+        script.source_execution = source_record
+        script.save(update_fields=['source_execution'])
 
     # 创建新的执行记录
     new_record = ExecutionRecord.objects.create(
@@ -1989,7 +1998,6 @@ def _execute_plan_sync(plan_exec, scripts_to_run, plan):
         plan_exec.status = 'error'
         plan_exec.save(update_fields=['status'])
 
-    from django.http import JsonResponse
     # 同步模式在视图函数内直接返回
     return Response(PlanExecutionDetailSerializer(plan_exec).data)
 

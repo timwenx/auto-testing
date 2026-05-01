@@ -120,11 +120,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getExecutions, getProjects, updateReplayScript, replayExecute,
-  getScripts as getScriptModels, convertToScriptModel, executeScript as executeScriptModel,
+  convertToScriptModel,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -239,23 +239,13 @@ async function handleConvertToScript(row) {
     await ElMessageBox.confirm('将此执行记录转换为独立的可复用脚本？', '转换确认')
     const { data } = await convertToScriptModel({ execution_id: row.id })
     ElMessage.success(`脚本「${data.name}」已创建`)
-    loadScriptModels()
+    await loadScripts()
   } catch (e) {
     if (e !== 'cancel') {
       ElMessage.error(e.response?.data?.error || '转换失败')
     }
   }
 }
-
-async function loadScriptModels() {
-  // Also load script model records for reference
-  try {
-    const { data } = await getScriptModels({ status: 'active' })
-    // Just for reference — could be displayed in a separate tab
-  } catch (e) { /* ignore */ }
-}
-
-watch(projectFilter, () => {})
 
 onMounted(async () => {
   const [, p] = await Promise.all([

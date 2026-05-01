@@ -98,7 +98,7 @@
               <el-icon><Plus /></el-icon> 添加子项
             </el-button>
           </div>
-          <el-table :data="planItems" size="small" empty-text="暂无子项">
+          <el-table :data="planItems" size="small" empty-text="暂无子项" row-key="id">
             <el-table-column prop="sort_order" label="序号" width="60" />
             <el-table-column prop="item_type" label="类型" width="100">
               <template #default="{ row }">
@@ -113,7 +113,13 @@
                 <span v-else>{{ row.feature_group_name || '-' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="120">
+            <el-table-column label="排序" width="100">
+              <template #default="{ row, $index }">
+                <el-button size="small" text :disabled="$index === 0" @click="handleItemMoveUp($index)">↑</el-button>
+                <el-button size="small" text :disabled="$index === planItems.length - 1" @click="handleItemMoveDown($index)">↓</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80">
               <template #default="{ row }">
                 <el-button size="small" text type="danger" @click="handleRemoveItem(row)">删除</el-button>
               </template>
@@ -263,8 +269,8 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import {
   getPlans, createPlan, getPlan, updatePlan, deletePlan,
-  addPlanItem, deletePlanItem, regeneratePlanToken,
-  executePlan, getPlanExecutions, getPlanExecution,
+  addPlanItem, deletePlanItem, regeneratePlanToken, reorderPlanItems,
+  executePlan, getPlanExecutions, getPlanExecution, getPlanExecutionStatus,
   getScripts, getScriptFeatureGroups,
   getProjects,
 } from '../api'
@@ -428,6 +434,34 @@ async function handleAddItem() {
     ElMessage.error(e.response?.data?.error || '添加失败')
   } finally {
     addingItem.value = false
+  }
+}
+
+async function handleItemMoveUp(index) {
+  if (index <= 0 || !selectedPlan.value) return
+  const reordered = [...planItems.value]
+  ;[reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]]
+  await persistReorder(reordered)
+}
+
+async function handleItemMoveDown(index) {
+  if (index >= planItems.value.length - 1 || !selectedPlan.value) return
+  const reordered = [...planItems.value]
+  ;[reordered[index], reordered[index + 1]] = [reordered[index + 1], reordered[index]]
+  await persistReorder(reordered)
+}
+
+async function persistReorder(reordered) {
+  const orders = reordered.map((item, i) => ({
+    id: item.id,
+    sort_order: i + 1,
+  }))
+  try {
+    await reorderPlanItems(selectedPlan.value.id, orders)
+    // Update local state
+    planItems.value = reordered.map((item, i) => ({ ...item, sort_order: i + 1 }))
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '排序失败')
   }
 }
 

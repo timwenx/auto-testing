@@ -3167,12 +3167,16 @@ class ScriptExecuteTest(TestCase):
         self.assertIsNotNone(new_record)
 
     def test_script_execute_no_source(self):
+        """Script without source_execution should auto-create a dummy record and succeed"""
         script = Script.objects.create(
             project=self.project, name='No Source',
             script_data={'steps': []}, status='active',
         )
         resp = self.client.post(f'/api/scripts/{script.id}/execute/', format='json')
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 202)
+        # Verify a source_execution was auto-created
+        script.refresh_from_db()
+        self.assertIsNotNone(script.source_execution)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3572,3 +3576,186 @@ class FeatureGroupExecutionUngroupedTest(TestCase):
         resp = self.client.post(f'/api/projects/{self.project.id}/features/未分组/execute/')
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(resp.data['count'], 1)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Round 2 Quality Tests
+# ══════════════════════════════════════════════════════════════════
+
+class TestPlanTokenDisplayTest(TestCase):
+    """Test api_token_display masking in serializer"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='TokenTest', base_url='https://example.com')
+
+    def test_api_token_display_masked(self):
+        plan = TestPlan.objects.create(project=self.project, name='Token Plan')
+        resp = self.client.get(f'/api/plans/{plan.id}/')
+        self.assertEqual(resp.status_code, 200)
+        # Should have api_token (full) and api_token_display (masked)
+        self.assertIn('api_token', resp.data)
+        self.assertIn('api_token_display', resp.data)
+        display = resp.data['api_token_display']
+        self.assertIn('****', display)
+
+    def test_api_token_display_short_token(self):
+        """Token display handles standard UUID tokens"""
+        plan = TestPlan.objects.create(project=self.project, name='Short Token')
+        resp = self.client.get(f'/api/plans/{plan.id}/')
+        display = resp.data['api_token_display']
+        # UUID tokens are always > 12 chars, so should have ****
+        self.assertIn('****', display)
+
+
+class PlanItemReorderTest(TestCase):
+    """Test plan item reorder endpoint"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='ReorderTest', base_url='https://example.com')
+        self.plan = TestPlan.objects.create(project=self.project, name='Reorder Plan')
+        self.item1 = TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='feature_group',
+            feature_group_name='Group A', sort_order=1,
+        )
+        self.item2 = TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='feature_group',
+            feature_group_name='Group B', sort_order=2,
+        )
+        self.item3 = TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='feature_group',
+            feature_group_name='Group C', sort_order=3,
+        )
+
+    def test_reorder_success(self):
+        resp = self.client.put(
+            f'/api/plans/{self.plan.id}/items/reorder/',
+            {'orders': [
+                {'id': self.item3.id, 'sort_order': 1},
+                {'id': self.item1.id, 'sort_order': 2},
+                {'id': self.item2.id, 'sort_order': 3},
+            ]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.item1.refresh_from_db()
+        self.item2.refresh_from_db()
+        self.item3.refresh_from_db()
+        self.assertEqual(self.item3.sort_order, 1)
+        self.assertEqual(self.item1.sort_order, 2)
+        self.assertEqual(self.item2.sort_order, 3)
+
+    def test_reorder_invalid_item(self):
+        resp = self.client.put(
+            f'/api/plans/{self.plan.id}/items/reorder/',
+            {'orders': [{'id': 99999, 'sort_order': 1}]},
+            format='json',
+        )
+        # Invalid item ID is silently skipped, returns 200 with updated=0
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['updated'], 0)
+
+    def test_reorder_empty_orders(self):
+        resp = self.client.put(
+            f'/api/plans/{self.plan.id}/items/reorder/',
+            {'orders': []},
+            format='json',
+        )
+        # Empty orders returns 400
+        self.assertEqual(resp.status_code, 400)
+
+
+class DetailedFeatureGroupsTest(TestCase):
+    """Test enhanced feature groups with detailed test case data"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='FGDetailTest', base_url='https://example.com')
+
+    def test_detailed_returns_testcases(self):
+        tc1 = TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            feature_group='Login', status='ready', sort_order=1,
+        )
+        tc2 = TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            feature_group='Login', status='draft', sort_order=2,
+        )
+        resp = self.client.get(f'/api/projects/{self.project.id}/feature-groups/', {'detailed': 'true'})
+        self.assertEqual(resp.status_code, 200)
+        groups = resp.data['groups']
+        login_group = next(g for g in groups if g['name'] == 'Login')
+        self.assertEqual(login_group['count'], 2)
+        self.assertIn('testcases', login_group)
+        self.assertEqual(len(login_group['testcases']), 2)
+        # Verify testcase fields
+        tc_data = login_group['testcases'][0]
+        self.assertIn('id', tc_data)
+        self.assertIn('name', tc_data)
+        self.assertIn('status', tc_data)
+        self.assertIn('latest_execution_status', tc_data)
+
+    def test_non_detailed_no_testcases(self):
+        TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            feature_group='Login', status='ready',
+        )
+        resp = self.client.get(f'/api/projects/{self.project.id}/feature-groups/')
+        groups = resp.data['groups']
+        login_group = next(g for g in groups if g['name'] == 'Login')
+        self.assertNotIn('testcases', login_group)
+
+
+class ScriptExecuteAutoSourceTest(TestCase):
+    """Test that scripts without source_execution get auto-created records"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='AutoSourceTest', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='Auto TC', steps='s', expected_result='ok',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_auto_creates_source_execution(self, mock_submit):
+        """Script with no source_execution auto-creates a dummy ExecutionRecord"""
+        script = Script.objects.create(
+            project=self.project, testcase=self.tc,
+            name='Auto Source Script',
+            script_data={'steps': [{'action': 'navigate', 'url': 'https://example.com'}]},
+            status='active',
+        )
+        self.assertIsNone(script.source_execution)
+
+        resp = self.client.post(f'/api/scripts/{script.id}/execute/', format='json')
+        self.assertEqual(resp.status_code, 202)
+
+        # Source execution auto-created
+        script.refresh_from_db()
+        self.assertIsNotNone(script.source_execution)
+        self.assertEqual(script.source_execution.replay_script, script.script_data)
+
+        # New execution record created
+        mock_submit.assert_called_once()
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_existing_source_no_duplicate(self, mock_submit):
+        """Script with existing source_execution uses it directly"""
+        existing_record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc,
+            status='completed', execution_mode='agent',
+            replay_script={'steps': []},
+        )
+        script = Script.objects.create(
+            project=self.project, testcase=self.tc,
+            name='Has Source Script',
+            script_data={'steps': []},
+            source_execution=existing_record,
+            status='active',
+        )
+        resp = self.client.post(f'/api/scripts/{script.id}/execute/', format='json')
+        self.assertEqual(resp.status_code, 202)
+        # No new dummy record created
+        self.assertEqual(ExecutionRecord.objects.filter(project=self.project).count(), 2)
+

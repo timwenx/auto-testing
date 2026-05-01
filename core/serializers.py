@@ -277,12 +277,13 @@ class TestPlanSerializer(serializers.ModelSerializer):
     project_name = serializers.CharField(source='project.name', read_only=True)
     items = TestPlanItemSerializer(many=True, read_only=True)
     item_count = serializers.SerializerMethodField()
+    api_token_display = serializers.SerializerMethodField()
 
     class Meta:
         model = TestPlan
         fields = [
             'id', 'project', 'project_name', 'name', 'description',
-            'status', 'api_token', 'items', 'item_count',
+            'status', 'api_token', 'api_token_display', 'items', 'item_count',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'api_token', 'created_at', 'updated_at']
@@ -290,18 +291,31 @@ class TestPlanSerializer(serializers.ModelSerializer):
     def get_item_count(self, obj):
         return obj.items.count()
 
+    def get_api_token_display(self, obj):
+        token = str(obj.api_token)
+        if len(token) > 12:
+            return token[:8] + '****' + token[-4:]
+        return token
+
 
 class TestPlanCreateUpdateSerializer(serializers.ModelSerializer):
     """用于创建/更新方案，不含嵌套 items（items 通过独立 API 管理）"""
     project_name = serializers.CharField(source='project.name', read_only=True)
+    api_token_display = serializers.SerializerMethodField()
 
     class Meta:
         model = TestPlan
         fields = [
             'id', 'project', 'project_name', 'name', 'description',
-            'status', 'api_token', 'created_at', 'updated_at',
+            'status', 'api_token', 'api_token_display', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'api_token', 'created_at', 'updated_at']
+
+    def get_api_token_display(self, obj):
+        token = str(obj.api_token)
+        if len(token) > 12:
+            return token[:8] + '****' + token[-4:]
+        return token
 
 
 class TestPlanItemCreateSerializer(serializers.Serializer):
@@ -349,6 +363,5 @@ class PlanExecutionDetailSerializer(PlanExecutionSerializer):
         fields = PlanExecutionSerializer.Meta.fields + ['execution_records']
 
     def get_execution_records(self, obj):
-        from .serializers import ExecutionRecordSerializer
         records = obj.execution_records.select_related('testcase', 'project').all()
         return ExecutionRecordSerializer(records, many=True).data
