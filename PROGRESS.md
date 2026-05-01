@@ -1,31 +1,28 @@
-# Progress Notes — Feature Group Analysis (Round 3/3 — Final)
+# Progress Notes — Plan Parameter Management (Round 1/3)
 
-## Status: ALL TASKS COMPLETE
+## Status: ALL 6 TASKS COMPLETE
 
-### Round 3 Summary
+### Changes Summary
 
-All 8 plan tasks were completed in rounds 1-2. Round 3 performed final verification and consistency fix.
+1. **Task 1: Deterministic `_make_param_name`** — Replaced index-based parameter naming with selector-content hash (`_selector_hash`). Same CSS selector always produces the same parameter name across scripts. `browser_navigate` uses fixed `param_url`. `browser_assert` uses selector-based name. Added `_deduplicate_param_names()` for same-selector value conflicts.
 
-### Changes Applied
+2. **Task 2: Plan Parameters API** — New `GET /api/plans/<id>/parameters/` endpoint. Collects parameters from all scripts in plan, deduplicates by name, detects conflicts (same name, different defaults). Returns `parameters` dict with sources info and `all_script_params` per-script mapping.
 
-1. **Missing import fix (views.py)**: `PlanExecuteRequestSerializer` was referenced in `plan_execute` view but not in the import list. This was already fixed in a prior commit but surfaced during test verification. Current code is correct.
+3. **Task 3: Plan Execute with Overrides** — `plan_execute` now accepts optional `parameter_overrides` dict in request body. `_run_single_script` filters overrides to only params the script uses before passing to `ReplayExecutor`. Backward compatible: empty body = same behavior.
 
-2. **Consistency fix (repo_analyzer.py)**: Added `feature_description: ''` field to old-format fallback items in `_parse_analysis_response()`. This ensures all parsed items have the same schema regardless of input format (new `{features: [...]}` vs old `{pages, apis}`).
+4. **Task 4: Frontend Parameter Dialog** — Modified `handleExecutePlan` to fetch parameters first. If params exist, shows editing dialog with input/assertion groups, conflict warnings, reset-to-default. Passes only changed values as `parameter_overrides`. Updated API examples with `-d` body.
 
-### Verification
-- **410 tests** all passing (347 main + 63 enriched context)
-- **Frontend build** clean (692ms)
-- **Django system check**: 0 issues
+5. **Task 5: Batch Normalization** — Added `normalize_parameter_names()` post-processor in `batch_convert_scripts`. Groups by label+default, renames to first occurrence's name, updates both parameters dict and template references in steps.
 
-### Feature Group Analysis — Complete Implementation Summary
+6. **Task 6: Unit Tests** — 23 new tests across 4 test classes: deterministic naming (6), parameter aggregation (8), override handling (4), normalization (5). Total: 370 + 63 = 433 tests passing.
 
-| Task | Status | Details |
-|------|--------|---------|
-| Task 1: Update analysis prompt | ✅ | `ANALYSIS_SYSTEM_PROMPT` outputs `{features: [...]}` format |
-| Task 2: Update `_parse_analysis_response()` | ✅ | Parses new format, flattens with `feature_group` + `feature_description`, old format fallback |
-| Task 3: Update CLI/SDK user prompts | ✅ | Both paths reference updated system prompt |
-| Task 4: Refactor CodeAnalysisPanel.vue | ✅ | `el-collapse` with feature groups, expandable tables, row expand for elements/params |
-| Task 5: Update selection state management | ✅ | Path-based `Set` instead of index-based tracking |
-| Task 6: batch_generator compatibility | ✅ | `feature_group` injected into target descriptions |
-| Task 7: Backend unit tests | ✅ | 15+ new tests in `ParseFeatureGroupFormatTest` + 3 description propagation tests |
-| Task 8: Frontend build verification | ✅ | Build clean, no compilation errors |
+### Files Changed
+| File | Changes |
+|------|---------|
+| `core/script_converter.py` | `_selector_hash()`, `_make_param_name()` deterministic, `_deduplicate_param_names()`, `normalize_parameter_names()` |
+| `core/views.py` | `plan_parameters()` view, `plan_execute` body parsing, `_run_single_script` overrides filtering |
+| `core/serializers.py` | `PlanExecuteRequestSerializer` |
+| `core/urls.py` | `plans/<id>/parameters/` route |
+| `core/tests.py` | 23 new tests in 4 classes |
+| `frontend/src/api.js` | `getPlanParameters()`, updated `executePlan()` |
+| `frontend/src/views/TestPlanView.vue` | Parameter dialog, execute flow, conflict UI |
