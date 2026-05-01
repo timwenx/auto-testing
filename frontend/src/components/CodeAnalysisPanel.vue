@@ -77,13 +77,14 @@
           :name="group.name"
         >
           <template #title>
-            <div class="group-header" @click.stop>
+            <div class="group-header" @click.stop="toggleCollapse(group.name)">
               <el-checkbox
                 :model-value="getGroupCheckState(group.name)"
                 :indeterminate="getGroupCheckState(group.name) === 'indeterminate'"
                 @change="(val) => toggleGroup(group.name, val)"
+                @click.stop
               />
-              <span class="group-name">{{ group.name }}</span>
+              <span class="group-name" @click.stop="toggleCollapse(group.name)">{{ group.name }}</span>
               <el-tag size="small" type="info" style="margin-left: 8px">
                 {{ group.items.length }} 项
               </el-tag>
@@ -327,11 +328,16 @@ const featureGroups = computed(() => {
     if (!groupMap.has(groupName)) {
       groupMap.set(groupName, {
         name: groupName,
-        description: '',
+        description: item.feature_description || '',
         items: [],
       })
     }
-    groupMap.get(groupName).items.push(item)
+    const group = groupMap.get(groupName)
+    // Use first non-empty description if current is empty
+    if (!group.description && item.feature_description) {
+      group.description = item.feature_description
+    }
+    group.items.push(item)
   }
 
   const groups = Array.from(groupMap.values())
@@ -482,6 +488,15 @@ function startPolling() {
 
 // --- Selection logic (path-based, not index-based) ---
 
+function toggleCollapse(groupName) {
+  const idx = expandedGroups.value.indexOf(groupName)
+  if (idx >= 0) {
+    expandedGroups.value.splice(idx, 1)
+  } else {
+    expandedGroups.value.push(groupName)
+  }
+}
+
 function toggleItem(path, val) {
   const newSet = new Set(selectedPaths.value)
   if (val) {
@@ -584,6 +599,8 @@ function handleNext() {
   font-size: 14px;
   color: #303133;
   margin-left: 4px;
+  cursor: pointer;
+  user-select: none;
 }
 .group-desc {
   color: #909399;

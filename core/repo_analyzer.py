@@ -432,6 +432,7 @@ def _parse_analysis_response(raw_text: str) -> list:
             if not isinstance(feature, dict):
                 continue
             feature_name = feature.get('name', '')
+            feature_desc = feature.get('description', '')
             # 处理该 feature 下的 pages
             for page in feature.get('pages') or []:
                 items.append({
@@ -445,6 +446,7 @@ def _parse_analysis_response(raw_text: str) -> list:
                     'params': [],
                     'response_fields': [],
                     'feature_group': feature_name,
+                    'feature_description': feature_desc,
                 })
             # 处理该 feature 下的 apis
             for api in feature.get('apis') or []:
@@ -459,6 +461,7 @@ def _parse_analysis_response(raw_text: str) -> list:
                     'params': api.get('params') or [],
                     'response_fields': api.get('response_fields') or [],
                     'feature_group': feature_name,
+                    'feature_description': feature_desc,
                 })
         return items
 
