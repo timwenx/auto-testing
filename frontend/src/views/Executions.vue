@@ -33,80 +33,117 @@
           </div>
         </div>
       </template>
-      <el-table :data="executions" style="width: 100%" v-loading="loading" row-key="id">
-        <el-table-column type="expand">
-          <template #default="{ row }">
-            <div class="expand-content">
-              <template v-if="row.step_logs && row.step_logs.length">
-                <h4 class="expand-section-title">执行步骤</h4>
-                <el-timeline style="margin: 12px 0 16px">
-                  <el-timeline-item v-for="step in row.step_logs" :key="step.step_num" :timestamp="step.timestamp || ''" placement="top" :type="step.action === '报告结果' ? 'success' : 'primary'">
-                    <div class="step-item">
-                      <strong>Step {{ step.step_num }}</strong>: {{ step.action }}
-                      <span v-if="step.target" class="step-target">→ {{ step.target }}</span>
-                      <el-button v-if="step.screenshot_path" size="small" text type="primary" @click="previewImage(step.screenshot_path)" style="margin-left: 8px">查看截图</el-button>
-                    </div>
-                    <div v-if="step.result" class="step-result">{{ truncate(step.result, 200) }}</div>
-                  </el-timeline-item>
-                </el-timeline>
-              </template>
-              <ScreenshotGallery v-if="row.screenshots && row.screenshots.length" :screenshots="row.screenshots" :show-title="true" />
-              <template v-if="row.agent_response && row.agent_response.response_text">
-                <h4 class="expand-section-title">Agent 响应</h4>
-                <pre class="log-block agent-response">{{ row.agent_response.response_text }}</pre>
-              </template>
-              <template v-if="row.error_message">
-                <h4 class="expand-section-title" style="color: #f56c6c">错误信息</h4>
-                <pre class="log-block error">{{ row.error_message }}</pre>
-              </template>
-              <template v-if="row._plan_sub_records && row._plan_sub_records.length">
-                <h4 class="expand-section-title">方案子执行记录</h4>
-                <el-table :data="row._plan_sub_records" size="small" border style="margin-bottom: 12px">
-                  <el-table-column prop="testcase_name" label="用例" min-width="160" show-overflow-tooltip />
-                  <el-table-column prop="execution_mode" label="模式" width="80">
-                    <template #default="{ row: sub }"><el-tag :type="sub.execution_mode === 'agent' ? 'primary' : 'info'" size="small">{{ sub.execution_mode || 'script' }}</el-tag></template>
-                  </el-table-column>
-                  <el-table-column prop="status" label="状态" width="80">
-                    <template #default="{ row: sub }"><el-tag :type="statusType(sub.status)" size="small">{{ sub.status }}</el-tag></template>
-                  </el-table-column>
-                  <el-table-column prop="duration" label="耗时" width="70">
-                    <template #default="{ row: sub }">{{ sub.duration ? sub.duration + 's' : '-' }}</template>
-                  </el-table-column>
-                </el-table>
-              </template>
-              <el-empty v-if="!hasExpandContent(row)" description="无详情数据" :image-size="48" />
-            </div>
-          </template>
-        </el-table-column>
 
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="project_name" label="项目" width="130" />
-        <el-table-column prop="testcase_name" label="用例" width="180" show-overflow-tooltip />
-        <el-table-column prop="execution_mode" label="模式" width="80">
-          <template #default="{ row }">
-            <el-tag :type="executionModeType(row)" size="small">{{ row.execution_mode || 'script' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="80">
-          <template #default="{ row }"><el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag></template>
-        </el-table-column>
-        <el-table-column prop="duration" label="耗时" width="70">
-          <template #default="{ row }">{{ row.duration ? row.duration + 's' : '-' }}</template>
-        </el-table-column>
-        <el-table-column prop="tool_calls_count" label="工具调用" width="80">
-          <template #default="{ row }">{{ row.tool_calls_count || '-' }}</template>
-        </el-table-column>
-        <el-table-column prop="created_at" label="执行时间" width="170" />
-        <el-table-column label="操作" min-width="240" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.status === 'running'" size="small" text type="primary" @click="navigateToObserver(row.id)">观察</el-button>
-            <el-button v-if="['agent', 'replay'].includes(row.execution_mode) && isTerminalStatus(row.status)" size="small" text type="warning" @click="navigateToReplay(row.id)">回放</el-button>
-            <el-button v-if="row.execution_mode === 'agent' && isTerminalStatus(row.status)" size="small" text type="success" @click="navigateToScriptEditor(row.id)">{{ row.replay_script ? '编辑脚本' : '生成脚本' }}</el-button>
-            <el-button size="small" text type="primary" @click="showDetail(row)">详情</el-button>
-            <el-button size="small" text type="warning" @click="showLog(row)">日志</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <!-- 按功能点分组展示 -->
+      <div v-loading="loading">
+        <el-collapse v-model="expandedGroups" v-if="groupedExecutions.length">
+          <el-collapse-item
+            v-for="group in groupedExecutions"
+            :key="group.name"
+            :name="group.name"
+          >
+            <template #title>
+              <div class="group-header" @click.stop>
+                <div class="group-header-left">
+                  <el-icon style="margin-right: 6px"><Folder /></el-icon>
+                  <span class="group-name">{{ group.name }}</span>
+                  <el-tag size="small" type="info" style="margin-left: 8px">{{ group.count }} 条</el-tag>
+                  <el-tag v-if="group.passed" size="small" type="success" style="margin-left: 4px">{{ group.passed }} 通过</el-tag>
+                  <el-tag v-if="group.failed" size="small" type="danger" style="margin-left: 4px">{{ group.failed }} 失败</el-tag>
+                  <el-tag v-if="group.running" size="small" type="warning" style="margin-left: 4px">{{ group.running }} 运行中</el-tag>
+                </div>
+                <div class="group-header-right">
+                  <el-button
+                    v-if="group.name !== '方案执行' && group.name !== '未关联用例' && group.count > 0"
+                    size="small"
+                    type="success"
+                    text
+                    @click.stop="handleBatchConvert(group)"
+                    :loading="convertingGroup === group.name"
+                  >
+                    <el-icon><Document /></el-icon> 生成脚本
+                  </el-button>
+                </div>
+              </div>
+            </template>
+            <el-table :data="group.records" style="width: 100%" size="small" row-key="id">
+              <el-table-column type="expand">
+                <template #default="{ row }">
+                  <div class="expand-content">
+                    <template v-if="row.step_logs && row.step_logs.length">
+                      <h4 class="expand-section-title">执行步骤</h4>
+                      <el-timeline style="margin: 12px 0 16px">
+                        <el-timeline-item v-for="step in row.step_logs" :key="step.step_num" :timestamp="step.timestamp || ''" placement="top" :type="step.action === '报告结果' ? 'success' : 'primary'">
+                          <div class="step-item">
+                            <strong>Step {{ step.step_num }}</strong>: {{ step.action }}
+                            <span v-if="step.target" class="step-target">→ {{ step.target }}</span>
+                            <el-button v-if="step.screenshot_path" size="small" text type="primary" @click="previewImage(step.screenshot_path)" style="margin-left: 8px">查看截图</el-button>
+                          </div>
+                          <div v-if="step.result" class="step-result">{{ truncate(step.result, 200) }}</div>
+                        </el-timeline-item>
+                      </el-timeline>
+                    </template>
+                    <ScreenshotGallery v-if="row.screenshots && row.screenshots.length" :screenshots="row.screenshots" :show-title="true" />
+                    <template v-if="row.agent_response && row.agent_response.response_text">
+                      <h4 class="expand-section-title">Agent 响应</h4>
+                      <pre class="log-block agent-response">{{ row.agent_response.response_text }}</pre>
+                    </template>
+                    <template v-if="row.error_message">
+                      <h4 class="expand-section-title" style="color: #f56c6c">错误信息</h4>
+                      <pre class="log-block error">{{ row.error_message }}</pre>
+                    </template>
+                    <template v-if="row._plan_sub_records && row._plan_sub_records.length">
+                      <h4 class="expand-section-title">方案子执行记录</h4>
+                      <el-table :data="row._plan_sub_records" size="small" border style="margin-bottom: 12px">
+                        <el-table-column prop="testcase_name" label="用例" min-width="160" show-overflow-tooltip />
+                        <el-table-column prop="execution_mode" label="模式" width="80">
+                          <template #default="{ row: sub }"><el-tag :type="sub.execution_mode === 'agent' ? 'primary' : 'info'" size="small">{{ sub.execution_mode || 'script' }}</el-tag></template>
+                        </el-table-column>
+                        <el-table-column prop="status" label="状态" width="80">
+                          <template #default="{ row: sub }"><el-tag :type="statusType(sub.status)" size="small">{{ sub.status }}</el-tag></template>
+                        </el-table-column>
+                        <el-table-column prop="duration" label="耗时" width="70">
+                          <template #default="{ row: sub }">{{ sub.duration ? sub.duration + 's' : '-' }}</template>
+                        </el-table-column>
+                      </el-table>
+                    </template>
+                    <el-empty v-if="!hasExpandContent(row)" description="无详情数据" :image-size="48" />
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column prop="id" label="ID" width="60" />
+              <el-table-column prop="project_name" label="项目" width="130" />
+              <el-table-column prop="testcase_name" label="用例" width="180" show-overflow-tooltip />
+              <el-table-column prop="execution_mode" label="模式" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="executionModeType(row)" size="small">{{ row.execution_mode || 'script' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="80">
+                <template #default="{ row }"><el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag></template>
+              </el-table-column>
+              <el-table-column prop="duration" label="耗时" width="70">
+                <template #default="{ row }">{{ row.duration ? row.duration + 's' : '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="tool_calls_count" label="工具调用" width="80">
+                <template #default="{ row }">{{ row.tool_calls_count || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="created_at" label="执行时间" width="170" />
+              <el-table-column label="操作" min-width="240" fixed="right">
+                <template #default="{ row }">
+                  <el-button v-if="row.status === 'running'" size="small" text type="primary" @click="navigateToObserver(row.id)">观察</el-button>
+                  <el-button v-if="['agent', 'replay'].includes(row.execution_mode) && isTerminalStatus(row.status)" size="small" text type="warning" @click="navigateToReplay(row.id)">回放</el-button>
+                  <el-button v-if="row.execution_mode === 'agent' && isTerminalStatus(row.status)" size="small" text type="success" @click="navigateToScriptEditor(row.id)">{{ row.replay_script ? '编辑脚本' : '生成脚本' }}</el-button>
+                  <el-button size="small" text type="primary" @click="showDetail(row)">详情</el-button>
+                  <el-button size="small" text type="warning" @click="showLog(row)">日志</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-collapse-item>
+        </el-collapse>
+        <el-empty v-else description="暂无执行记录" :image-size="80" />
+      </div>
 
       <!-- Pagination -->
       <div style="display: flex; justify-content: flex-end; margin-top: 16px" v-if="total > pageSize">
@@ -197,9 +234,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getExecutions, getProjects } from '../api'
+import { getExecutions, getProjects, batchConvertScripts } from '../api'
 import { ElMessage } from 'element-plus'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 
@@ -209,11 +246,13 @@ const POLL_INTERVAL = 5000
 const executions = ref([])
 const projects = ref([])
 const loading = ref(false)
+const convertingGroup = ref('')
 const filters = ref({ project: null, status: null, execution_mode: null, dateRange: null })
 
 const currentPage = ref(1)
 const pageSize = 20
 const total = ref(0)
+const expandedGroups = ref([])
 
 const showDetailDialog = ref(false)
 const detailRecord = ref(null)
@@ -243,6 +282,35 @@ const hasExpandContent = (row) => {
 
 const previewImage = (path) => { previewImageUrl.value = `/api/executions/screenshots/?path=${encodeURIComponent(path)}`; showImageDialog.value = true }
 
+// 按功能点分组
+const groupedExecutions = computed(() => {
+  const groups = {}
+  const order = []
+
+  for (const row of executions.value) {
+    let groupName
+    if (row.plan_execution) {
+      groupName = '方案执行'
+    } else if (!row.testcase) {
+      groupName = '未关联用例'
+    } else {
+      groupName = row.testcase_feature_group || '未分组'
+    }
+
+    if (!groups[groupName]) {
+      groups[groupName] = { name: groupName, records: [], count: 0, passed: 0, failed: 0, running: 0 }
+      order.push(groupName)
+    }
+    groups[groupName].records.push(row)
+    groups[groupName].count++
+    if (row.status === 'passed') groups[groupName].passed++
+    else if (row.status === 'failed' || row.status === 'error') groups[groupName].failed++
+    else if (row.status === 'running') groups[groupName].running++
+  }
+
+  return order.map(name => groups[name])
+})
+
 const loadExecutions = async () => {
   loading.value = true
   try {
@@ -260,6 +328,9 @@ const loadExecutions = async () => {
     const { data } = await getExecutions(params)
     executions.value = data.results || data
     total.value = data.count ?? (Array.isArray(data) ? data.length : 0)
+
+    // 自动展开所有分组
+    expandedGroups.value = groupedExecutions.value.map(g => g.name)
   } finally { loading.value = false }
 
   // Auto-poll for running executions
@@ -280,6 +351,31 @@ const navigateToObserver = (id) => router.push({ name: 'ExecutionObserver', para
 const navigateToReplay = (id) => router.push({ name: 'ExecutionObserver', params: { id }, query: { replay: 'true' } })
 const navigateToScriptEditor = (id) => router.push({ name: 'ScriptEditor', params: { id } })
 const isTerminalStatus = (s) => ['passed', 'failed', 'error'].includes(s)
+
+// 批量生成脚本
+const handleBatchConvert = async (group) => {
+  const projectId = filters.value.project
+  if (!projectId) {
+    ElMessage.warning('请先在筛选器中选择一个项目')
+    return
+  }
+  convertingGroup.value = group.name
+  try {
+    // 映射显示名到实际值
+    let featureGroup = group.name
+    if (featureGroup === '未分组') featureGroup = ''
+    const { data } = await batchConvertScripts(projectId, featureGroup)
+    if (data.created > 0) {
+      ElMessage.success(`成功生成 ${data.created} 个脚本${data.skipped > 0 ? `，跳过 ${data.skipped} 条（已存在或无可用数据）` : ''}`)
+    } else {
+      ElMessage.info(data.skipped > 0 ? `所有 ${data.skipped} 条记录已有脚本，无需重复生成` : '没有可转换的执行记录')
+    }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '批量脚本生成失败')
+  } finally {
+    convertingGroup.value = ''
+  }
+}
 
 // Reload when filters change
 watch(() => [filters.value.project, filters.value.status, filters.value.execution_mode, filters.value.dateRange], () => {
@@ -303,4 +399,10 @@ onMounted(async () => {
 .step-item { font-size: 14px; }
 .step-target { color: #909399; font-size: 12px; }
 .step-result { color: #909399; font-size: 12px; margin-top: 4px; word-break: break-all; }
+.group-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 16px; }
+.group-header-left { display: flex; align-items: center; }
+.group-header-right { display: flex; align-items: center; gap: 8px; }
+.group-name { font-weight: 600; font-size: 14px; }
+
+:deep(.el-collapse-item__header) { height: auto !important; min-height: 48px; padding: 8px 0; line-height: 1.5; }
 </style>

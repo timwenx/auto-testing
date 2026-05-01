@@ -372,7 +372,7 @@ async function loadScriptsForProject(projectId) {
     ])
     availableScripts.value = scriptsRes.data.scripts || scriptsRes.data.results || scriptsRes.data || []
     scriptFeatureGroups.value = groupsRes.data.groups || []
-    availableTestcases.value = testcasesRes.data || []
+    availableTestcases.value = testcasesRes.data.results || testcasesRes.data || []
   } catch { /* ignore */ }
 }
 
@@ -546,8 +546,9 @@ async function viewExecutionDetail(exec) {
 
 watch(showAddItem, async (val) => {
   if (val && selectedPlan.value?.project) {
-    await loadScriptsForProject(selectedPlan.value.project)
+    // 先重置表单，避免异步加载完成后覆盖用户已选择的 item_type
     addItemForm.value = { item_type: 'script', script_id: null, testcase_id: null, feature_group_name: '' }
+    await loadScriptsForProject(selectedPlan.value.project)
   }
 })
 

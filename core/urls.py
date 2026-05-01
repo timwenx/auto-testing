@@ -65,6 +65,7 @@ urlpatterns = [
     path('scripts/<int:pk>/update/', views.script_update, name='script-update'),
     path('scripts/<int:pk>/delete/', views.script_delete, name='script-delete'),
     path('scripts/convert/', views.script_convert, name='script-convert'),
+    path('scripts/batch-convert/', views.batch_convert_scripts, name='batch-convert-scripts'),
     path('scripts/<int:pk>/execute/', views.script_execute, name='script-execute'),
     path('scripts/feature-groups/', views.script_feature_groups, name='script-feature-groups'),
 

@@ -115,6 +115,8 @@ export const deletePrecondition = (id) => api.delete(`/preconditions/${id}/delet
 export const getScripts = (params) => api.get('/scripts/', { params })
 export const getScript = (id) => api.get(`/scripts/${id}/`)
 export const convertToScriptModel = (data) => aiApi.post('/scripts/convert/', data)
+export const batchConvertScripts = (projectId, featureGroup) =>
+  aiApi.post('/scripts/batch-convert/', { project_id: projectId, feature_group: featureGroup || '' })
 export const updateScript = (id, data) => api.put(`/scripts/${id}/update/`, data)
 export const deleteScript = (id) => api.delete(`/scripts/${id}/delete/`)
 export const executeScript = (id, data) => aiApi.post(`/scripts/${id}/execute/`, data || {})

@@ -67,12 +67,13 @@ class ExecutionRecordSerializer(serializers.ModelSerializer):
 class ExecutionRecordListSerializer(serializers.ModelSerializer):
     """精简版序列化器 — 用于列表接口，排除大 JSON 字段"""
     testcase_name = serializers.CharField(source='testcase.name', read_only=True, default='')
+    testcase_feature_group = serializers.CharField(source='testcase.feature_group', read_only=True, default='')
     project_name = serializers.CharField(source='project.name', read_only=True)
 
     class Meta:
         model = ExecutionRecord
         fields = [
-            'id', 'project', 'project_name', 'testcase', 'testcase_name',
+            'id', 'project', 'project_name', 'testcase', 'testcase_name', 'testcase_feature_group',
             'status', 'execution_mode', 'tool_calls_count', 'ai_model',
             'duration', 'error_message',
             'plan_execution', 'replay_script', 'source_execution',
