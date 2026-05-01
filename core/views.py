@@ -1316,6 +1316,7 @@ def batch_generate_testcases(request, project_id):
         'testcases': testcases,
         'count': len(testcases),
     })
+@api_view(['POST'])
 def batch_save_testcases(request, project_id):
     """POST /api/projects/<id>/batch-save/ — 批量保存确认后的测试用例"""
     try:

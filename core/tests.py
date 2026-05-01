@@ -3914,8 +3914,9 @@ class CliServiceTest(TestCase):
         SystemSetting.objects.create(key='analysis_engine', value='cli')
         SystemSetting.objects.create(key='anthropic_api_key', value='test-key')
 
+    @mock.patch('core.cli_service.resolve_claude_bin', side_effect=lambda x: x)
     @mock.patch('core.cli_service.subprocess.run')
-    def test_is_cli_available_success(self, mock_run):
+    def test_is_cli_available_success(self, mock_run, mock_resolve):
         """CLI detected and returns version string."""
         mock_run.return_value = mock.Mock(returncode=0, stdout='claude 1.0.0')
 
@@ -4199,8 +4200,9 @@ class CliCheckEndpointTest(TestCase):
         self.assertIsNotNone(resp.data['error'])
         self.assertEqual(resp.data['version'], '')
 
+    @mock.patch('core.cli_service.resolve_claude_bin', side_effect=lambda x: x)
     @mock.patch('core.cli_service.subprocess.run')
-    def test_cli_check_default_path(self, mock_run):
+    def test_cli_check_default_path(self, mock_run, mock_resolve):
         """CLI check uses SystemSetting default when no cli_path param."""
         SystemSetting.objects.create(key='claude_cli_path', value='my-claude')
         mock_run.return_value = mock.Mock(returncode=0, stdout='my-claude 2.0.0')
