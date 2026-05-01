@@ -35,7 +35,7 @@
         <p style="color: #909399; font-size: 13px; margin-top: 4px">
           已用时 <strong>{{ formattedElapsed }}</strong>
         </p>
-        <p style="color: #909399; font-size: 12px; margin-top: 8px">系统将通过 AI 扫描路由、页面元素和 API 参数</p>
+        <p style="color: #909399; font-size: 12px; margin-top: 8px">系统将通过 AI 识别功能模块，扫描路由、页面元素和 API 参数</p>
       </template>
 
       <!-- 卡住状态 -->
@@ -68,15 +68,39 @@
       </template>
     </el-result>
 
-    <!-- 分析完成 — 展示结果 -->
+    <!-- 分析完成 — 按功能点分组展示 -->
     <div v-else-if="analysis?.status === 'completed' && analysis.discovered_items?.length">
-      <el-tabs v-model="activeTab">
-        <el-tab-pane label="页面列表" name="pages">
-          <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
-            已选 {{ selectedPageIndices.length }} 个页面
-          </div>
+      <el-collapse v-model="expandedGroups">
+        <el-collapse-item
+          v-for="group in featureGroups"
+          :key="group.name"
+          :name="group.name"
+        >
+          <template #title>
+            <div class="group-header" @click.stop>
+              <el-checkbox
+                :model-value="getGroupCheckState(group.name)"
+                :indeterminate="getGroupCheckState(group.name) === 'indeterminate'"
+                @change="(val) => toggleGroup(group.name, val)"
+              />
+              <span class="group-name">{{ group.name }}</span>
+              <el-tag size="small" type="info" style="margin-left: 8px">
+                {{ group.items.length }} 项
+              </el-tag>
+              <span
+                v-if="group.description"
+                class="group-desc"
+              >
+                {{ group.description }}
+              </span>
+              <span class="group-selected-count">
+                {{ getGroupSelectedCount(group.name) }}/{{ group.items.length }} 已选
+              </span>
+            </div>
+          </template>
+
           <el-table
-            :data="pageItems"
+            :data="group.items"
             style="width: 100%"
             size="small"
             row-key="path"
@@ -84,7 +108,8 @@
             <el-table-column type="expand">
               <template #default="{ row }">
                 <div style="padding: 8px 16px 16px 50px">
-                  <template v-if="row.elements && row.elements.length > 0">
+                  <!-- 页面元素 -->
+                  <template v-if="row.type === 'page' && row.elements && row.elements.length > 0">
                     <div style="font-size: 13px; color: #606266; margin-bottom: 8px; font-weight: 600">
                       页面元素 ({{ row.elements.length }})
                     </div>
@@ -109,66 +134,8 @@
                       </el-table-column>
                     </el-table>
                   </template>
-                  <div v-else style="color: #c0c4cc; font-size: 13px">
-                    未提取到页面元素信息
-                  </div>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column width="40">
-              <template #header>
-                <el-checkbox v-model="selectAllPages" @change="toggleAllPages" />
-              </template>
-              <template #default="{ $index }">
-                <el-checkbox
-                  :model-value="selectedPageIndices.includes($index)"
-                  @change="(val) => toggleItem('page', $index, val)"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column prop="name" label="页面名称" min-width="140" />
-            <el-table-column prop="path" label="路径" min-width="120" />
-            <el-table-column prop="source_file" label="来源文件" min-width="140" />
-            <el-table-column label="元素" width="70" align="center">
-              <template #default="{ row }">
-                <el-tag
-                  v-if="row.elements && row.elements.length > 0"
-                  size="small"
-                  type="info"
-                >
-                  {{ row.elements.length }}
-                </el-tag>
-                <span v-else style="color: #c0c4cc">-</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="description" label="描述" min-width="180" />
-            <el-table-column label="补充描述" min-width="200">
-              <template #default="{ row }">
-                <el-input
-                  v-model="descriptions[row.path]"
-                  placeholder="可选：补充用例描述"
-                  size="small"
-                />
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-tab-pane>
-
-        <el-tab-pane label="API 列表" name="apis">
-          <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
-            已选 {{ selectedApiIndices.length }} 个 API
-          </div>
-          <el-table
-            :data="apiItems"
-            style="width: 100%"
-            size="small"
-            row-key="path"
-          >
-            <el-table-column type="expand">
-              <template #default="{ row }">
-                <div style="padding: 8px 16px 16px 50px">
-                  <!-- 请求参数 -->
-                  <template v-if="row.params && row.params.length > 0">
+                  <!-- API 请求参数 -->
+                  <template v-if="row.type === 'api' && row.params && row.params.length > 0">
                     <div style="font-size: 13px; color: #606266; margin-bottom: 8px; font-weight: 600">
                       请求参数 ({{ row.params.length }})
                     </div>
@@ -199,8 +166,8 @@
                       </el-table-column>
                     </el-table>
                   </template>
-                  <!-- 响应字段 -->
-                  <template v-if="row.response_fields && row.response_fields.length > 0">
+                  <!-- API 响应字段 -->
+                  <template v-if="row.type === 'api' && row.response_fields && row.response_fields.length > 0">
                     <div style="font-size: 13px; color: #606266; margin-bottom: 8px; font-weight: 600">
                       响应字段 ({{ row.response_fields.length }})
                     </div>
@@ -221,7 +188,13 @@
                     </el-table>
                   </template>
                   <div
-                    v-if="(!row.params || row.params.length === 0) && (!row.response_fields || row.response_fields.length === 0)"
+                    v-if="row.type === 'page' && (!row.elements || row.elements.length === 0)"
+                    style="color: #c0c4cc; font-size: 13px"
+                  >
+                    未提取到页面元素信息
+                  </div>
+                  <div
+                    v-if="row.type === 'api' && (!row.params || row.params.length === 0) && (!row.response_fields || row.response_fields.length === 0)"
                     style="color: #c0c4cc; font-size: 13px"
                   >
                     未提取到参数或响应字段信息
@@ -230,37 +203,46 @@
               </template>
             </el-table-column>
             <el-table-column width="40">
-              <template #header>
-                <el-checkbox v-model="selectAllApis" @change="toggleAllApis" />
-              </template>
-              <template #default="{ $index }">
+              <template #default="{ row }">
                 <el-checkbox
-                  :model-value="selectedApiIndices.includes($index)"
-                  @change="(val) => toggleItem('api', $index, val)"
+                  :model-value="selectedPaths.has(row.path)"
+                  @change="(val) => toggleItem(row.path, val)"
                 />
               </template>
             </el-table-column>
-            <el-table-column prop="name" label="API 名称" min-width="140" />
-            <el-table-column prop="method" label="方法" width="80">
+            <el-table-column prop="name" label="名称" min-width="140" />
+            <el-table-column label="类型" width="70" align="center">
               <template #default="{ row }">
-                <el-tag v-if="row.method" size="small" :type="methodTagType(row.method)">
+                <el-tag v-if="row.type === 'api' && row.method" size="small" :type="methodTagType(row.method)">
                   {{ row.method }}
                 </el-tag>
-                <span v-else style="color: #c0c4cc">-</span>
+                <el-tag v-else size="small" type="success">{{ row.type === 'page' ? '页面' : 'API' }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="path" label="路径" min-width="120" />
             <el-table-column prop="source_file" label="来源文件" min-width="140" />
-            <el-table-column label="参数" width="60" align="center">
+            <el-table-column label="详情" width="70" align="center">
               <template #default="{ row }">
-                <el-tag
-                  v-if="row.params && row.params.length > 0"
-                  size="small"
-                  type="info"
-                >
-                  {{ row.params.length }}
-                </el-tag>
-                <span v-else style="color: #c0c4cc">-</span>
+                <template v-if="row.type === 'page'">
+                  <el-tag
+                    v-if="row.elements && row.elements.length > 0"
+                    size="small"
+                    type="info"
+                  >
+                    {{ row.elements.length }} 元素
+                  </el-tag>
+                  <span v-else style="color: #c0c4cc">-</span>
+                </template>
+                <template v-else>
+                  <el-tag
+                    v-if="row.params && row.params.length > 0"
+                    size="small"
+                    type="info"
+                  >
+                    {{ row.params.length }} 参数
+                  </el-tag>
+                  <span v-else style="color: #c0c4cc">-</span>
+                </template>
               </template>
             </el-table-column>
             <el-table-column prop="description" label="描述" min-width="180" />
@@ -274,18 +256,23 @@
               </template>
             </el-table-column>
           </el-table>
-        </el-tab-pane>
-      </el-tabs>
+        </el-collapse-item>
+      </el-collapse>
 
       <!-- 底部汇总 -->
       <div style="margin-top: 16px; display: flex; justify-content: space-between; align-items: center">
         <span style="color: #606266">
           已选择 <strong>{{ totalSelected }}</strong> 个目标
-          （{{ selectedPageIndices.length }} 个页面 + {{ selectedApiIndices.length }} 个 API）
+          （{{ featureGroupsCount }} 个功能点内）
         </span>
-        <el-button type="primary" :disabled="totalSelected === 0" @click="handleNext">
-          下一步：生成用例
-        </el-button>
+        <div>
+          <el-button size="small" @click="toggleSelectAll">
+            {{ totalSelected === allItems.length ? '取消全选' : '全选' }}
+          </el-button>
+          <el-button type="primary" :disabled="totalSelected === 0" @click="handleNext">
+            下一步：生成用例
+          </el-button>
+        </div>
       </div>
     </div>
 
@@ -296,7 +283,7 @@
 
     <!-- 初始状态 -->
     <div v-else style="text-align: center; padding: 40px 0; color: #909399">
-      点击「开始分析」扫描仓库中的页面路由和 API 端点
+      点击「开始分析」扫描仓库中的功能模块、页面路由和 API 端点
     </div>
   </el-card>
 </template>
@@ -317,26 +304,48 @@ const analysis = ref(null)
 const analyzing = ref(false)
 const isStuck = ref(false)
 const elapsedSeconds = ref(0)
-const activeTab = ref('pages')
-const selectedPageIndices = ref([])
-const selectedApiIndices = ref([])
+const selectedPaths = ref(new Set())
 const descriptions = ref({})
-const selectAllPages = ref(false)
-const selectAllApis = ref(false)
+const expandedGroups = ref([])
 let pollTimer = null
 let pollCount = 0
 let loading = false
 const MAX_POLL_COUNT = 100 // ~5 minutes at 3s interval
 
-const pageItems = computed(() =>
-  (analysis.value?.discovered_items || []).filter(i => i.type === 'page')
+// All items flattened from analysis
+const allItems = computed(() =>
+  (analysis.value?.discovered_items || [])
 )
-const apiItems = computed(() =>
-  (analysis.value?.discovered_items || []).filter(i => i.type === 'api')
-)
-const totalSelected = computed(() =>
-  selectedPageIndices.value.length + selectedApiIndices.value.length
-)
+
+// Group items by feature_group
+const featureGroups = computed(() => {
+  const items = allItems.value
+  const groupMap = new Map()
+
+  for (const item of items) {
+    const groupName = item.feature_group || '未分组'
+    if (!groupMap.has(groupName)) {
+      groupMap.set(groupName, {
+        name: groupName,
+        description: '',
+        items: [],
+      })
+    }
+    groupMap.get(groupName).items.push(item)
+  }
+
+  const groups = Array.from(groupMap.values())
+  // Default: expand all groups
+  if (expandedGroups.value.length === 0 && groups.length > 0) {
+    expandedGroups.value = groups.map(g => g.name)
+  }
+  return groups
+})
+
+const featureGroupsCount = computed(() => featureGroups.value.length)
+
+const totalSelected = computed(() => selectedPaths.value.size)
+
 const formattedElapsed = computed(() => {
   const s = elapsedSeconds.value
   const min = Math.floor(s / 60)
@@ -471,21 +480,53 @@ function startPolling() {
   }, 3000)
 }
 
-function toggleItem(type, index, val) {
-  const arr = type === 'page' ? selectedPageIndices : selectedApiIndices
+// --- Selection logic (path-based, not index-based) ---
+
+function toggleItem(path, val) {
+  const newSet = new Set(selectedPaths.value)
   if (val) {
-    if (!arr.value.includes(index)) arr.value.push(index)
+    newSet.add(path)
   } else {
-    arr.value = arr.value.filter(i => i !== index)
+    newSet.delete(path)
   }
+  selectedPaths.value = newSet
 }
 
-function toggleAllPages(val) {
-  selectedPageIndices.value = val ? pageItems.value.map((_, i) => i) : []
+function getGroupSelectedCount(groupName) {
+  const group = featureGroups.value.find(g => g.name === groupName)
+  if (!group) return 0
+  return group.items.filter(item => selectedPaths.value.has(item.path)).length
 }
 
-function toggleAllApis(val) {
-  selectedApiIndices.value = val ? apiItems.value.map((_, i) => i) : []
+function getGroupCheckState(groupName) {
+  const group = featureGroups.value.find(g => g.name === groupName)
+  if (!group || group.items.length === 0) return false
+  const selectedCount = getGroupSelectedCount(groupName)
+  if (selectedCount === 0) return false
+  if (selectedCount === group.items.length) return true
+  return 'indeterminate'
+}
+
+function toggleGroup(groupName, val) {
+  const group = featureGroups.value.find(g => g.name === groupName)
+  if (!group) return
+  const newSet = new Set(selectedPaths.value)
+  for (const item of group.items) {
+    if (val) {
+      newSet.add(item.path)
+    } else {
+      newSet.delete(item.path)
+    }
+  }
+  selectedPaths.value = newSet
+}
+
+function toggleSelectAll() {
+  if (totalSelected.value === allItems.value.length) {
+    selectedPaths.value = new Set()
+  } else {
+    selectedPaths.value = new Set(allItems.value.map(item => item.path))
+  }
 }
 
 function methodTagType(method) {
@@ -512,6 +553,8 @@ async function handleResetAndRetry() {
     analysis.value = null
     isStuck.value = false
     elapsedSeconds.value = 0
+    selectedPaths.value = new Set()
+    descriptions.value = {}
     ElMessage.success('已重置，请重新开始分析')
   } catch (e) {
     ElMessage.error('重置失败: ' + (e.response?.data?.error || e.message))
@@ -519,9 +562,7 @@ async function handleResetAndRetry() {
 }
 
 function handleNext() {
-  const selected = []
-  selectedPageIndices.value.forEach(i => selected.push(pageItems.value[i]))
-  selectedApiIndices.value.forEach(i => selected.push(apiItems.value[i]))
+  const selected = allItems.value.filter(item => selectedPaths.value.has(item.path))
   emit('items-selected', selected, { ...descriptions.value })
 }
 </script>
@@ -531,5 +572,28 @@ function handleNext() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.group-header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 4px;
+}
+.group-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+  margin-left: 4px;
+}
+.group-desc {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 12px;
+}
+.group-selected-count {
+  color: #909399;
+  font-size: 12px;
+  margin-left: auto;
+  margin-right: 8px;
 }
 </style>

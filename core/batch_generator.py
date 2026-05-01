@@ -97,6 +97,7 @@ def _generate_batch(project, items, user_descriptions, precondition_template, te
         name = item.get('name', '')
         auto_desc = item.get('description', '')
         source_file = item.get('source_file', '')
+        feature_group = item.get('feature_group', '')
         elements = item.get('elements', [])
         params = item.get('params', [])
         response_fields = item.get('response_fields', [])
@@ -106,6 +107,8 @@ def _generate_batch(project, items, user_descriptions, precondition_template, te
         desc = f"### 目标: {name}\n"
         desc += f"- 类型: {'页面' if item_type == 'page' else 'API'}\n"
         desc += f"- 路径: {path}\n"
+        if feature_group:
+            desc += f"- 所属功能: {feature_group}\n"
         if method:
             desc += f"- 方法: {method}\n"
         if source_file:
