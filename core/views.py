@@ -1402,6 +1402,7 @@ def batch_save_testcases(request, project_id):
                 target_page_or_api=item.get('target_page_or_api', ''),
                 feature_group=item.get('feature_group', ''),
                 sort_order=item.get('sort_order', idx),
+                test_context=item.get('test_context', {}),
                 status='draft',
                 is_ai_generated=True,
                 created_by='claude_cli',

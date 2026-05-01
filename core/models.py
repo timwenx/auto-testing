@@ -91,6 +91,14 @@ class TestCase(models.Model):
         '对话历史', default=list, blank=True,
         help_text='Agent 多轮对话的消息记录'
     )
+    test_context = models.JSONField(
+        '测试上下文', default=dict, blank=True,
+        help_text=(
+            '代码分析提取的丰富上下文信息，用于 Agent 执行时直接引用。'
+            '页面类型: {context_type, path, source_file, elements: [{selector, type, label}]}。'
+            'API类型: {context_type, path, method, source_file, params: [...], response_fields: [...]}'
+        ),
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -274,7 +282,11 @@ class RepoAnalysis(models.Model):
     local_repo_path = models.CharField('本地仓库路径', max_length=500, blank=True, default='')
     discovered_items = models.JSONField(
         '发现列表', default=list, blank=True,
-        help_text='分析发现的页面和 API 列表，结构为 [{type, path, name, method, description, source_file}]',
+        help_text=(
+            '分析发现的页面和 API 列表。'
+            '页面: [{type:"page", path, name, description, source_file, elements: [{selector, type, label, description}]}]。'
+            'API: [{type:"api", path, method, name, description, source_file, params: [{name, in, type, required, description}], response_fields: [{name, type, description}]}]'
+        ),
     )
     analysis_log = models.TextField('分析日志', blank=True, default='')
     started_at = models.DateTimeField('开始分析时间', null=True, blank=True)
