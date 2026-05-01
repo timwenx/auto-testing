@@ -371,7 +371,11 @@ def _parse_analysis_response(raw_text: str) -> list:
             # 最后尝试提取花括号
             match = re.search(r'\{[\s\S]*\}', raw_text)
             if match:
-                data = json.loads(match.group())
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    logger.error("[RepoAnalyzer] Cannot parse response as JSON: %s", raw_text[:500])
+                    return []
             else:
                 logger.error("[RepoAnalyzer] Cannot parse response as JSON: %s", raw_text[:500])
                 return []
