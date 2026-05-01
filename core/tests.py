@@ -2712,3 +2712,281 @@ class BatchGeneratorEdgeCaseTest(TestCase):
                 'Test description',
             )
             self.assertEqual(result, {})
+
+
+# ══════════════════════════════════════════════════════════════════
+# 功能点分组 + 排序测试
+# ══════════════════════════════════════════════════════════════════
+
+class FeatureGroupModelTest(TestCase):
+    """TestCase 的 feature_group 和 sort_order 字段默认值及排序"""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='FG Project', base_url='https://example.com')
+
+    def test_default_values(self):
+        tc = TC_Model.objects.create(
+            project=self.project,
+            name='TC1', steps='s1', expected_result='ok',
+        )
+        self.assertEqual(tc.feature_group, '')
+        self.assertEqual(tc.sort_order, 0)
+
+    def test_ordering_by_feature_group_and_sort_order(self):
+        """查询结果按 feature_group, sort_order, -updated_at 排序"""
+        tc_b2 = TC_Model.objects.create(
+            project=self.project, name='B-2', steps='s', expected_result='ok',
+            feature_group='B组', sort_order=2,
+        )
+        tc_a1 = TC_Model.objects.create(
+            project=self.project, name='A-1', steps='s', expected_result='ok',
+            feature_group='A组', sort_order=1,
+        )
+        tc_a2 = TC_Model.objects.create(
+            project=self.project, name='A-2', steps='s', expected_result='ok',
+            feature_group='A组', sort_order=2,
+        )
+        tc_none = TC_Model.objects.create(
+            project=self.project, name='None', steps='s', expected_result='ok',
+            feature_group='', sort_order=0,
+        )
+        tcs = list(TC_Model.objects.all())
+        # 空 feature_group 排最前
+        self.assertEqual(tcs[0].name, 'None')
+        # A 组按 sort_order 排列
+        self.assertEqual(tcs[1].name, 'A-1')
+        self.assertEqual(tcs[2].name, 'A-2')
+        # B 组
+        self.assertEqual(tcs[3].name, 'B-2')
+
+    def test_serializer_includes_new_fields(self):
+        tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='ok',
+            feature_group='登录', sort_order=5,
+        )
+        from .serializers import TestCaseSerializer
+        data = TestCaseSerializer(tc).data
+        self.assertEqual(data['feature_group'], '登录')
+        self.assertEqual(data['sort_order'], 5)
+
+
+class FeatureGroupSerializerTest(TestCase):
+    """TestCaseReorderSerializer 校验"""
+
+    def test_valid_reorder_data(self):
+        from .serializers import TestCaseReorderSerializer
+        s = TestCaseReorderSerializer(data={
+            'orders': [
+                {'id': 1, 'feature_group': '登录', 'sort_order': 1},
+                {'id': 2, 'feature_group': '登录', 'sort_order': 2},
+            ]
+        })
+        self.assertTrue(s.is_valid())
+        self.assertEqual(len(s.validated_data['orders']), 2)
+
+    def test_missing_orders_returns_error(self):
+        from .serializers import TestCaseReorderSerializer
+        s = TestCaseReorderSerializer(data={})
+        self.assertFalse(s.is_valid())
+        self.assertIn('orders', s.errors)
+
+    def test_defaults_for_optional_fields(self):
+        from .serializers import TestCaseReorderSerializer
+        s = TestCaseReorderSerializer(data={
+            'orders': [{'id': 5}]
+        })
+        self.assertTrue(s.is_valid())
+        item = s.validated_data['orders'][0]
+        self.assertEqual(item['feature_group'], '')
+        self.assertEqual(item['sort_order'], 0)
+
+
+class ReorderAPITest(TestCase):
+    """POST /api/projects/<id>/testcases/reorder/ 测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='Reorder Project', base_url='https://example.com')
+        self.tc1 = TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            feature_group='', sort_order=0,
+        )
+        self.tc2 = TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            feature_group='', sort_order=0,
+        )
+
+    def test_reorder_success(self):
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/testcases/reorder/',
+            {
+                'orders': [
+                    {'id': self.tc1.id, 'feature_group': '登录', 'sort_order': 1},
+                    {'id': self.tc2.id, 'feature_group': '登录', 'sort_order': 2},
+                ]
+            },
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['updated'], 2)
+        self.tc1.refresh_from_db()
+        self.tc2.refresh_from_db()
+        self.assertEqual(self.tc1.feature_group, '登录')
+        self.assertEqual(self.tc1.sort_order, 1)
+        self.assertEqual(self.tc2.feature_group, '登录')
+        self.assertEqual(self.tc2.sort_order, 2)
+
+    def test_reorder_project_not_found(self):
+        resp = self.client.post(
+            '/api/projects/99999/testcases/reorder/',
+            {'orders': [{'id': 1, 'feature_group': 'X', 'sort_order': 1}]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_reorder_empty_orders(self):
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/testcases/reorder/',
+            {'orders': []},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reorder_wrong_project_testcase(self):
+        """不能修改其他项目的用例"""
+        other_project = Project.objects.create(name='Other', base_url='https://other.com')
+        other_tc = TC_Model.objects.create(
+            project=other_project, name='OtherTC', steps='s', expected_result='ok',
+        )
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/testcases/reorder/',
+            {'orders': [{'id': other_tc.id, 'feature_group': 'X', 'sort_order': 1}]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reorder_atomic_transaction(self):
+        """排序操作是原子的 — 部分失败不应修改任何记录"""
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/testcases/reorder/',
+            {'orders': [
+                {'id': self.tc1.id, 'feature_group': 'A', 'sort_order': 1},
+                {'id': 99999, 'feature_group': 'B', 'sort_order': 2},  # 不存在的 ID
+            ]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.tc1.refresh_from_db()
+        self.assertEqual(self.tc1.feature_group, '')  # 未被修改
+
+
+class FeatureGroupsAPITest(TestCase):
+    """GET /api/projects/<id>/feature-groups/ 测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='FG Project', base_url='https://example.com')
+
+    def test_returns_grouped_counts(self):
+        TC_Model.objects.create(project=self.project, name='TC1', steps='s', expected_result='ok',
+                                feature_group='登录', sort_order=1)
+        TC_Model.objects.create(project=self.project, name='TC2', steps='s', expected_result='ok',
+                                feature_group='登录', sort_order=2)
+        TC_Model.objects.create(project=self.project, name='TC3', steps='s', expected_result='ok',
+                                feature_group='订单', sort_order=1)
+        TC_Model.objects.create(project=self.project, name='TC4', steps='s', expected_result='ok',
+                                feature_group='', sort_order=0)
+
+        resp = self.client.get(f'/api/projects/{self.project.id}/feature-groups/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        groups = resp.data['groups']
+        # 3 groups: 未分组, 登录, 订单
+        self.assertEqual(len(groups), 3)
+        group_map = {g['name']: g['count'] for g in groups}
+        self.assertEqual(group_map['登录'], 2)
+        self.assertEqual(group_map['订单'], 1)
+        self.assertEqual(group_map['未分组'], 1)
+
+    def test_empty_project(self):
+        resp = self.client.get(f'/api/projects/{self.project.id}/feature-groups/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['groups'], [])
+
+    def test_project_not_found(self):
+        resp = self.client.get('/api/projects/99999/feature-groups/')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ExecuteProjectOrderingTest(TestCase):
+    """验证 execute_project_agent 按 feature_group + sort_order 顺序提交任务"""
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='test-model')
+    def test_execution_order_respects_sort(self, mock_model, mock_submit):
+        """批量执行按 feature_group + sort_order 排序提交"""
+        project = Project.objects.create(name='Exec Order', base_url='https://example.com')
+        # 按非排序顺序创建
+        tc_b = TC_Model.objects.create(
+            project=project, name='B', steps='s', expected_result='ok',
+            status='ready', feature_group='B组', sort_order=1,
+        )
+        tc_a = TC_Model.objects.create(
+            project=project, name='A', steps='s', expected_result='ok',
+            status='ready', feature_group='A组', sort_order=1,
+        )
+        tc_a2 = TC_Model.objects.create(
+            project=project, name='A2', steps='s', expected_result='ok',
+            status='ready', feature_group='A组', sort_order=2,
+        )
+
+        resp = self.client.post(f'/api/projects/{project.id}/execute-agent/', format='json')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        # 提交了 3 个任务
+        self.assertEqual(mock_submit.call_count, 3)
+        # 检查提交顺序: A组(sort_order=1), A组(sort_order=2), B组(sort_order=1)
+        records = list(ExecutionRecord.objects.order_by('id'))
+        self.assertEqual(records[0].testcase_id, tc_a.id)
+        self.assertEqual(records[1].testcase_id, tc_a2.id)
+        self.assertEqual(records[2].testcase_id, tc_b.id)
+
+
+class BatchSaveFeatureGroupTest(TestCase):
+    """验证 batch_save_testcases 正确保存 feature_group 和 sort_order"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='Batch FG', base_url='https://example.com')
+
+    def test_saves_feature_group_and_sort_order(self):
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/',
+            {'testcases': [
+                {'name': 'TC1', 'steps': 's', 'expected_result': 'ok',
+                 'feature_group': '登录', 'sort_order': 1},
+                {'name': 'TC2', 'steps': 's', 'expected_result': 'ok',
+                 'feature_group': '订单', 'sort_order': 2},
+            ]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        tcs = list(TC_Model.objects.order_by('id'))
+        self.assertEqual(tcs[0].feature_group, '登录')
+        self.assertEqual(tcs[0].sort_order, 1)
+        self.assertEqual(tcs[1].feature_group, '订单')
+        self.assertEqual(tcs[1].sort_order, 2)
+
+    def test_default_sort_order_is_index(self):
+        """未提供 sort_order 时使用数组下标"""
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/',
+            {'testcases': [
+                {'name': 'TC1', 'steps': 's', 'expected_result': 'ok', 'feature_group': 'A'},
+                {'name': 'TC2', 'steps': 's', 'expected_result': 'ok', 'feature_group': 'B'},
+                {'name': 'TC3', 'steps': 's', 'expected_result': 'ok', 'feature_group': 'C'},
+            ]},
+            format='json',
+        )
+        tcs = list(TC_Model.objects.order_by('id'))
+        self.assertEqual(tcs[0].sort_order, 1)
+        self.assertEqual(tcs[1].sort_order, 2)
+        self.assertEqual(tcs[2].sort_order, 3)

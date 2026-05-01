@@ -32,12 +32,13 @@ BATCH_GENERATE_SYSTEM_PROMPT = """你是一个专业的 QA 测试工程师。你
   "expected_result": "预期结果",
   "priority": "P0 或 P1 或 P2",
   "test_type": "功能/边界/异常/安全",
+  "feature_group": "所属功能模块（根据测试目标自动归类，如「用户登录」「订单管理」，相同功能用相同名称）",
   "markdown_content": "完整的 Markdown 测试用例文档",
   "target_page_or_api": "对应的页面路径或 API 端点",
   "source_item": "来源目标名称（便于追踪）"
 }
 
-只返回 JSON 数组，不要其他文字。"""
+按功能点聚合输出，同一功能点内的用例按执行顺序排列。只返回 JSON 数组，不要其他文字。"""
 
 # 单次生成的最大目标数（避免超 token）
 MAX_ITEMS_PER_BATCH = 15
