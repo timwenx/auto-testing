@@ -9,7 +9,11 @@
       </div>
     </template>
 
-    <el-radio-group v-model="selectedId" style="width: 100%">
+    <div v-if="loading" style="text-align: center; padding: 20px 0">
+      <el-icon class="is-loading" style="font-size: 24px; color: #409eff"><Loading /></el-icon>
+      <p style="margin-top: 8px; color: #909399">加载中...</p>
+    </div>
+    <el-radio-group v-else v-model="selectedId" style="width: 100%">
       <div class="precondition-list">
         <el-radio :value="null" style="margin-bottom: 8px">无前置条件</el-radio>
         <div v-for="tpl in preconditions" :key="tpl.id" style="margin-bottom: 8px">
@@ -46,8 +50,7 @@
       </div>
     </el-radio-group>
 
-    <el-empty v-if="loading" description="加载中..." :image-size="60" />
-    <el-empty v-else-if="!preconditions.length" description="暂无模板" :image-size="60" />
+    <el-empty v-if="!loading && !preconditions.length" description="暂无模板" :image-size="60" />
 
     <!-- 创建模板对话框 -->
     <el-dialog v-model="showCreateDialog" title="创建前置条件模板" width="500px">

@@ -1058,8 +1058,6 @@ def update_replay_script(request, pk):
     if not record.replay_script:
         return Response({'error': '尚未生成回放脚本'}, status=status.HTTP_404_NOT_FOUND)
 
-    data = request.data
-
     if not isinstance(data, dict):
         return Response({'error': '无效的脚本数据'}, status=status.HTTP_400_BAD_REQUEST)
 

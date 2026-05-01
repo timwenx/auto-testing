@@ -49,14 +49,14 @@
     <div v-else-if="analysis?.status === 'completed' && analysis.discovered_items?.length">
       <el-tabs v-model="activeTab">
         <el-tab-pane label="页面列表" name="pages">
-          <div style="margin-bottom: 12px">
-            <el-checkbox v-model="selectAllPages" @change="toggleAllPages">全选页面</el-checkbox>
-            <span style="margin-left: 12px; color: #909399; font-size: 13px">
-              已选 {{ selectedPageIndices.length }} 个页面
-            </span>
+          <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
+            已选 {{ selectedPageIndices.length }} 个页面
           </div>
           <el-table :data="pageItems" style="width: 100%" size="small">
-            <el-table-column type="selection" width="40" :selectable="() => true">
+            <el-table-column width="40">
+              <template #header>
+                <el-checkbox v-model="selectAllPages" @change="toggleAllPages" />
+              </template>
               <template #default="{ $index }">
                 <el-checkbox
                   :model-value="selectedPageIndices.includes($index)"
@@ -81,14 +81,14 @@
         </el-tab-pane>
 
         <el-tab-pane label="API 列表" name="apis">
-          <div style="margin-bottom: 12px">
-            <el-checkbox v-model="selectAllApis" @change="toggleAllApis">全选 API</el-checkbox>
-            <span style="margin-left: 12px; color: #909399; font-size: 13px">
-              已选 {{ selectedApiIndices.length }} 个 API
-            </span>
+          <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
+            已选 {{ selectedApiIndices.length }} 个 API
           </div>
           <el-table :data="apiItems" style="width: 100%" size="small">
-            <el-table-column type="selection" width="40" :selectable="() => true">
+            <el-table-column width="40">
+              <template #header>
+                <el-checkbox v-model="selectAllApis" @change="toggleAllApis" />
+              </template>
               <template #default="{ $index }">
                 <el-checkbox
                   :model-value="selectedApiIndices.includes($index)"
