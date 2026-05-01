@@ -32,10 +32,14 @@ export const getProjectTestCases = (projectId) => api.get(`/projects/${projectId
 export const getExecutions = (params) => api.get('/executions/', { params })
 export const getExecution = (id) => api.get(`/executions/${id}/`)
 export const getExecutionSteps = (id) => api.get(`/executions/${id}/steps/`)
-export const executeTestCase = (testcaseId) => api.post(`/testcases/${testcaseId}/execute/`)
-export const executeProject = (projectId) => api.post(`/projects/${projectId}/execute-all/`)
 export const executeTestCaseAgent = (testcaseId) => aiApi.post(`/testcases/${testcaseId}/execute-agent/`)
 export const executeProjectAgent = (projectId) => aiApi.post(`/projects/${projectId}/execute-agent/`)
+
+// ─── 脚本回放 ───
+export const convertToScript = (id) => aiApi.post(`/executions/${id}/convert-script/`)
+export const getReplayScript = (id) => api.get(`/executions/${id}/replay-script/`)
+export const updateReplayScript = (id, data) => api.put(`/executions/${id}/replay-script/update/`, data)
+export const replayExecute = (id, overrides) => aiApi.post(`/executions/${id}/replay-execute/`, overrides || {})
 
 // ─── AI ───
 export const getAIConversations = (params) => api.get('/ai/conversations/', { params })

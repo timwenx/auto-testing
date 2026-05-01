@@ -6,6 +6,7 @@
         <template #content>
           <span class="header-title">{{ replayMode ? '执行回放' : '执行观察面板' }}</span>
           <el-tag :type="statusTagType" size="small" class="header-status">{{ statusLabel }}</el-tag>
+          <el-tag v-if="executionInfo?.execution_mode === 'replay'" size="small" type="success" class="header-status">脚本回放</el-tag>
         </template>
       </el-page-header>
       <div class="header-actions">
@@ -35,17 +36,19 @@
     <!-- 实时模式 -->
     <div v-else class="observer-body">
       <!-- 左侧：浏览器截图流 / 历史截图画廊 -->
-      <div class="observer-left" :class="{ 'pip-hidden': pipMode }">
+      <div class="observer-left" :class="{ 'pip-hidden': pipMode && !fullscreenMode, 'fullscreen-left': fullscreenMode }">
         <!-- 已完成执行：展示截图画廊 -->
         <div v-if="isTerminalStatus" class="completed-view">
           <BrowserView
             :frame-src="currentFrame"
             :execution-status="executionInfo?.status || 'idle'"
             :pip="pipMode"
+            :fullscreen="fullscreenMode"
             @refresh="connect"
             @toggle-pip="pipMode = !pipMode"
+            @toggle-fullscreen="toggleFullscreen"
           />
-          <div v-if="screenshots.length > 0" class="gallery-section">
+          <div v-if="screenshots.length > 0 && !fullscreenMode" class="gallery-section">
             <ScreenshotGallery :screenshots="screenshots" :show-title="true" />
           </div>
         </div>
@@ -56,8 +59,10 @@
           :execution-status="status === 'running' ? 'running' : (executionInfo?.status || 'idle')"
           :phase="currentPhase"
           :pip="pipMode"
+          :fullscreen="fullscreenMode"
           @refresh="connect"
           @toggle-pip="pipMode = !pipMode"
+          @toggle-fullscreen="toggleFullscreen"
         />
       </div>
 
@@ -101,7 +106,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getExecution, getExecutionSteps } from '../api'
 import { useExecutionObserver } from '../composables/useExecutionObserver'
@@ -154,6 +159,7 @@ const { currentFrame, updateFrame, showLatestStepScreenshot, connectFrame, disco
 // 选中步骤
 const selectedStepIdx = ref(-1)
 const pipMode = ref(false)
+const fullscreenMode = ref(false)
 const lastRestepCount = ref(0) // 追踪上次 REST 回填的步骤数
 const selectedStep = computed(() => {
   if (selectedStepIdx.value >= 0 && selectedStepIdx.value < steps.value.length) {
@@ -182,6 +188,16 @@ function getStatusType(s) {
 
 function handleStepSelect(idx, step) {
   selectedStepIdx.value = selectedStepIdx.value === idx ? -1 : idx
+}
+
+function toggleFullscreen() {
+  fullscreenMode.value = !fullscreenMode.value
+}
+
+function handleKeydown(e) {
+  if (e.key === 'Escape' && fullscreenMode.value) {
+    fullscreenMode.value = false
+  }
 }
 
 // 监听步骤变化，自动更新截图（一个步骤一张截图）
@@ -255,6 +271,7 @@ watch(status, async (newStatus, oldStatus) => {
 
 // 初始化
 onMounted(async () => {
+  window.addEventListener('keydown', handleKeydown)
   try {
     // 获取执行记录基本信息
     const { data } = await getExecution(executionId.value)
@@ -284,6 +301,10 @@ onMounted(async () => {
   await _loadStepData()
   showLatestStepScreenshot(steps.value)
   connect()        // 步骤事件通道（截图通过 step_complete 的 screenshot_path 传递）
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
 })
 
 /**
@@ -396,6 +417,17 @@ async function _loadStepData() {
   min-width: 0;
   border-right: none;
   overflow: hidden;
+}
+
+.observer-left.fullscreen-left {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 9999;
+  background: #000;
+  border-right: none;
 }
 
 .observer-right {

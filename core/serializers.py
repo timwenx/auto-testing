@@ -55,7 +55,7 @@ class ExecutionRecordSerializer(serializers.ModelSerializer):
             'status', 'execution_mode', 'tool_calls_count', 'ai_model',
             'log', 'screenshot_path', 'duration',
             'error_message', 'screenshots', 'step_logs', 'agent_response',
-            'created_at',
+            'replay_script', 'source_execution', 'created_at',
         ]
 
 
@@ -148,8 +148,3 @@ class AgentConfirmRequestSerializer(serializers.Serializer):
 class AgentExecuteRequestSerializer(serializers.Serializer):
     """Agent 执行用例请求"""
     testcase_id = serializers.IntegerField(help_text='要执行的测试用例 ID')
-    execution_mode = serializers.ChoiceField(
-        choices=['script', 'agent'],
-        required=False,
-        help_text='执行模式（可选，默认读取系统设置 default_execution_mode）'
-    )

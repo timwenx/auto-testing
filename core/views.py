@@ -71,10 +71,25 @@ def _save_agent_result(record, result):
     step_logs 和 tool_calls_count 已通过 AgentRunner._persist_step() 实时写入，
     此处只更新最终状态、耗时、日志等字段。
     """
-    # step_logs 已通过 AgentRunner._persist_step() 实时写入 DB（tool_calls_count 也已更新）；
-    # 但仍在此处兜底写入，以兼容直接调用 _save_agent_result 的场景（如单元测试、script 模式）。
-    if result.get('step_logs'):
-        record.step_logs = result['step_logs']
+    # step_logs 已通过 AgentRunner._persist_step() 实时写入 DB（含 screenshot_path）；
+    # _build_step_logs 重建的 step_logs 缺少 auto-screenshot 路径，
+    # 因此合并：用 DB 中已有的 screenshot_path 补充到 result 的 step_logs 中。
+    result_step_logs = result.get('step_logs', [])
+    if result_step_logs:
+        existing_logs = list(record.step_logs or [])
+        if existing_logs:
+            # 按 step_num 建立 screenshot_path 映射
+            sp_map = {}
+            for s in existing_logs:
+                if isinstance(s, dict) and s.get('screenshot_path'):
+                    sp_map[s.get('step_num')] = s['screenshot_path']
+            # 将 DB 中已有的 screenshot_path 回填到 result step_logs
+            for s in result_step_logs:
+                if isinstance(s, dict) and not s.get('screenshot_path'):
+                    sp = sp_map.get(s.get('step_num'), '')
+                    if sp:
+                        s['screenshot_path'] = sp
+        record.step_logs = result_step_logs
 
     # tool_calls_count 兜底：若 _persist_step 已设置则保留，否则从 step_logs / script 推断。
     if record.tool_calls_count == 0:
@@ -88,7 +103,12 @@ def _save_agent_result(record, result):
         record.tool_calls_count = count
 
     record.status = result['status']
-    record.log = result['log']
+    # 将 tool_calls JSON 追加到 log 末尾，确保脚本转换能获取完整输入参数
+    log_text = result.get('log', '')
+    script_json = result.get('script', '')
+    if script_json:
+        log_text += '\n\n=== TOOL_CALLS_JSON ===\n' + script_json
+    record.log = log_text
     record.error_message = result['error_message']
     record.duration = result['duration']
     record.screenshots = result.get('screenshots', [])
@@ -111,15 +131,6 @@ def _save_agent_result(record, result):
         })
     except Exception as e:
         logger.warning("[Views] 兜底 execution_end 推送失败: %s", e)
-
-
-def _save_script_result(record, result):
-    """将 Script 执行结果保存到 ExecutionRecord"""
-    record.status = result['status']
-    record.log = result['log']
-    record.error_message = result['error_message']
-    record.duration = result['duration']
-    record.save()
 
 
 def _submit_agent_task(task_fn):
@@ -188,6 +199,12 @@ class ExecutionRecordListView(generics.ListAPIView):
         testcase_id = self.request.query_params.get('testcase')
         if testcase_id:
             qs = qs.filter(testcase_id=testcase_id)
+        has_script = self.request.query_params.get('has_replay_script')
+        if has_script:
+            qs = qs.exclude(replay_script__isnull=True).exclude(replay_script='')
+        source_exec = self.request.query_params.get('source_execution')
+        if source_exec:
+            qs = qs.filter(source_execution_id=source_exec)
         return qs
 
 
@@ -281,10 +298,16 @@ def serve_screenshot(request):
     
     allowed_prefixes_real = [os.path.realpath(p) for p in allowed_prefixes]
     
-    path_allowed = (
-        any(abs_path.startswith(prefix + '/') or abs_path == prefix for prefix in allowed_prefixes) or
-        any(abs_path_real.startswith(prefix + '/') or abs_path_real == prefix for prefix in allowed_prefixes_real)
-    )
+    path_allowed = False
+    for pfx in set(allowed_prefixes + allowed_prefixes_real):
+        # 规范化路径分隔符，兼容 Windows 反斜杠
+        norm_prefix = os.path.normpath(pfx)
+        if (os.path.normpath(abs_path).startswith(norm_prefix + os.sep) or
+                os.path.normpath(abs_path) == norm_prefix or
+                os.path.normpath(abs_path_real).startswith(norm_prefix + os.sep) or
+                os.path.normpath(abs_path_real) == norm_prefix):
+            path_allowed = True
+            break
     
     if not path_allowed:
         logger.warning(
@@ -306,14 +329,21 @@ def serve_screenshot(request):
         从路径中解析 execution_id。
         新路径格式: {execution_id}/xxx.png
         旧路径格式: screenshots/{project_id}/{execution_id}/xxx.png
+        同时支持 / 和 \ 分隔符（Windows 兼容）。
         """
         import re
+        # 统一分隔符以便 regex 匹配
+        norm_path = path.replace('\\', '/')
         # 新格式: "24/auto_123456.jpg"
-        m = re.match(r'^(\d+)/', path)
+        m = re.match(r'^(\d+)/', norm_path)
         if m:
             return int(m.group(1))
         # 旧格式: "screenshots/2/18/step_1.png"
-        m = re.match(r'^screenshots/\d+/(\d+)/', path)
+        m = re.match(r'^screenshots/\d+/(\d+)/', norm_path)
+        if m:
+            return int(m.group(1))
+        # 绝对路径：尝试从尾部匹配 .../{execution_id}/xxx.png
+        m = re.search(r'[\\/]((\d)+)[\\/][^\\/]+\.\w+$', path)
         if m:
             return int(m.group(1))
         return None
@@ -388,89 +418,6 @@ def serve_screenshot(request):
     except IOError as e:
         logger.error("Failed to read screenshot file: %s", e)
         raise Http404("无法读取截图文件")
-
-
-@api_view(['POST'])
-def execute_testcase(request, testcase_id):
-    """执行单个测试用例"""
-    try:
-        testcase = TestCase.objects.select_related('project').get(pk=testcase_id)
-    except TestCase.DoesNotExist:
-        return Response({'error': '测试用例不存在'}, status=status.HTTP_404_NOT_FOUND)
-
-    base_url = testcase.project.base_url
-    if not base_url:
-        return Response(
-            {'error': '请先在项目中配置测试目标 URL'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # 创建执行记录
-    record = ExecutionRecord.objects.create(
-        project=testcase.project,
-        testcase=testcase,
-        status='running',
-    )
-    testcase.status = 'running'
-    testcase.save(update_fields=['status'])
-
-    # 异步执行
-    def _on_complete(tc, result):
-        _save_script_result(record, result)
-        tc.status = result['status']
-        tc.save(update_fields=['status'])
-
-    execution_engine.execute_testcase_async(testcase, base_url, callback=_on_complete)
-
-    return Response(
-        ExecutionRecordSerializer(record).data,
-        status=status.HTTP_202_ACCEPTED,
-    )
-
-
-@api_view(['POST'])
-def execute_project(request, project_id):
-    """批量执行项目下所有就绪/草稿测试用例"""
-    try:
-        project = Project.objects.get(pk=project_id)
-    except Project.DoesNotExist:
-        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
-
-    if not project.base_url:
-        return Response(
-            {'error': '请先在项目中配置测试目标 URL'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    testcases = project.testcases.filter(status__in=['draft', 'ready'])
-    if not testcases.exists():
-        return Response(
-            {'error': '没有可执行的测试用例'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    records = []
-    for tc in testcases:
-        record = ExecutionRecord.objects.create(
-            project=project, testcase=tc, status='running',
-        )
-        tc.status = 'running'
-        tc.save(update_fields=['status'])
-
-        def _make_callback(r, t):
-            def _on_complete(_tc, result):
-                _save_script_result(r, result)
-                t.status = result['status']
-                t.save(update_fields=['status'])
-            return _on_complete
-
-        execution_engine.execute_testcase_async(tc, project.base_url, callback=_make_callback(record, tc))
-        records.append(record)
-
-    return Response(
-        ExecutionRecordSerializer(records, many=True).data,
-        status=status.HTTP_202_ACCEPTED,
-    )
 
 
 @api_view(['POST'])
@@ -920,16 +867,12 @@ def agent_confirm(request):
 def agent_execute(request):
     """
     POST /api/agent/execute
-    执行单个测试用例。支持 script/agent 两种模式。
-    若请求中未指定 execution_mode，则使用系统设置 default_execution_mode。
+    使用 Agent 模式执行单个测试用例。
     """
     serializer = AgentExecuteRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
     testcase_id = serializer.validated_data['testcase_id']
-    execution_mode = serializer.validated_data.get('execution_mode')
-    if not execution_mode:
-        execution_mode = SystemSetting.get('default_execution_mode', 'script').strip().lower()
 
     try:
         testcase = TestCase.objects.select_related('project').get(pk=testcase_id)
@@ -948,38 +891,27 @@ def agent_execute(request):
         project=testcase.project,
         testcase=testcase,
         status='running',
-        execution_mode=execution_mode,
+        execution_mode='agent',
         ai_model=_get_ai_model(),
     )
     testcase.status = 'running'
     testcase.save(update_fields=['status'])
 
-    # ── Agent 模式 ──
-    if execution_mode == 'agent':
-        def _agent_task():
-            result = execution_engine.execute_testcase_with_agent(testcase, base_url, execution_id=record.pk)
-            _save_agent_result(record, result)
-            testcase.status = result['status']
-            testcase.save(update_fields=['status'])
-            return result
+    def _agent_task():
+        result = execution_engine.execute_testcase_with_agent(testcase, base_url, execution_id=record.pk)
+        _save_agent_result(record, result)
+        testcase.status = result['status']
+        testcase.save(update_fields=['status'])
+        return result
 
-        _submit_agent_task(_agent_task)
-
-    # ── Script 模式 ──
-    else:
-        def _on_complete_script(tc, result):
-            _save_script_result(record, result)
-            tc.status = result['status']
-            tc.save(update_fields=['status'])
-
-        execution_engine.execute_testcase_async(testcase, base_url, callback=_on_complete_script)
+    _submit_agent_task(_agent_task)
 
     return Response({
         'test_run_id': record.id,
         'testcase_id': testcase.id,
         'status': 'running',
-        'execution_mode': execution_mode,
-        'message': f'{"Agent" if execution_mode == "agent" else "Script"} 执行已提交',
+        'execution_mode': 'agent',
+        'message': 'Agent 执行已提交',
     }, status=status.HTTP_202_ACCEPTED)
 
 
@@ -1057,3 +989,123 @@ def system_stats(request):
             ExecutionRecord.objects.values_list('status').annotate(c=Count('id')).values_list('status', 'c')
         ),
     })
+
+
+# ══════════════════════════════════════════════════════════════════
+# 脚本回放：转换 / 获取 / 更新 / 执行
+# ══════════════════════════════════════════════════════════════════
+
+@api_view(['POST'])
+def convert_to_script(request, pk):
+    """POST /api/executions/<pk>/convert-script/ — 将 agent 执行记录转为结构化回放脚本"""
+    try:
+        record = ExecutionRecord.objects.select_related('project', 'testcase').get(pk=pk)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if record.execution_mode != 'agent':
+        return Response({'error': '仅支持转换 Agent 模式的执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+
+    terminal = ['passed', 'failed', 'error']
+    if record.status not in terminal:
+        return Response({'error': '仅支持转换已完成的执行记录'}, status=status.HTTP_400_BAD_REQUEST)
+
+    from .script_converter import convert_execution_to_script
+    try:
+        script = convert_execution_to_script(record)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    record.replay_script = script
+    record.save(update_fields=['replay_script'])
+
+    return Response(script)
+
+
+@api_view(['GET'])
+def get_replay_script(request, pk):
+    """GET /api/executions/<pk>/replay-script/ — 获取已转换的回放脚本"""
+    try:
+        record = ExecutionRecord.objects.get(pk=pk)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not record.replay_script:
+        return Response({'error': '尚未生成回放脚本'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response(record.replay_script)
+
+
+@api_view(['PUT'])
+def update_replay_script(request, pk):
+    """PUT /api/executions/<pk>/replay-script/ — 更新回放脚本（编辑参数/步骤）"""
+    try:
+        record = ExecutionRecord.objects.get(pk=pk)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data
+
+    # 删除脚本
+    if isinstance(data, dict) and data.get('delete'):
+        record.replay_script = None
+        record.save(update_fields=['replay_script'])
+        return Response({'deleted': True})
+
+    if not record.replay_script:
+        return Response({'error': '尚未生成回放脚本'}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data
+    if not isinstance(data, dict):
+        return Response({'error': '无效的脚本数据'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 合并更新：允许部分更新 parameters 和 steps
+    current = record.replay_script
+    if 'parameters' in data:
+        current['parameters'] = data['parameters']
+    if 'steps' in data:
+        current['steps'] = data['steps']
+    if 'name' in data:
+        current['name'] = data['name']
+    if 'base_url' in data:
+        current['base_url'] = data['base_url']
+
+    record.replay_script = current
+    record.save(update_fields=['replay_script'])
+
+    return Response(current)
+
+
+@api_view(['POST'])
+def replay_execute(request, pk):
+    """POST /api/executions/<pk>/replay-execute/ — 执行回放脚本"""
+    try:
+        source_record = ExecutionRecord.objects.select_related('project', 'testcase').get(pk=pk)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not source_record.replay_script:
+        return Response({'error': '尚未生成回放脚本，请先转换'}, status=status.HTTP_400_BAD_REQUEST)
+
+    parameter_overrides = request.data.get('parameter_overrides', {})
+
+    # 创建新的执行记录
+    new_record = ExecutionRecord.objects.create(
+        project=source_record.project,
+        testcase=source_record.testcase,
+        status='running',
+        execution_mode='replay',
+        source_execution=source_record,
+    )
+
+    def _replay_task():
+        from .script_executor import ReplayExecutor
+        executor = ReplayExecutor(new_record, source_record)
+        executor.run(source_record.replay_script, parameter_overrides)
+
+    _submit_agent_task(_replay_task)
+
+    return Response(
+        ExecutionRecordSerializer(new_record).data,
+        status=status.HTTP_202_ACCEPTED,
+    )

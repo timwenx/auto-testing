@@ -29,3 +29,12 @@ media/
 # Git repos (cloned by repo_service)
 repos/
 .claudepotter/
+
+# Claude Code / Trellis
+.claude/
+.trellis/
+
+# Temp / test files
+My_Test/
+WHartTest-master/
+tmp_convert*.json

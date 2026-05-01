@@ -93,19 +93,22 @@ const speed = ref(1)
 const currentStepIdx = ref(-1)     // 当前正在播放的步骤索引
 const selectedStepIdx = ref(-1)
 const elapsedTime = ref(0)         // 已经过的虚拟时间 (ms)
+const dragValue = ref(null)        // 拖拽中滑块的临时值
 
 let playTimer = null               // setTimeout 引用
 let allScreenshots = []            // 执行期间的所有截图路径
+let executionId = null             // 当前执行 ID（用于按约定查找截图）
 
 // ── 计算属性 ──
 const totalSteps = computed(() => allSteps.value.length)
 
 const progressPercent = computed({
   get() {
+    if (dragValue.value !== null) return dragValue.value
     if (totalSteps.value === 0) return 0
     return Math.round(((currentStepIdx.value + 1) / totalSteps.value) * 100)
   },
-  set() { /* 由 onProgressDrag/Seek 处理 */ },
+  set(val) { dragValue.value = val },
 })
 
 const selectedStep = computed(() => {
@@ -122,6 +125,21 @@ const currentScreenshotUrl = computed(() => {
     if (sp) {
       return `/api/executions/screenshots/?path=${encodeURIComponent(sp)}`
     }
+    // screenshot_path 为空时，按约定尝试 media/{execution_id}/step_{n}.png
+    if (executionId != null) {
+      const stepNum = visibleSteps.value[i].step_num
+      if (stepNum) {
+        return `/api/executions/screenshots/?path=${encodeURIComponent(`${executionId}/step_${stepNum}.png`)}`
+      }
+    }
+  }
+  // 从 allScreenshots 中找最近的截图
+  if (allScreenshots.length > 0) {
+    const last = allScreenshots[allScreenshots.length - 1]
+    const path = typeof last === 'string' ? last : (last.image || last.path || '')
+    if (path) {
+      return `/api/executions/screenshots/?path=${encodeURIComponent(path)}`
+    }
   }
   return null
 })
@@ -135,6 +153,7 @@ const elapsedTimeFormatted = computed(() => {
 
 // ── 拉取数据 ──
 async function loadData() {
+  executionId = props.executionId
   try {
     const { data } = await getExecutionSteps(props.executionId)
     const stepLogs = data.step_logs || []
@@ -143,7 +162,10 @@ async function loadData() {
       state: 'completed',
       duration_ms: s.duration_ms || 0,
     }))
-    allScreenshots = data.screenshots || []
+    allScreenshots = [
+      ...(data.screenshots || []),
+      ...(data.auto_screenshots || []),
+    ]
   } catch (e) {
     console.error('[Replay] Failed to load steps:', e)
   }
@@ -219,20 +241,9 @@ function _showStep(idx) {
 }
 
 // ── 进度条拖拽 ──
-let isDragging = false
 
-function onProgressDrag(val) {
-  isDragging = true
-}
-
-function onProgressSeek(val) {
-  isDragging = false
-  // 计算目标步骤索引
-  const targetIdx = Math.round((val / 100) * (totalSteps.value - 1))
-  const wasPlaying = playing.value
-  pause()
-
-  // 重建 visibleSteps 到 targetIdx
+function _rebuildToStep(targetIdx) {
+  if (targetIdx < 0 || targetIdx >= allSteps.value.length) return
   visibleSteps.value = []
   let accTime = 0
   for (let i = 0; i <= targetIdx; i++) {
@@ -243,8 +254,23 @@ function onProgressSeek(val) {
   currentStepIdx.value = targetIdx
   elapsedTime.value = accTime
   finished.value = targetIdx >= allSteps.value.length - 1
+}
 
-  // 如果之前在播放，继续播放
+function onProgressDrag(val) {
+  const targetIdx = Math.round((val / 100) * (totalSteps.value - 1))
+  if (targetIdx !== currentStepIdx.value) {
+    _rebuildToStep(targetIdx)
+  }
+}
+
+function onProgressSeek(val) {
+  dragValue.value = null
+  const targetIdx = Math.round((val / 100) * (totalSteps.value - 1))
+  const wasPlaying = playing.value
+  pause()
+
+  _rebuildToStep(targetIdx)
+
   if (wasPlaying && !finished.value) {
     playing.value = true
     scheduleNextStep()

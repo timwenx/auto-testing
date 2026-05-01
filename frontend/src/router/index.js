@@ -22,14 +22,19 @@ const routes = [
     component: () => import('../views/Executions.vue'),
   },
   {
+    path: '/scripts',
+    name: 'Scripts',
+    component: () => import('../views/ScriptList.vue'),
+  },
+  {
     path: '/executions/:id/observe',
     name: 'ExecutionObserver',
     component: () => import('../views/ExecutionObserver.vue'),
   },
   {
-    path: '/ai',
-    name: 'AIAssistant',
-    component: () => import('../views/AIAssistant.vue'),
+    path: '/executions/:id/script',
+    name: 'ScriptEditor',
+    component: () => import('../views/ScriptEditorView.vue'),
   },
   {
     path: '/settings',
