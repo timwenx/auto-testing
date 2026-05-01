@@ -31,6 +31,9 @@
     <div v-if="generating" style="text-align: center; padding: 40px 0">
       <el-icon class="is-loading" style="font-size: 32px; color: #409eff"><Loading /></el-icon>
       <p style="margin-top: 12px; color: #606266">正在生成测试用例...</p>
+      <p style="color: #909399; font-size: 13px; margin-top: 4px">
+        已用时 <strong>{{ formattedElapsed }}</strong>
+      </p>
       <p style="color: #909399; font-size: 13px">
         为 {{ selectedItems?.length || 0 }} 个目标生成用例，可能需要 1-2 分钟
       </p>
@@ -170,7 +173,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { batchGenerateTestcases, batchSaveTestcases } from '../api.js'
 
@@ -186,6 +189,15 @@ const emit = defineEmits(['back', 'save-complete'])
 const generating = ref(false)
 const saving = ref(false)
 const generatedCases = ref(props.initialCases || [])
+const elapsedSeconds = ref(0)
+let elapsedTimer = null
+
+const formattedElapsed = computed(() => {
+  const s = elapsedSeconds.value
+  const min = Math.floor(s / 60)
+  const sec = s % 60
+  return min > 0 ? `${min}分${sec}秒` : `${sec}秒`
+})
 
 const showPreview = ref(false)
 const previewCase = ref(null)
@@ -199,6 +211,8 @@ async function handleGenerate() {
     return ElMessage.warning('请先选择目标')
   }
   generating.value = true
+  elapsedSeconds.value = 0
+  elapsedTimer = setInterval(() => { elapsedSeconds.value++ }, 1000)
   try {
     const { data } = await batchGenerateTestcases(props.projectId, {
       selected_items: props.selectedItems,
@@ -215,6 +229,7 @@ async function handleGenerate() {
     ElMessage.error(e.response?.data?.error || '生成失败')
   } finally {
     generating.value = false
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
   }
 }
 

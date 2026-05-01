@@ -161,9 +161,9 @@ class RepoAnalysisSerializer(serializers.ModelSerializer):
     class Meta:
         model = RepoAnalysis
         fields = ['id', 'project', 'status', 'local_repo_path', 'discovered_items',
-                  'analysis_log', 'created_at']
+                  'analysis_log', 'started_at', 'last_heartbeat', 'created_at']
         read_only_fields = ['id', 'status', 'local_repo_path', 'discovered_items',
-                            'analysis_log', 'created_at']
+                            'analysis_log', 'started_at', 'last_heartbeat', 'created_at']
 
 
 class PreconditionTemplateSerializer(serializers.ModelSerializer):
