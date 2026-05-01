@@ -564,6 +564,7 @@ import {
   aiGenerateTestCase, aiAdjustTestCase,
   getExecutions,
   reorderTestcases, getFeatureGroups, getFeatureGroupsDetail, executeFeatureGroup,
+  getGenerationDraft, saveGenerationDraft, clearGenerationDraft,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AgentRefineDialog from './AgentRefineDialog.vue'
@@ -782,6 +783,18 @@ const handleAIGenerate = async () => {
     aiConversationId.value = data.conversation_id || null
     if (aiGeneratedCases.value.length) {
       ElMessage.success(`AI 生成了 ${aiGeneratedCases.value.length} 个测试用例`)
+      // Persist draft for page refresh recovery
+      try {
+        await saveGenerationDraft(projectId, {
+          status: 'generated',
+          conversation_id: aiConversationId.value,
+          testcase_ids: aiTestcaseIds.value,
+          testcase_names: aiGeneratedCases.value.map(tc => tc.name),
+          requirement: aiRequirement.value,
+          target: aiTarget.value,
+          generated_at: new Date().toISOString(),
+        })
+      } catch (e) { /* ignore draft save failure */ }
     }
   } catch (e) {
     ElMessage.error(e.response?.data?.error || 'AI 生成失败')
@@ -817,6 +830,18 @@ const handleAIFeedback = async () => {
     aiFeedback.value = ''
     expandedCaseIdx.value = -1
     ElMessage.success('用例已更新')
+    // Update draft
+    try {
+      await saveGenerationDraft(projectId, {
+        status: 'adjusted',
+        conversation_id: aiConversationId.value,
+        testcase_ids: (data.testcases || []).map(tc => tc.id),
+        testcase_names: (data.testcases || []).map(tc => tc.name),
+        requirement: aiRequirement.value,
+        target: aiTarget.value,
+        generated_at: new Date().toISOString(),
+      })
+    } catch (e) { /* ignore */ }
   } catch (e) {
     ElMessage.error(e.response?.data?.error || 'AI 调整失败')
   } finally {
@@ -834,6 +859,10 @@ const handleAISaveAll = async () => {
     await loadData()
     showAIGenerate.value = false
     resetAIDialog()
+    // Clear persisted draft
+    try {
+      await clearGenerationDraft(projectId)
+    } catch (e) { /* ignore */ }
     ElMessage.success(`已保存 ${count} 个测试用例`)
   } finally {
     aiSaving.value = false
@@ -1017,7 +1046,40 @@ function queryFeatureGroup(queryString, cb) {
   cb(results)
 }
 
-onMounted(loadData)
+onMounted(async () => {
+  await loadData()
+  // Check for persisted AI generation draft
+  try {
+    const { data } = await getGenerationDraft(projectId)
+    const draft = data.draft || {}
+    if (draft.status && draft.conversation_id) {
+      // Restore AI dialog state from draft
+      aiConversationId.value = draft.conversation_id
+      aiTestcaseIds.value = draft.testcase_ids || []
+      aiRequirement.value = draft.requirement || ''
+      aiTarget.value = draft.target || ''
+      // Re-open the AI dialog with restored state
+      // We need to reload the generated testcases from DB since we have their IDs
+      if (draft.testcase_ids && draft.testcase_ids.length) {
+        const tcResults = []
+        for (const tcId of draft.testcase_ids) {
+          try {
+            const tcRes = await import('../api').then(m => m.getTestCase(tcId))
+            tcResults.push(tcRes.data)
+          } catch (e) { /* testcase may have been deleted */ }
+        }
+        if (tcResults.length) {
+          aiGeneratedCases.value = tcResults
+          showAIGenerate.value = true
+          ElMessage.info(`已恢复上次未保存的 ${tcResults.length} 个 AI 生成用例`)
+        } else {
+          // All testcases were deleted, clear draft
+          await clearGenerationDraft(projectId)
+        }
+      }
+    }
+  } catch (e) { /* ignore — draft API may fail, just proceed */ }
+})
 </script>
 
 <style scoped>

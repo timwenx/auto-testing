@@ -111,8 +111,8 @@ export const deletePlanItem = (itemId) => api.delete(`/plans/items/${itemId}/del
 export const regeneratePlanToken = (planId) => api.post(`/plans/${planId}/regenerate-token/`)
 
 // ─── PlanExecution API ───
-export const executePlan = (planId, sync = false) =>
-  aiApi.post(`/plans/${planId}/execute/${sync ? '?sync=true' : ''}`)
+export const executePlan = (planId, sync = false, options = {}) =>
+  aiApi.post(`/plans/${planId}/execute/${sync ? '?sync=true' : ''}`, null, options)
 export const getPlanExecutions = (params) => api.get('/plan-executions/', { params })
 export const getPlanExecution = (id) => api.get(`/plan-executions/${id}/`)
 export const getPlanExecutionStatus = (id) => api.get(`/plan-executions/${id}/status/`)
