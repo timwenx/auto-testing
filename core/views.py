@@ -1866,7 +1866,7 @@ def plan_create(request):
 def plan_detail(request, pk):
     """GET /api/plans/<id>/ — 方案详情（含 items）"""
     try:
-        plan = TestPlan.objects.select_related('project').prefetch_related('items__script').get(pk=pk)
+        plan = TestPlan.objects.select_related('project').prefetch_related('items__script', 'items__testcase').get(pk=pk)
     except TestPlan.DoesNotExist:
         return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
     return Response(TestPlanSerializer(plan).data)
@@ -1911,6 +1911,7 @@ def plan_add_item(request, pk):
 
     item_type = serializer.validated_data['item_type']
     script_id = serializer.validated_data.get('script_id')
+    testcase_id = serializer.validated_data.get('testcase_id')
     feature_group_name = serializer.validated_data.get('feature_group_name', '')
 
     # 验证
@@ -1918,6 +1919,8 @@ def plan_add_item(request, pk):
         return Response({'error': 'script 类型必须指定 script_id'}, status=status.HTTP_400_BAD_REQUEST)
     if item_type == 'feature_group' and not feature_group_name:
         return Response({'error': 'feature_group 类型必须指定 feature_group_name'}, status=status.HTTP_400_BAD_REQUEST)
+    if item_type == 'agent_testcase' and not testcase_id:
+        return Response({'error': 'agent_testcase 类型必须指定 testcase_id'}, status=status.HTTP_400_BAD_REQUEST)
 
     script_obj = None
     if script_id:
@@ -1926,6 +1929,13 @@ def plan_add_item(request, pk):
         except Script.DoesNotExist:
             return Response({'error': '脚本不存在'}, status=status.HTTP_404_NOT_FOUND)
 
+    testcase_obj = None
+    if testcase_id:
+        try:
+            testcase_obj = TestCase.objects.get(pk=testcase_id)
+        except TestCase.DoesNotExist:
+            return Response({'error': '测试用例不存在'}, status=status.HTTP_404_NOT_FOUND)
+
     # 获取当前最大 sort_order
     max_order = plan.items.aggregate(max_order=Max('sort_order'))['max_order'] or 0
 
@@ -1933,6 +1943,7 @@ def plan_add_item(request, pk):
         test_plan=plan,
         item_type=item_type,
         script=script_obj,
+        testcase=testcase_obj,
         feature_group_name=feature_group_name,
         sort_order=max_order + 1,
     )
@@ -2019,7 +2030,7 @@ def _authenticate_plan_request(request, plan):
 def plan_execute(request, pk):
     """POST /api/plans/<id>/execute/ — 触发方案执行"""
     try:
-        plan = TestPlan.objects.select_related('project').prefetch_related('items__script').get(pk=pk)
+        plan = TestPlan.objects.select_related('project').prefetch_related('items__script', 'items__testcase').get(pk=pk)
     except TestPlan.DoesNotExist:
         return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2046,8 +2057,9 @@ def plan_execute(request, pk):
         started_at=timezone.now(),
     )
 
-    # 收集要执行的所有脚本（按 sort_order 顺序）
+    # 收集要执行的脚本和Agent用例（按 sort_order 顺序）
     scripts_to_run = []
+    agent_testcases_to_run = []
     for item in items:
         if item.item_type == 'script' and item.script:
             if item.script.status == 'active':
@@ -2060,8 +2072,11 @@ def plan_execute(request, pk):
                 status='active',
             ).order_by('sort_order')
             scripts_to_run.extend(group_scripts)
+        elif item.item_type == 'agent_testcase' and item.testcase:
+            agent_testcases_to_run.append(item.testcase)
 
-    if not scripts_to_run:
+    total_count = len(scripts_to_run) + len(agent_testcases_to_run)
+    if not total_count:
         plan_exec.status = 'completed'
         plan_exec.completed_at = timezone.now()
         plan_exec.summary = {'total': 0, 'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0}
@@ -2069,7 +2084,7 @@ def plan_execute(request, pk):
         return Response(PlanExecutionSerializer(plan_exec).data)
 
     plan_exec.summary = {
-        'total': len(scripts_to_run),
+        'total': total_count,
         'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0,
     }
     plan_exec.save(update_fields=['summary'])
@@ -2078,9 +2093,9 @@ def plan_execute(request, pk):
     sync_mode = request.query_params.get('sync', '').lower() in ('true', '1', 'yes')
 
     if sync_mode:
-        return _execute_plan_sync(plan_exec, scripts_to_run, plan)
+        return _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan)
     else:
-        _submit_agent_task(lambda: _execute_plan_async(plan_exec, scripts_to_run, plan))
+        _submit_agent_task(lambda: _execute_plan_async(plan_exec, scripts_to_run, agent_testcases_to_run, plan))
         return Response(PlanExecutionSerializer(plan_exec).data, status=status.HTTP_202_ACCEPTED)
 
 
@@ -2111,6 +2126,37 @@ def _run_single_script(plan_exec, script, plan):
     return new_record.status
 
 
+def _run_single_agent_testcase(plan_exec, testcase, plan):
+    """通过 Agent 模式执行单个测试用例并返回结果状态"""
+    new_record = ExecutionRecord.objects.create(
+        project=plan.project,
+        testcase=testcase,
+        status='running',
+        execution_mode='agent',
+        ai_model=_get_ai_model(),
+        plan_execution=plan_exec,
+    )
+    testcase.status = 'running'
+    testcase.save(update_fields=['status'])
+
+    try:
+        result = execution_engine.execute_testcase_with_agent(
+            testcase, plan.project.base_url, execution_id=new_record.pk,
+        )
+        _save_agent_result(new_record, result)
+        testcase.status = result['status']
+        testcase.save(update_fields=['status'])
+        return result['status']
+    except Exception:
+        logger.exception("[PlanExecute] Agent testcase %s failed", testcase.name)
+        new_record.status = 'error'
+        new_record.error_message = 'Agent execution failed'
+        new_record.save(update_fields=['status', 'error_message'])
+        testcase.status = 'error'
+        testcase.save(update_fields=['status'])
+        return 'error'
+
+
 def _finalize_plan_execution(plan_exec):
     """汇总所有子执行的状态并更新 PlanExecution"""
     from django.utils import timezone
@@ -2132,11 +2178,13 @@ def _finalize_plan_execution(plan_exec):
     plan_exec.save()
 
 
-def _execute_plan_sync(plan_exec, scripts_to_run, plan):
+def _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan):
     """同步执行方案（阻塞等待）"""
     try:
         for script in scripts_to_run:
             _run_single_script(plan_exec, script, plan)
+        for testcase in agent_testcases_to_run:
+            _run_single_agent_testcase(plan_exec, testcase, plan)
         _finalize_plan_execution(plan_exec)
     except Exception as e:
         logger.exception("[PlanExecute] Sync execution failed")
@@ -2147,11 +2195,13 @@ def _execute_plan_sync(plan_exec, scripts_to_run, plan):
     return Response(PlanExecutionDetailSerializer(plan_exec).data)
 
 
-def _execute_plan_async(plan_exec, scripts_to_run, plan):
+def _execute_plan_async(plan_exec, scripts_to_run, agent_testcases_to_run, plan):
     """异步执行方案（线程池内运行）"""
     try:
         for script in scripts_to_run:
             _run_single_script(plan_exec, script, plan)
+        for testcase in agent_testcases_to_run:
+            _run_single_agent_testcase(plan_exec, testcase, plan)
         _finalize_plan_execution(plan_exec)
     except Exception as e:
         logger.exception("[PlanExecute] Async execution failed")

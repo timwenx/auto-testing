@@ -100,16 +100,20 @@
           </div>
           <el-table :data="planItems" size="small" empty-text="暂无子项" row-key="id">
             <el-table-column prop="sort_order" label="序号" width="60" />
-            <el-table-column prop="item_type" label="类型" width="100">
+            <el-table-column prop="item_type" label="类型" width="110">
               <template #default="{ row }">
-                <el-tag :type="row.item_type === 'script' ? '' : 'warning'" size="small">
-                  {{ row.item_type === 'script' ? '脚本' : '功能分组' }}
+                <el-tag
+                  :type="row.item_type === 'script' ? '' : row.item_type === 'agent_testcase' ? 'success' : 'warning'"
+                  size="small"
+                >
+                  {{ row.item_type === 'script' ? '脚本' : row.item_type === 'agent_testcase' ? 'Agent用例' : '功能分组' }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column label="名称" min-width="200">
               <template #default="{ row }">
                 <span v-if="row.item_type === 'script'">{{ row.script_name || '-' }}</span>
+                <span v-else-if="row.item_type === 'agent_testcase'">{{ row.testcase_name || '-' }}</span>
                 <span v-else>{{ row.feature_group_name || '-' }}</span>
               </template>
             </el-table-column>
@@ -194,11 +198,17 @@
           <el-radio-group v-model="addItemForm.item_type">
             <el-radio value="script">脚本</el-radio>
             <el-radio value="feature_group">功能分组</el-radio>
+            <el-radio value="agent_testcase">Agent用例</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="addItemForm.item_type === 'script'" label="选择脚本">
           <el-select v-model="addItemForm.script_id" placeholder="选择脚本" style="width: 100%" filterable>
             <el-option v-for="s in availableScripts" :key="s.id" :label="s.name" :value="s.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="addItemForm.item_type === 'agent_testcase'" label="选择用例">
+          <el-select v-model="addItemForm.testcase_id" placeholder="选择测试用例" style="width: 100%" filterable>
+            <el-option v-for="tc in availableTestcases" :key="tc.id" :label="tc.name" :value="tc.id" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="addItemForm.item_type === 'feature_group'" label="功能分组">
@@ -264,7 +274,7 @@ import {
   getPlans, createPlan, getPlan, updatePlan, deletePlan,
   addPlanItem, deletePlanItem, regeneratePlanToken, reorderPlanItems,
   executePlan, getPlanExecutions, getPlanExecution, getPlanExecutionStatus,
-  getScripts, getScriptFeatureGroups, getProjects,
+  getScripts, getScriptFeatureGroups, getProjects, getProjectTestCases,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -275,6 +285,7 @@ const planExecutions = ref([])
 const projects = ref([])
 const availableScripts = ref([])
 const scriptFeatureGroups = ref([])
+const availableTestcases = ref([])
 const loadingPlans = ref(false)
 const loadingExecutions = ref(false)
 const loadingExecDetail = ref(false)
@@ -291,7 +302,7 @@ const planSearch = ref('')
 let pollTimer = null
 
 const planForm = ref({ project: null, name: '', description: '' })
-const addItemForm = ref({ item_type: 'script', script_id: null, feature_group_name: '' })
+const addItemForm = ref({ item_type: 'script', script_id: null, testcase_id: null, feature_group_name: '' })
 
 const apiUrl = window.location.origin
 
@@ -354,12 +365,14 @@ async function loadExecutions() {
 
 async function loadScriptsForProject(projectId) {
   try {
-    const [scriptsRes, groupsRes] = await Promise.all([
+    const [scriptsRes, groupsRes, testcasesRes] = await Promise.all([
       getScripts({ project: projectId, status: 'active' }),
       getScriptFeatureGroups(projectId),
+      getProjectTestCases(projectId),
     ])
     availableScripts.value = scriptsRes.data.scripts || scriptsRes.data.results || scriptsRes.data || []
     scriptFeatureGroups.value = groupsRes.data.groups || []
+    availableTestcases.value = testcasesRes.data || []
   } catch { /* ignore */ }
 }
 
@@ -534,7 +547,7 @@ async function viewExecutionDetail(exec) {
 watch(showAddItem, async (val) => {
   if (val && selectedPlan.value?.project) {
     await loadScriptsForProject(selectedPlan.value.project)
-    addItemForm.value = { item_type: 'script', script_id: null, feature_group_name: '' }
+    addItemForm.value = { item_type: 'script', script_id: null, testcase_id: null, feature_group_name: '' }
   }
 })
 
