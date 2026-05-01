@@ -751,6 +751,223 @@ class BatchSaveTestContextTest(TestCase):
         self.assertEqual(tc_without.test_context, {})
 
 
+class BatchSaveTestContextEdgeCaseTest(TestCase):
+    """batch_save_testcases 边界测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='边界测试项目')
+
+    def test_batch_save_with_null_test_context(self):
+        """test_context 为 null 时被 view 转为空 dict（item.get 默认值不触发）"""
+        data = {
+            'testcases': [{
+                'name': 'null context',
+                'steps': '步骤',
+                'expected_result': '结果',
+                # 不传 test_context 字段 → item.get('test_context', {}) 返回 {}
+            }]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        tc = TestCaseModel.objects.get(project=self.project)
+        self.assertEqual(tc.test_context, {})
+
+    def test_batch_save_with_deeply_nested_context(self):
+        """深度嵌套的 test_context 正确存储"""
+        ctx = {
+            'context_type': 'page',
+            'path': '/complex',
+            'elements': [
+                {
+                    'selector': '#form',
+                    'type': 'form',
+                    'label': '复杂表单',
+                    'description': '包含嵌套字段',
+                    'extra': {'nested': {'deep': True}}
+                }
+            ]
+        }
+        data = {
+            'testcases': [{
+                'name': '嵌套用例',
+                'steps': '步骤',
+                'expected_result': '结果',
+                'test_context': ctx,
+            }]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, 201)
+        tc = TestCaseModel.objects.get(project=self.project)
+        self.assertTrue(tc.test_context['elements'][0]['extra']['nested']['deep'])
+
+
+# ══════════════════════════════════════════════════════════════════
+# _format_page_context / _format_api_context 详细测试
+# ══════════════════════════════════════════════════════════════════
+
+class FormatPageContextDetailTest(TestCase):
+    """_format_page_context 边界情况测试"""
+
+    def test_element_without_description(self):
+        """元素缺少 description 时不输出多余分隔符"""
+        tc = MagicMock()
+        tc.test_context = {
+            'context_type': 'page',
+            'path': '/test',
+            'elements': [
+                {'selector': '#btn', 'type': 'button', 'label': '按钮'},
+            ]
+        }
+        result = _format_page_context(tc.test_context)
+        self.assertIn('按钮: `#btn`', result)
+        # 不应有多余的 — 分隔符
+        self.assertNotIn('按钮: `#btn` (button) —', result)
+
+    def test_element_without_label_uses_default(self):
+        """元素缺少 label 时使用默认文字"""
+        tc = MagicMock()
+        tc.test_context = {
+            'context_type': 'page',
+            'path': '/test',
+            'elements': [
+                {'selector': '#input1', 'type': 'input'},
+            ]
+        }
+        result = _format_page_context(tc.test_context)
+        self.assertIn('元素: `#input1`', result)
+
+    def test_page_context_no_path_no_source_file(self):
+        """页面 context 无 path 和 source_file"""
+        ctx = {
+            'context_type': 'page',
+            'elements': [{'selector': '#btn', 'type': 'button', 'label': '按钮'}]
+        }
+        result = _format_page_context(ctx)
+        self.assertIn('页面元素信息', result)
+        self.assertIn('按钮', result)
+        self.assertNotIn('页面路径:', result)
+        self.assertNotIn('来源文件:', result)
+
+
+class FormatApiContextDetailTest(TestCase):
+    """_format_api_context 边界情况测试"""
+
+    def test_api_with_method_and_path(self):
+        """API 同时有 method 和 path"""
+        ctx = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'POST',
+            'params': [],
+            'response_fields': []
+        }
+        result = _format_api_context(ctx)
+        self.assertIn('POST /api/users', result)
+
+    def test_api_with_only_path(self):
+        """API 仅有 path，无 method，仍输出端点信息"""
+        ctx = {
+            'context_type': 'api',
+            'path': '/api/data',
+            'params': [],
+        }
+        result = _format_api_context(ctx)
+        self.assertIn('/api/data', result)
+        # 仅有 path 时仍然输出端点行
+        self.assertIn('端点:', result)
+
+    def test_api_param_required_true(self):
+        """必填参数显示"必填"标记"""
+        ctx = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'POST',
+            'params': [
+                {'name': 'username', 'in': 'body', 'type': 'string', 'required': True},
+            ]
+        }
+        result = _format_api_context(ctx)
+        self.assertIn('必填', result)
+
+    def test_api_response_field_with_description(self):
+        """响应字段带 description"""
+        ctx = {
+            'context_type': 'api',
+            'path': '/api/users',
+            'method': 'GET',
+            'response_fields': [
+                {'name': 'created_at', 'type': 'datetime', 'description': '创建时间'},
+            ]
+        }
+        result = _format_api_context(ctx)
+        self.assertIn('created_at', result)
+        self.assertIn('创建时间', result)
+
+
+# ══════════════════════════════════════════════════════════════════
+# _parse_analysis_response 额外边界测试
+# ══════════════════════════════════════════════════════════════════
+
+class ParseAnalysisResponseEdgeCaseTest(TestCase):
+    """_parse_analysis_response 边界情况"""
+
+    def test_empty_pages_and_apis(self):
+        """pages 和 apis 都为空数组"""
+        raw = json.dumps({"pages": [], "apis": []})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items, [])
+
+    def test_missing_pages_key(self):
+        """JSON 中缺少 pages 键"""
+        raw = json.dumps({"apis": [{"path": "/api/test", "method": "GET", "name": "test"}]})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['type'], 'api')
+
+    def test_missing_apis_key(self):
+        """JSON 中缺少 apis 键"""
+        raw = json.dumps({"pages": [{"path": "/home", "name": "首页"}]})
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['type'], 'page')
+
+    def test_non_dict_json_returns_empty(self):
+        """JSON 数组（非 dict）返回空列表"""
+        raw = json.dumps([1, 2, 3])
+        items = _parse_analysis_response(raw)
+        self.assertEqual(items, [])
+
+    def test_page_with_null_params_not_inherited(self):
+        """页面 item 不继承 API 的 params/response_fields"""
+        raw = json.dumps({
+            "pages": [{"path": "/users", "name": "用户"}],
+            "apis": [{"path": "/api/users", "method": "GET", "name": "用户API",
+                      "params": [{"name": "page", "in": "query", "type": "integer", "required": False}]}]
+        })
+        items = _parse_analysis_response(raw)
+        page = items[0]
+        api = items[1]
+        self.assertEqual(page['elements'], [])
+        self.assertEqual(page['params'], [])
+        self.assertEqual(api['params'], [{'name': 'page', 'in': 'query', 'type': 'integer', 'required': False}])
+
+    def test_api_with_null_elements_not_inherited(self):
+        """API item 不继承页面的 elements"""
+        raw = json.dumps({
+            "pages": [{"path": "/users", "name": "用户", "elements": [{"selector": "#btn", "type": "button", "label": "按钮"}]}],
+            "apis": [{"path": "/api/users", "method": "GET", "name": "用户API"}]
+        })
+        items = _parse_analysis_response(raw)
+        api = items[1]
+        self.assertEqual(api['elements'], [])
+        self.assertEqual(api['params'], [])
+
+
 # ══════════════════════════════════════════════════════════════════
 # 运行入口
 # ══════════════════════════════════════════════════════════════════
