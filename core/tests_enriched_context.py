@@ -994,12 +994,14 @@ class ParseFeatureGroupFormatTest(TestCase):
         self.assertEqual(page['type'], 'page')
         self.assertEqual(page['path'], '/users')
         self.assertEqual(page['feature_group'], '用户管理')
+        self.assertEqual(page['feature_description'], '用户增删改查')
 
         api = items[1]
         self.assertEqual(api['type'], 'api')
         self.assertEqual(api['path'], '/api/users')
         self.assertEqual(api['method'], 'GET')
         self.assertEqual(api['feature_group'], '用户管理')
+        self.assertEqual(api['feature_description'], '用户增删改查')
 
     def test_features_format_multiple_groups(self):
         """新格式：多个功能组各自带 feature_group"""
@@ -1152,6 +1154,53 @@ class ParseFeatureGroupFormatTest(TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['path'], '/new')
         self.assertEqual(items[0]['feature_group'], '新模块')
+
+    def test_feature_description_propagated_to_items(self):
+        """新格式：feature description 传播到每个 item"""
+        raw = json.dumps({
+            "features": [
+                {
+                    "name": "订单管理",
+                    "description": "订单的创建、查询和状态管理",
+                    "pages": [
+                        {"path": "/orders", "name": "订单列表"},
+                        {"path": "/orders/new", "name": "创建订单"},
+                    ],
+                    "apis": [
+                        {"path": "/api/orders", "method": "POST", "name": "创建订单API"},
+                    ],
+                },
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 3)
+        for item in items:
+            self.assertEqual(item['feature_description'], '订单的创建、查询和状态管理')
+
+    def test_feature_description_empty_when_missing(self):
+        """新格式：feature 缺少 description 时 feature_description 为空字符串"""
+        raw = json.dumps({
+            "features": [
+                {
+                    "name": "无描述模块",
+                    "pages": [{"path": "/x", "name": "X"}],
+                    "apis": [],
+                },
+            ]
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['feature_description'], '')
+
+    def test_old_format_feature_description_is_empty(self):
+        """旧格式：feature_description 为空字符串"""
+        raw = json.dumps({
+            "pages": [{"path": "/home", "name": "首页"}],
+            "apis": [],
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].get('feature_description', ''), '')
 
 
 # ══════════════════════════════════════════════════════════════════
