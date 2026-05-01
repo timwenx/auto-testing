@@ -68,4 +68,16 @@ const router = createRouter({
   routes,
 })
 
+// 路由守卫 — 未登录时重定向到登录页
+router.beforeEach((to, from, next) => {
+  const token = localStorage.getItem('mytest_token')
+  if (to.path !== '/login' && !token) {
+    next('/login')
+  } else if (to.path === '/login' && token) {
+    next('/')
+  } else {
+    next()
+  }
+})
+
 export default router

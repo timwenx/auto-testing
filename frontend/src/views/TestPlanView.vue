@@ -1,6 +1,6 @@
 <template>
   <div class="test-plan-view">
-    <el-page-header @back="$router.push('/')" title="返回" content="用例方案" />
+    <el-page-header @back="$router.push('/')" title="返回" content="测试方案" />
 
     <div style="display: flex; gap: 16px; margin-top: 16px; height: calc(100vh - 140px)">
       <!-- 左侧：方案列表 -->
@@ -480,7 +480,11 @@ async function handleExecutePlan() {
   if (!selectedPlan.value) return
   executingPlan.value = true
   try {
-    const { data } = await executePlan(selectedPlan.value.id)
+    const headers = {}
+    if (selectedPlan.value.api_token) {
+      headers['X-Plan-Token'] = String(selectedPlan.value.api_token)
+    }
+    const { data } = await executePlan(selectedPlan.value.id, false, { headers })
     if (data.status === 'running') {
       ElMessage.success('方案执行已提交')
       // 轮询状态
