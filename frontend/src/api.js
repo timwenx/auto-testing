@@ -138,6 +138,7 @@ export const addPlanItem = (planId, data) => api.post(`/plans/${planId}/items/`,
 export const reorderPlanItems = (planId, orders) => api.put(`/plans/${planId}/items/reorder/`, { orders })
 export const deletePlanItem = (itemId) => api.delete(`/plans/items/${itemId}/delete/`)
 export const regeneratePlanToken = (planId) => api.post(`/plans/${planId}/regenerate-token/`)
+export const getPlanParameters = (planId) => api.get(`/plans/${planId}/parameters/`)
 
 // ─── PlanExecution API ───
 export const executePlan = (planId, sync = false, options = {}) =>

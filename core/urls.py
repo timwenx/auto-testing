@@ -82,6 +82,7 @@ urlpatterns = [
     path('plans/<int:pk>/items/reorder/', views.plan_reorder_items, name='plan-reorder-items'),
     path('plans/items/<int:item_pk>/delete/', views.plan_delete_item, name='plan-delete-item'),
     path('plans/<int:pk>/regenerate-token/', views.plan_regenerate_token, name='plan-regenerate-token'),
+    path('plans/<int:pk>/parameters/', views.plan_parameters, name='plan-parameters'),
 
     # ─── PlanExecution API ───
     path('plans/<int:pk>/execute/', views.plan_execute, name='plan-execute'),
