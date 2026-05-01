@@ -466,6 +466,10 @@ const handleExecuteAgent = async (row) => {
   }
 }
 
+function goToTestCaseManager() {
+  router.push({ name: 'TestCaseManager', params: { id: projectId.value } })
+}
+
 const handleExecuteAllAgent = async () => {
   executingAllAgent.value = true
   try {
