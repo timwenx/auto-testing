@@ -1151,28 +1151,17 @@ def repo_analyze(request, project_id):
     if not project.local_repo_path and not project.repo_url:
         return Response({'error': '项目未配置 Git 仓库'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 创建分析记录
-    analysis = RepoAnalysis.objects.create(
-        project=project,
-        status='pending',
-        local_repo_path=project.local_repo_path or '',
-    )
-
     def _analyze_task():
         from .repo_analyzer import analyze_repo
         try:
             analyze_repo(project)
         except Exception as e:
             logger.exception("[RepoAnalyze] Task failed for project #%s: %s", project_id, e)
-            analysis.status = 'failed'
-            analysis.analysis_log = str(e)[:5000]
-            analysis.save()
 
     _submit_agent_task(_analyze_task)
 
     return Response({
-        'analysis_id': analysis.id,
-        'status': 'pending',
+        'status': 'analyzing',
     }, status=status.HTTP_202_ACCEPTED)
 
 
