@@ -224,6 +224,8 @@ def _extract_target(tool_name, tool_input):
         return f"{len(actions)} actions: {', '.join(types)}"
     elif tool_name == 'browser_get_form':
         return tool_input.get('selector', 'all forms')
+    elif tool_name == 'browser_assert':
+        return f"{tool_input.get('assert_type', '')}: {tool_input.get('selector', '')}"
     elif tool_name == 'browser_screenshot':
         return 'screenshot'
     elif tool_name == 'report_result':
@@ -271,6 +273,14 @@ def format_step_action(tool_name, tool_input):
     elif tool_name == 'browser_get_form':
         sel = tool_input.get('selector', '')
         return f"获取表单数据" + (f" ({sel})" if sel else "")
+    elif tool_name == 'browser_assert':
+        at = tool_input.get('assert_type', '')
+        sel = tool_input.get('selector', '')
+        op = tool_input.get('operator', '')
+        exp = tool_input.get('expected', '')
+        if at == 'element_count':
+            return f"验证 count({sel}) {op} {exp}"
+        return f"验证 text({sel}) {op} {exp}"
     elif tool_name == 'browser_screenshot':
         return '截图'
     elif tool_name == 'report_result':

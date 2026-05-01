@@ -61,7 +61,7 @@
               @click="navigateToReplay(row.id)"
             >回放</el-button>
             <el-button
-              v-if="['agent', 'replay'].includes(row.execution_mode) && isTerminalStatus(row.status)"
+              v-if="row.execution_mode === 'agent' && isTerminalStatus(row.status)"
               size="small" text type="success"
               @click="navigateToScriptEditor(row.id)"
             >{{ row.replay_script ? '编辑脚本' : '生成脚本' }}</el-button>

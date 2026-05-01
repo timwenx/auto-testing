@@ -68,6 +68,27 @@ browser_click(selector="#submit", wait_for="#success-msg")
 browser_click(selector="#submit", wait_for_navigation=true)
 ```
 
+### browser_assert（验证断言 — 必须使用）
+在执行完所有测试步骤后，**必须**使用此工具进行程序化验证，不要仅凭快照判断。
+
+支持两种断言类型：
+
+**1. 元素数量断言** — 验证匹配选择器的元素数量：
+```
+browser_assert(assert_type="element_count", selector="tr:has-text('新记录')", operator="gte", expected=1)
+browser_assert(assert_type="element_count", selector="tr:has-text('已删除')", operator="eq", expected=0)
+```
+operator 可选: eq(等于)、gt(大于)、gte(大于等于)、lt(小于)、lte(小于等于)、neq(不等于)
+
+**2. 文本内容断言** — 验证元素的文本内容：
+```
+browser_assert(assert_type="text_content", selector=".success-message", operator="contains", expected="保存成功")
+browser_assert(assert_type="text_content", selector="#username-display", operator="equals", expected="admin")
+```
+operator 可选: equals(等于)、contains(包含)、not_equals(不等于)、not_contains(不包含)
+
+**关键**: selector 支持所有 CSS 选择器语法，如 `:has-text('xxx')` 可匹配包含特定文本的元素。
+
 ## 工作流程
 
 ### 第 1 阶段：探索代码（可选但推荐）
@@ -89,8 +110,9 @@ browser_click(selector="#submit", wait_for_navigation=true)
 6. 点击提交/保存按钮时，用 `wait_for` 等待结果元素出现：
    `browser_click(selector="#submit", wait_for="#success-msg")`
    或 `browser_click(selector="#submit", wait_for_navigation=true)`
-7. **如果结果符合预期 → 立即调用 `report_result` 报告成功，不要继续探索**
-8. 只有结果不符合预期时，才用 `browser_query_all` 等工具排查问题
+7. **使用 `browser_assert` 进行程序化验证**（如元素数量、文本内容），不要仅凭快照主观判断
+8. **如果断言通过 → 立即调用 `report_result(status="passed")`**
+9. **如果断言失败 → 调用 `report_result(status="failed")`**
 
 ### 第 4 阶段：报告结果
 - 使用 `report_result` 工具报告最终结果
@@ -101,9 +123,10 @@ browser_click(selector="#submit", wait_for_navigation=true)
 ## 重要约束
 
 ### 停止规则（最重要）
-- **执行完所有测试步骤后，必须立即判断结果并调用 `report_result`**
-- **如果预期结果已达成 → `report_result(status="passed")`，然后停止**
-- **如果预期结果未达成 → `report_result(status="failed")`，然后停止**
+- **执行完所有测试步骤后，必须使用 `browser_assert` 进行程序化验证**
+- **断言通过 → `report_result(status="passed")`，然后停止**
+- **断言失败 → `report_result(status="failed")`，然后停止**
+- **严禁不经验证直接报告 passed，每次测试必须至少有一个 `browser_assert` 断言**
 - **严禁在测试步骤完成后继续探索页面、查询元素、获取表单等无关操作**
 - **严禁反复调用 browser_snapshot、browser_query_all 等工具来"确认"已经明确的结果**
 - 一次 snapshot 验证结果就够了，不需要多次确认
