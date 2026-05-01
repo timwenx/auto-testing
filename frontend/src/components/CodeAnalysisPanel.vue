@@ -18,7 +18,7 @@
             v-if="!analyzing && analysis?.status === 'completed'"
             type="warning"
             size="small"
-            @click="startAnalysis"
+            @click="confirmRestart"
           >
             重新分析
           </el-button>
@@ -64,7 +64,7 @@
       :sub-title="analysis.analysis_log?.slice(0, 200) || '请检查仓库配置后重试'"
     >
       <template #extra>
-        <el-button type="primary" @click="startAnalysis">重新分析</el-button>
+        <el-button type="primary" @click="confirmRestart">重新分析</el-button>
       </template>
     </el-result>
 
@@ -170,7 +170,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { WarningFilled } from '@element-plus/icons-vue'
 import { repoAnalyze, getRepoAnalysis, resetRepoAnalysis, checkCliAvailable, getSettings } from '../api.js'
 
@@ -255,6 +255,19 @@ async function loadExistingAnalysis() {
     }
   } finally {
     loading = false
+  }
+}
+
+async function confirmRestart() {
+  try {
+    await ElMessageBox.confirm('确定要重新分析吗？当前分析结果将被覆盖。', '确认重新分析', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await startAnalysis()
+  } catch {
+    // cancelled
   }
 }
 
