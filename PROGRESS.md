@@ -300,3 +300,25 @@ All 6 tasks fully implemented and verified:
 - Frontend builds successfully
 - Django check: 0 issues
 - Commit: `17beb19`
+
+## Round 4 — Fix remaining In Progress tasks
+
+### Issues Found and Fixed
+
+1. **Missing navigation button to TestCaseManager** (`ProjectDetail.vue`):
+   - `goToTestCaseManager()` function was defined in script but never called from template
+   - Added `<el-button>` with `FolderOpened` icon to test case card header, before "AI 生成" and "新建用例" buttons
+   - Also fixed `projectId.value` bug — `projectId` is a plain string (`route.params.id`), not a ref
+
+2. **Missing edit/update UI for precondition templates** (`PreconditionSelector.vue`):
+   - CRUD was incomplete: only Create, Read, Delete worked; Update was missing
+   - Added "编辑" button next to existing "删除" button for non-default templates
+   - Added edit dialog with same form fields as create dialog
+   - Added `openEditDialog(tpl)` with deep copy (`JSON.parse(JSON.stringify)`) to avoid prop mutation
+   - Added `handleEdit()` function calling `updatePrecondition` API
+   - Imported `updatePrecondition` from api.js
+
+### Status
+- All **227 tests pass**
+- Frontend builds successfully
+- Commit: `63ebc47`
