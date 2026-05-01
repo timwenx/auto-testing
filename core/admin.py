@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot
+from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate
 
 
 @admin.register(Project)
@@ -40,3 +40,17 @@ class ScreenshotAdmin(admin.ModelAdmin):
     list_display = ['id', 'execution', 'step_num', 'action', 'created_at']
     list_filter = ['execution__project']
     search_fields = ['action']
+
+
+@admin.register(RepoAnalysis)
+class RepoAnalysisAdmin(admin.ModelAdmin):
+    list_display = ['id', 'project', 'status', 'created_at']
+    list_filter = ['status', 'project']
+    readonly_fields = ['discovered_items', 'analysis_log']
+
+
+@admin.register(PreconditionTemplate)
+class PreconditionTemplateAdmin(admin.ModelAdmin):
+    list_display = ['name', 'is_default', 'created_at', 'updated_at']
+    list_filter = ['is_default']
+    search_fields = ['name']

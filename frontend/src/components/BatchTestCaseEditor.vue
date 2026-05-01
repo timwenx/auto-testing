@@ -158,7 +158,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { batchGenerateTestcases, batchSaveTestcases } from '../api.js'
 
 const props = defineProps({
@@ -205,7 +205,7 @@ async function handleGenerate() {
 }
 
 async function handleSave() {
-  if (!generatedCases.value.length) return
+  if (!generatedCases.value.length || saving.value) return
   saving.value = true
   try {
     const { data } = await batchSaveTestcases(props.projectId, {
@@ -226,7 +226,7 @@ function handlePreview(tc) {
 }
 
 function handleEdit(tc, index) {
-  editingCase.value = { ...tc }
+  editingCase.value = JSON.parse(JSON.stringify(tc))
   editingIndex.value = index
   showEdit.value = true
 }
@@ -239,8 +239,13 @@ function handleSaveEdit() {
   }
 }
 
-function handleRemove(index) {
-  generatedCases.value.splice(index, 1)
+async function handleRemove(index) {
+  try {
+    await ElMessageBox.confirm('确定删除此用例？', '提示', { type: 'warning' })
+    generatedCases.value.splice(index, 1)
+  } catch {
+    // cancelled
+  }
 }
 
 function handleAddEmpty() {

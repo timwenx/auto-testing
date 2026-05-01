@@ -12,7 +12,7 @@
       <el-descriptions-item label="本地路径">{{ project.local_repo_path || '未拉取' }}</el-descriptions-item>
     </el-descriptions>
 
-    <div style="margin-top: 16px; text-align: center">
+    <div style="margin-top: 16px; text-align: center; display: flex; gap: 12px; justify-content: center">
       <el-button
         v-if="!project?.repo_url"
         type="info"
@@ -20,14 +20,22 @@
       >
         请先配置 Git 仓库地址
       </el-button>
-      <el-button
-        v-else
-        type="primary"
-        :loading="pulling"
-        @click="handlePull"
-      >
-        {{ project?.local_repo_path ? '重新拉取仓库' : '拉取仓库' }}
-      </el-button>
+      <template v-else>
+        <el-button
+          type="primary"
+          :loading="pulling"
+          @click="handlePull"
+        >
+          {{ project?.local_repo_path ? '重新拉取仓库' : '拉取仓库' }}
+        </el-button>
+        <el-button
+          v-if="project?.local_repo_path && !pulling"
+          type="success"
+          @click="emit('ready')"
+        >
+          下一步
+        </el-button>
+      </template>
     </div>
 
     <div v-if="pulling" style="margin-top: 12px; text-align: center; color: #909399; font-size: 13px">
@@ -42,9 +50,9 @@ import { ElMessage } from 'element-plus'
 import { repoPull, getProject } from '../api.js'
 
 const props = defineProps({
-  project: { type: Object, default: null },
+  project: { type: Object, required: true },
 })
-const emit = defineEmits(['ready'])
+const emit = defineEmits(['ready', 'project-updated'])
 
 const pulling = ref(false)
 
@@ -67,11 +75,13 @@ async function handlePull() {
   pulling.value = true
   try {
     await repoPull(props.project.id)
-    // 刷新项目数据以更新 local_repo_path
+    // 刷新项目数据，通过事件通知父组件更新
     try {
       const { data } = await getProject(props.project.id)
-      Object.assign(props.project, data)
-    } catch { /* ignore refresh error */ }
+      emit('project-updated', data)
+    } catch {
+      // Refresh failure is not critical
+    }
     ElMessage.success('仓库拉取成功')
     emit('ready')
   } catch (e) {

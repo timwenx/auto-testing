@@ -6,7 +6,7 @@ import os
 import tempfile
 import threading
 from unittest import mock
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework import status
 
@@ -2481,3 +2481,219 @@ class BatchSaveEdgeTest(TestCase):
         )
         self.assertEqual(TC_Model.objects.filter(project=project2).count(), 0)
         self.assertEqual(TC_Model.objects.filter(project=self.project).count(), 1)
+
+
+# ─── Round 3 Fixes Tests ───
+
+class RepoAnalyzeConcurrencyTest(TestCase):
+    """Test concurrent analysis prevention guard."""
+
+    def setUp(self):
+        self.project = Project.objects.create(
+            name='Concurrent Project',
+            repo_url='https://github.com/test/repo.git',
+            local_repo_path='/tmp/concurrent-repo',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_analyze_rejects_when_already_analyzing(self, mock_submit):
+        """Should return 409 when an analysis is already in progress."""
+        RepoAnalysis.objects.create(
+            project=self.project,
+            status='analyzing',
+            local_repo_path=self.project.local_repo_path,
+            discovered_items=[],
+        )
+        resp = self.client.post(f'/api/projects/{self.project.id}/repo/analyze/')
+        self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
+        self.assertIn('正在进行中', resp.data['error'])
+        # Should NOT submit another task
+        mock_submit.assert_not_called()
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_analyze_allows_when_completed(self, mock_submit):
+        """Should allow new analysis when previous one is completed."""
+        RepoAnalysis.objects.create(
+            project=self.project,
+            status='completed',
+            local_repo_path=self.project.local_repo_path,
+            discovered_items=[],
+        )
+        resp = self.client.post(f'/api/projects/{self.project.id}/repo/analyze/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        mock_submit.assert_called_once()
+
+
+class RepoAnalysisListProjectCheckTest(TestCase):
+    """Test repo_analysis_list validates project existence."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_analysis_list_nonexistent_project(self):
+        """Should return 404 for non-existent project."""
+        resp = self.client.get('/api/projects/99999/repo/analysis/list/')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_analysis_list_existing_project(self):
+        """Should return 200 for existing project."""
+        project = Project.objects.create(name='List Project')
+        resp = self.client.get(f'/api/projects/{project.id}/repo/analysis/list/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+
+class BatchSaveAtomicTest(TransactionTestCase):
+    """Test batch_save_testcases atomicity."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Atomic Project')
+        self.client = APIClient()
+
+    def test_batch_save_uses_transaction(self):
+        """Batch save should be wrapped in transaction.atomic."""
+        data = {
+            'testcases': [
+                {'name': 'TC-1'},
+                {'name': 'TC-2'},
+            ]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(TC_Model.objects.filter(project=self.project).count(), 2)
+
+    def test_batch_save_empty_list_returns_400(self):
+        """Empty testcases list should return 400."""
+        data = {'testcases': []}
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class RepoAnalysisAdminTest(TestCase):
+    """Verify RepoAnalysis and PreconditionTemplate are registered in admin."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_repo_analysis_registered(self):
+        from django.contrib.admin.sites import site
+        from core.models import RepoAnalysis
+        self.assertIn(RepoAnalysis, site._registry)
+
+    def test_precondition_template_registered(self):
+        from django.contrib.admin.sites import site
+        from core.models import PreconditionTemplate
+        self.assertIn(PreconditionTemplate, site._registry)
+
+
+class PreconditionUpdateDefaultProtectionTest(TestCase):
+    """Test that default templates are protected from deletion but can be updated."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.default_tpl = PreconditionTemplate.objects.create(
+            name='SSO Login',
+            description='SSO',
+            steps='1. Login',
+            is_default=True,
+        )
+        self.custom_tpl = PreconditionTemplate.objects.create(
+            name='Custom Login',
+            description='Custom',
+            steps='1. Custom login',
+            is_default=False,
+        )
+
+    def test_delete_default_template_rejected(self):
+        resp = self.client.delete(f'/api/preconditions/{self.default_tpl.id}/delete/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(PreconditionTemplate.objects.filter(pk=self.default_tpl.pk).exists())
+
+    def test_delete_custom_template_allowed(self):
+        resp = self.client.delete(f'/api/preconditions/{self.custom_tpl.id}/delete/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(PreconditionTemplate.objects.filter(pk=self.custom_tpl.pk).exists())
+
+    def test_update_template(self):
+        resp = self.client.put(
+            f'/api/preconditions/{self.custom_tpl.id}/',
+            {'name': 'Updated', 'steps': 'New steps'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.custom_tpl.refresh_from_db()
+        self.assertEqual(self.custom_tpl.name, 'Updated')
+
+    def test_update_nonexistent_returns_404(self):
+        resp = self.client.put(
+            '/api/preconditions/99999/',
+            {'name': 'Nope'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class RepoAnalyzerEdgeCaseTest(TestCase):
+    """Additional edge case tests for repo_analyzer parsing."""
+
+    def test_parse_response_with_extra_text_before_json(self):
+        """Should handle text before the JSON block."""
+        from core.repo_analyzer import _parse_analysis_response
+        raw = 'Here are the results:\n{"pages": [{"type": "page", "path": "/home", "name": "Home", "description": "Main page"}], "apis": []}'
+        result = _parse_analysis_response(raw)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['type'], 'page')
+
+    def test_parse_response_empty_pages_and_apis(self):
+        """Should handle empty lists."""
+        from core.repo_analyzer import _parse_analysis_response
+        raw = '{"pages": [], "apis": []}'
+        result = _parse_analysis_response(raw)
+        self.assertEqual(result, [])
+
+    def test_parse_response_missing_name_fills_default(self):
+        """Items without name should get empty string."""
+        from core.repo_analyzer import _parse_analysis_response
+        raw = '{"pages": [{"type": "page", "path": "/x"}], "apis": []}'
+        result = _parse_analysis_response(raw)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].get('name', ''), '')
+
+
+class BatchGeneratorEdgeCaseTest(TestCase):
+    """Additional edge case tests for batch_generator."""
+
+    def test_parse_non_list_items(self):
+        """Items that are not dicts should be handled gracefully."""
+        from core.batch_generator import generate_testcases_for_items
+        # This should not crash, just produce results
+        with mock.patch('core.batch_generator._get_client') as mock_client, \
+             mock.patch('core.batch_generator._get_model', return_value='test-model'):
+            mock_resp = mock.MagicMock()
+            mock_resp.content = [mock.MagicMock(text='[]')]
+            mock_client.return_value.messages.create.return_value = mock_resp
+            result = generate_testcases_for_items(
+                mock.MagicMock(),
+                [{'type': 'page', 'path': '/x', 'name': 'X'}],
+                {},
+                None,
+            )
+            self.assertIsInstance(result, list)
+
+    def test_generate_testcases_single_empty_result(self):
+        """Single generation with empty AI response returns empty dict."""
+        from core.batch_generator import generate_testcases_single
+        with mock.patch('core.batch_generator._get_client') as mock_client, \
+             mock.patch('core.batch_generator._get_model', return_value='test-model'):
+            mock_resp = mock.MagicMock()
+            mock_resp.content = [mock.MagicMock(text='[]')]
+            mock_client.return_value.messages.create.return_value = mock_resp
+            result = generate_testcases_single(
+                mock.MagicMock(),
+                {'type': 'api', 'path': '/api/test', 'name': 'Test'},
+                'Test description',
+            )
+            self.assertEqual(result, {})

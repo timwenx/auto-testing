@@ -36,7 +36,8 @@
       </div>
     </el-radio-group>
 
-    <el-empty v-if="!preconditions.length" description="暂无模板" :image-size="60" />
+    <el-empty v-if="loading" description="加载中..." :image-size="60" />
+    <el-empty v-else-if="!preconditions.length" description="暂无模板" :image-size="60" />
 
     <!-- 创建模板对话框 -->
     <el-dialog v-model="showCreateDialog" title="创建前置条件模板" width="500px">
@@ -80,6 +81,7 @@ const selectedId = computed({
 })
 
 const preconditions = ref([])
+const loading = ref(false)
 const showCreateDialog = ref(false)
 const creating = ref(false)
 const newTemplate = ref({
@@ -92,11 +94,14 @@ const newTemplate = ref({
 onMounted(() => { loadPreconditions() })
 
 async function loadPreconditions() {
+  loading.value = true
   try {
     const { data } = await getPreconditions()
     preconditions.value = data.preconditions || []
   } catch (e) {
-    // silent
+    ElMessage.error('加载前置条件模板失败')
+  } finally {
+    loading.value = false
   }
 }
 
