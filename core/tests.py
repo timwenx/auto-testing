@@ -4473,3 +4473,454 @@ class BatchConvertScriptsTest(TestCase):
             'feature_group': '用户登录',
         }, format='json')
         self.assertEqual(resp.status_code, 400)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Deterministic Parameter Naming Tests
+# ══════════════════════════════════════════════════════════════════
+
+class MakeParamNameDeterministicTest(TestCase):
+    """Verify _make_param_name produces deterministic, selector-based names."""
+
+    def test_same_selector_same_name(self):
+        from core.script_converter import _make_param_name
+        name1 = _make_param_name('param', '#username')
+        name2 = _make_param_name('param', '#username')
+        self.assertEqual(name1, name2)
+
+    def test_different_selector_different_name(self):
+        from core.script_converter import _make_param_name
+        name1 = _make_param_name('param', '#username')
+        name2 = _make_param_name('param', '#password')
+        self.assertNotEqual(name1, name2)
+
+    def test_index_irrelevant_with_selector(self):
+        """Index should not affect name when selector is provided."""
+        from core.script_converter import _make_param_name
+        name1 = _make_param_name('param', '#username', 0)
+        name2 = _make_param_name('param', '#username', 5)
+        self.assertEqual(name1, name2)
+
+    def test_no_selector_uses_index(self):
+        from core.script_converter import _make_param_name
+        name = _make_param_name('param', '', 3)
+        self.assertEqual(name, 'param_3')
+
+    def test_complex_selector_stable(self):
+        from core.script_converter import _make_param_name
+        sel = 'div.form-group input[name="email"]'
+        name1 = _make_param_name('param', sel)
+        name2 = _make_param_name('param', sel)
+        self.assertEqual(name1, name2)
+
+    def test_selector_hash_consistency(self):
+        from core.script_converter import _selector_hash
+        h1 = _selector_hash('#login-btn')
+        h2 = _selector_hash('#login-btn')
+        self.assertEqual(h1, h2)
+        self.assertEqual(len(h1), 8)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Plan Parameters Aggregation Tests
+# ══════════════════════════════════════════════════════════════════
+
+class PlanParametersEndpointTest(TestCase):
+    """Test GET /api/plans/<id>/parameters/ endpoint."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='ParamTest', base_url='https://example.com')
+        self.plan = TestPlan.objects.create(project=self.project, name='ParamPlan')
+
+        # Create two scripts with overlapping and unique parameters
+        self.record1 = ExecutionRecord.objects.create(
+            project=self.project, execution_mode='agent', status='passed',
+            replay_script={'version': 1, 'name': 's1', 'steps': []},
+        )
+        self.record2 = ExecutionRecord.objects.create(
+            project=self.project, execution_mode='agent', status='passed',
+            replay_script={'version': 1, 'name': 's2', 'steps': []},
+        )
+
+        self.script1 = Script.objects.create(
+            project=self.project, name='Login Script', source_execution=self.record1,
+            status='active',
+            script_data={
+                'parameters': {
+                    'param_abc123': {'label': '填写 #username', 'type': 'string', 'default': 'admin'},
+                    'param_def456': {'label': '填写 #password', 'type': 'string', 'default': 'pass123'},
+                },
+                'steps': [],
+            },
+        )
+        self.script2 = Script.objects.create(
+            project=self.project, name='Order Script', source_execution=self.record2,
+            status='active',
+            script_data={
+                'parameters': {
+                    'param_abc123': {'label': '填写 #username', 'type': 'string', 'default': 'admin'},
+                    'param_xyz789': {'label': '填写 #amount', 'type': 'string', 'default': '100'},
+                },
+                'steps': [],
+            },
+        )
+
+    def _add_script_items(self):
+        """Add both scripts as plan items."""
+        TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='script', script=self.script1, sort_order=1,
+        )
+        TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='script', script=self.script2, sort_order=2,
+        )
+
+    def test_parameters_aggregation_basic(self):
+        """Aggregation should return deduplicated parameters."""
+        self._add_script_items()
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        self.assertEqual(resp.status_code, 200)
+
+        params = resp.data['parameters']
+        # 3 unique params across both scripts
+        self.assertEqual(len(params), 3)
+        # Shared param
+        self.assertIn('param_abc123', params)
+        # Script1 unique
+        self.assertIn('param_def456', params)
+        # Script2 unique
+        self.assertIn('param_xyz789', params)
+
+    def test_parameters_no_conflict_same_default(self):
+        """Shared param with same default should NOT be marked as conflict."""
+        self._add_script_items()
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        params = resp.data['parameters']
+        # param_abc123 has same default in both scripts
+        self.assertFalse(params['param_abc123']['conflict'])
+        self.assertEqual(len(params['param_abc123']['sources']), 2)
+
+    def test_parameters_conflict_detection(self):
+        """Shared param with different defaults should be marked as conflict."""
+        # Change script2's shared param default
+        self.script2.script_data['parameters']['param_abc123']['default'] = 'different_user'
+        self.script2.save()
+        self._add_script_items()
+
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        params = resp.data['parameters']
+        self.assertTrue(params['param_abc123']['conflict'])
+        # Sources should show both scripts' defaults
+        sources = params['param_abc123']['sources']
+        defaults = {s['default'] for s in sources}
+        self.assertIn('admin', defaults)
+        self.assertIn('different_user', defaults)
+
+    def test_all_script_params_mapping(self):
+        """all_script_params should map each script's params to defaults."""
+        self._add_script_items()
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        all_script_params = resp.data['all_script_params']
+
+        self.assertIn(str(self.script1.id), all_script_params)
+        self.assertIn(str(self.script2.id), all_script_params)
+
+        s1_params = all_script_params[str(self.script1.id)]
+        self.assertEqual(s1_params['param_abc123'], 'admin')
+
+    def test_parameters_feature_group_expansion(self):
+        """Feature group items should expand to all active scripts in that group."""
+        self.script1.feature_group = 'Login'
+        self.script1.save()
+        self.script2.feature_group = 'Login'
+        self.script2.save()
+
+        TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='feature_group',
+            feature_group_name='Login', sort_order=1,
+        )
+
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        self.assertEqual(resp.status_code, 200)
+        params = resp.data['parameters']
+        self.assertEqual(len(params), 3)
+
+    def test_parameters_empty_plan(self):
+        """Plan with no items should return empty parameters."""
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data['parameters']), 0)
+
+    def test_parameters_nonexistent_plan(self):
+        """Non-existent plan should return 404."""
+        resp = self.client.get('/api/plans/99999/parameters/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_parameters_skips_inactive_scripts(self):
+        """Inactive scripts should not be included."""
+        self._add_script_items()
+        self.script2.status = 'draft'
+        self.script2.save()
+
+        resp = self.client.get(f'/api/plans/{self.plan.id}/parameters/')
+        params = resp.data['parameters']
+        # Only script1's params
+        self.assertIn('param_abc123', params)
+        self.assertIn('param_def456', params)
+        self.assertNotIn('param_xyz789', params)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Plan Execute with Parameter Overrides Tests
+# ══════════════════════════════════════════════════════════════════
+
+class PlanExecuteWithOverridesTest(TestCase):
+    """Test plan execution with parameter_overrides."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='OverrideTest', base_url='https://example.com')
+        self.plan = TestPlan.objects.create(project=self.project, name='OverridePlan')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='ok',
+        )
+        self.record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, execution_mode='agent', status='passed',
+            replay_script={
+                'version': 1, 'name': 'test', 'base_url': 'https://example.com',
+                'parameters': {
+                    'param_user': {'label': '用户名', 'type': 'string', 'default': 'admin'},
+                    'param_pass': {'label': '密码', 'type': 'string', 'default': '123456'},
+                },
+                'steps': [
+                    {'step_num': 1, 'enabled': True, 'tool_name': 'browser_navigate',
+                     'description': 'Navigate', 'inputs': {'url': 'https://example.com'}, 'parameters': []},
+                ],
+            },
+        )
+        self.script = Script.objects.create(
+            project=self.project, name='TestScript', source_execution=self.record,
+            script_data=self.record.replay_script, status='active',
+        )
+        self.plan_item = TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='script', script=self.script, sort_order=1,
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_execute_with_overrides_accepted(self, mock_submit):
+        """Execute with parameter_overrides should be accepted."""
+        resp = self.client.post(
+            f'/api/plans/{self.plan.id}/execute/',
+            {'parameter_overrides': {'param_user': 'newuser', 'param_pass': 'newpass'}},
+            format='json',
+            HTTP_X_PLAN_TOKEN=str(self.plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 202)
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_execute_empty_body_accepted(self, mock_submit):
+        """Execute without body should still work (backward compat)."""
+        resp = self.client.post(
+            f'/api/plans/{self.plan.id}/execute/',
+            HTTP_X_PLAN_TOKEN=str(self.plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 202)
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_execute_null_overrides_accepted(self, mock_submit):
+        """Execute with null parameter_overrides should work."""
+        resp = self.client.post(
+            f'/api/plans/{self.plan.id}/execute/',
+            {'parameter_overrides': {}},
+            format='json',
+            HTTP_X_PLAN_TOKEN=str(self.plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 202)
+
+    def test_run_single_script_filters_overrides(self):
+        """_run_single_script should only pass params the script uses."""
+        from core.views import _run_single_script
+        from django.utils import timezone
+
+        plan_exec = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project,
+            status='running', trigger_source='manual',
+            started_at=timezone.now(),
+        )
+
+        # We can't fully execute the script (needs Playwright), but we can
+        # verify the function correctly filters overrides
+        with mock.patch('core.script_executor.ReplayExecutor') as MockExecutor:
+            mock_executor = mock.MagicMock()
+            MockExecutor.return_value = mock_executor
+
+            _run_single_script(
+                plan_exec, self.script, self.plan,
+                {'param_user': 'override_user', 'param_nonexistent': 'ignored'},
+            )
+
+            # Verify ReplayExecutor.run was called with filtered overrides
+            call_args = mock_executor.run.call_args
+            self.assertIsNotNone(call_args)
+            overrides = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get('parameter_overrides', {})
+            self.assertEqual(overrides, {'param_user': 'override_user'})
+            self.assertNotIn('param_nonexistent', overrides)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Parameter Name Normalization Tests
+# ══════════════════════════════════════════════════════════════════
+
+class NormalizeParameterNamesTest(TestCase):
+    """Test normalize_parameter_names for batch script normalization."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='NormTest', base_url='https://example.com')
+        self.record1 = ExecutionRecord.objects.create(
+            project=self.project, execution_mode='agent', status='passed',
+        )
+        self.record2 = ExecutionRecord.objects.create(
+            project=self.project, execution_mode='agent', status='passed',
+        )
+
+    def test_no_renames_needed(self):
+        """Scripts with consistent names should not be modified."""
+        s1 = Script.objects.create(
+            project=self.project, name='S1', source_execution=self.record1, status='active',
+            script_data={
+                'parameters': {'param_a': {'label': '用户名', 'type': 'string', 'default': 'admin'}},
+                'steps': [{'parameters': ['param_a'], 'inputs': {'value': '{{param_a}}'}}],
+            },
+        )
+        s2 = Script.objects.create(
+            project=self.project, name='S2', source_execution=self.record2, status='active',
+            script_data={
+                'parameters': {'param_b': {'label': '密码', 'type': 'string', 'default': 'pass'}},
+                'steps': [{'parameters': ['param_b'], 'inputs': {'value': '{{param_b}}'}}],
+            },
+        )
+        from core.script_converter import normalize_parameter_names
+        renames = normalize_parameter_names([s1, s2])
+        self.assertEqual(renames, {})
+
+    def test_same_label_different_name_unified(self):
+        """Same label+default but different param names should be unified."""
+        s1 = Script.objects.create(
+            project=self.project, name='S1', source_execution=self.record1, status='active',
+            script_data={
+                'parameters': {'param_abc': {'label': '填写 #username', 'type': 'string', 'default': 'admin'}},
+                'steps': [
+                    {'parameters': ['param_abc'], 'inputs': {'value': '{{param_abc}}'}},
+                ],
+            },
+        )
+        s2 = Script.objects.create(
+            project=self.project, name='S2', source_execution=self.record2, status='active',
+            script_data={
+                'parameters': {'param_xyz': {'label': '填写 #username', 'type': 'string', 'default': 'admin'}},
+                'steps': [
+                    {'parameters': ['param_xyz'], 'inputs': {'value': '{{param_xyz}}'}},
+                ],
+            },
+        )
+        from core.script_converter import normalize_parameter_names
+        renames = normalize_parameter_names([s1, s2])
+
+        # s2's param_xyz should be renamed to param_abc
+        self.assertIn('param_xyz', renames)
+        self.assertEqual(renames['param_xyz'], 'param_abc')
+
+        # Verify s2 was saved with renamed params
+        s2.refresh_from_db()
+        self.assertIn('param_abc', s2.script_data['parameters'])
+        self.assertNotIn('param_xyz', s2.script_data['parameters'])
+
+        # Verify steps were updated
+        step = s2.script_data['steps'][0]
+        self.assertIn('param_abc', step['parameters'])
+        self.assertIn('{{param_abc}}', step['inputs']['value'])
+
+    def test_empty_label_not_grouped(self):
+        """Parameters with empty labels should not be grouped."""
+        s1 = Script.objects.create(
+            project=self.project, name='S1', source_execution=self.record1, status='active',
+            script_data={
+                'parameters': {'param_a': {'label': '', 'type': 'string', 'default': 'val'}},
+                'steps': [],
+            },
+        )
+        s2 = Script.objects.create(
+            project=self.project, name='S2', source_execution=self.record2, status='active',
+            script_data={
+                'parameters': {'param_b': {'label': '', 'type': 'string', 'default': 'val'}},
+                'steps': [],
+            },
+        )
+        from core.script_converter import normalize_parameter_names
+        renames = normalize_parameter_names([s1, s2])
+        self.assertEqual(renames, {})
+
+    def test_different_defaults_not_unified(self):
+        """Same label but different defaults should NOT be unified."""
+        s1 = Script.objects.create(
+            project=self.project, name='S1', source_execution=self.record1, status='active',
+            script_data={
+                'parameters': {'param_a': {'label': '填写 #field', 'type': 'string', 'default': 'val1'}},
+                'steps': [],
+            },
+        )
+        s2 = Script.objects.create(
+            project=self.project, name='S2', source_execution=self.record2, status='active',
+            script_data={
+                'parameters': {'param_b': {'label': '填写 #field', 'type': 'string', 'default': 'val2'}},
+                'steps': [],
+            },
+        )
+        from core.script_converter import normalize_parameter_names
+        renames = normalize_parameter_names([s1, s2])
+        self.assertEqual(renames, {})
+
+    def test_batch_convert_applies_normalization(self):
+        """batch_convert_scripts view should apply normalization automatically."""
+        # Create execution records for batch conversion
+        tc1 = TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            feature_group='FG', sort_order=1,
+        )
+        tc2 = TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            feature_group='FG', sort_order=2,
+        )
+        # Both records have the same tool call structure
+        script_data = json.dumps({
+            'tool_calls': [
+                {'tool': 'browser_navigate', 'input': {'url': 'https://example.com/login'}},
+                {'tool': 'browser_fill', 'input': {'selector': '#username', 'value': 'admin'}},
+            ]
+        })
+        ExecutionRecord.objects.create(
+            project=self.project, testcase=tc1, execution_mode='agent', status='passed',
+            log='=== TOOL_CALLS_JSON ===\n' + script_data,
+        )
+        ExecutionRecord.objects.create(
+            project=self.project, testcase=tc2, execution_mode='agent', status='passed',
+            log='=== TOOL_CALLS_JSON ===\n' + script_data,
+        )
+
+        resp = self.client.post('/api/scripts/batch-convert/', {
+            'project_id': self.project.id,
+            'feature_group': 'FG',
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['created'], 2)
+
+        # Both scripts should have the same parameter name for #username
+        scripts = Script.objects.filter(project=self.project).order_by('name')
+        param_names_sets = []
+        for s in scripts:
+            param_names_sets.append(set(s.script_data.get('parameters', {}).keys()))
+        # Both should share the same parameter name
+        if len(param_names_sets) == 2:
+            # Intersection should be non-empty (shared params)
+            common = param_names_sets[0] & param_names_sets[1]
+            self.assertTrue(len(common) > 0, "Scripts should share parameter names for same selectors")
