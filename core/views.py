@@ -2098,6 +2098,92 @@ def plan_regenerate_token(request, pk):
 
 
 # ══════════════════════════════════════════════════════════════════
+# Plan Parameter Aggregation API
+# ══════════════════════════════════════════════════════════════════
+
+@api_view(['GET'])
+def plan_parameters(request, pk):
+    """GET /api/plans/<id>/parameters/ — 聚合方案下所有脚本的参数（去重）
+
+    遍历方案所有 TestPlanItem，收集 script 类型的 script_data.parameters 和
+    feature_group 类型展开后所有脚本的参数。按参数名去重，同名不同 default 值
+    的标记 conflict 并保留 sources 信息。
+
+    Returns:
+        {
+            parameters: {
+                [name]: {label, type, default, group, sources: [{script_id, script_name, default}]}
+            },
+            all_script_params: {
+                [script_id]: {[name]: value}   // 每个脚本的默认参数值映射
+            }
+        }
+    """
+    try:
+        plan = TestPlan.objects.select_related('project').prefetch_related('items__script', 'items__testcase').get(pk=pk)
+    except TestPlan.DoesNotExist:
+        return Response({'error': '方案不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    items = plan.items.all().order_by('sort_order')
+
+    # Collect all scripts to run (same logic as plan_execute)
+    scripts = []
+    for item in items:
+        if item.item_type == 'script' and item.script:
+            if item.script.status == 'active':
+                scripts.append(item.script)
+        elif item.item_type == 'feature_group':
+            group_scripts = Script.objects.filter(
+                project=plan.project,
+                feature_group=item.feature_group_name,
+                status='active',
+            ).order_by('sort_order')
+            scripts.extend(group_scripts)
+
+    # Aggregate parameters across all scripts
+    aggregated = {}       # pname -> {label, type, default, group, sources: []}
+    all_script_params = {}  # script_id -> {pname: default_value}
+
+    for script in scripts:
+        params = script.script_data.get('parameters', {})
+        script_defaults = {}
+
+        for pname, pinfo in params.items():
+            default = pinfo.get('default', '')
+            script_defaults[pname] = default
+
+            source_entry = {
+                'script_id': script.id,
+                'script_name': script.name,
+                'default': default,
+            }
+
+            if pname not in aggregated:
+                # First occurrence — use this as the base
+                aggregated[pname] = {
+                    'label': pinfo.get('label', pname),
+                    'type': pinfo.get('type', 'string'),
+                    'default': default,
+                    'group': pinfo.get('group', ''),
+                    'conflict': False,
+                    'sources': [source_entry],
+                }
+            else:
+                # Already seen — check for conflict
+                existing = aggregated[pname]
+                existing['sources'].append(source_entry)
+                if str(default) != str(existing['default']):
+                    existing['conflict'] = True
+
+        all_script_params[str(script.id)] = script_defaults
+
+    return Response({
+        'parameters': aggregated,
+        'all_script_params': all_script_params,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
 # PlanExecution API (含 CI/CD 支持)
 # ══════════════════════════════════════════════════════════════════
 
