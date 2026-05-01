@@ -439,3 +439,17 @@ All tasks from the feature group + sort order plan implemented.
 - Frontend builds successfully
 - Django check: 0 issues
 - Commit: `ccd4f71`
+
+## Round 2 — Quality audit and fix
+
+### Issue Found and Fixed
+1. **'未分组' in feature_group autocomplete** (`ProjectDetail.vue`):
+   - `featureGroupSuggestions` included '未分组' (the display label for empty feature_group)
+   - If selected, user would save `feature_group='未分组'`, creating a separate DB group from empty-string ungrouped
+   - Fixed: filter out '未分组' from autocomplete suggestions
+
+### Verification
+- All **246 tests pass**
+- Frontend builds successfully
+- Django check: 0 issues
+- Commit: `effd9cf`
