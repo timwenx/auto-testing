@@ -21,16 +21,18 @@
     </el-card>
 
     <!-- 步骤1: 拉取仓库 -->
-    <div v-show="activeStep === 0">
+    <div v-if="activeStep === 0">
       <RepoStatusCard
         :project="project"
         @ready="onRepoReady"
+        @project-updated="onProjectUpdated"
       />
     </div>
 
     <!-- 步骤2-3: 代码分析 + 选择目标 -->
-    <div v-show="activeStep >= 1 && activeStep <= 2">
+    <div v-if="activeStep >= 1 && activeStep <= 2">
       <CodeAnalysisPanel
+        :key="'analysis-' + analysisKey"
         :project-id="projectId"
         :auto-start="activeStep === 1"
         @analysis-complete="onAnalysisComplete"
@@ -40,10 +42,11 @@
     </div>
 
     <!-- 步骤4: 生成用例 -->
-    <div v-show="activeStep === 3">
+    <div v-if="activeStep === 3">
       <div style="display: flex; gap: 16px; align-items: flex-start">
         <div style="flex: 1">
           <BatchTestCaseEditor
+            :key="'batch-' + batchKey"
             :project-id="projectId"
             :selected-items="selectedItems"
             :descriptions="itemDescriptions"
@@ -61,7 +64,7 @@
     </div>
 
     <!-- 步骤5: 保存完成 -->
-    <div v-show="activeStep === 4">
+    <div v-if="activeStep === 4">
       <el-card>
         <el-result icon="success" title="用例保存成功" :sub-title="'已保存 ' + savedCount + ' 条测试用例'">
           <template #extra>
@@ -94,6 +97,8 @@ const selectedItems = ref([])
 const itemDescriptions = ref({})
 const selectedPreconditionId = ref(null)
 const savedCount = ref(0)
+const analysisKey = ref(0)
+const batchKey = ref(0)
 
 onMounted(async () => {
   try {
@@ -110,6 +115,10 @@ onMounted(async () => {
 
 function onRepoReady() {
   activeStep.value = 1
+}
+
+function onProjectUpdated(data) {
+  project.value = data
 }
 
 function onAnalysisComplete() {
@@ -135,6 +144,10 @@ function restart() {
   activeStep.value = 0
   selectedItems.value = []
   itemDescriptions.value = {}
+  selectedPreconditionId.value = null
+  // Force child components to remount with fresh state
+  analysisKey.value++
+  batchKey.value++
 }
 </script>
 

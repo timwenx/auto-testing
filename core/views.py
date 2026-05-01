@@ -5,6 +5,7 @@ import mimetypes
 from concurrent.futures import ThreadPoolExecutor
 from django.http import JsonResponse, FileResponse, Http404
 from django.db.models import Count, Q
+from django.db import transaction
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -1151,6 +1152,11 @@ def repo_analyze(request, project_id):
     if not project.local_repo_path and not project.repo_url:
         return Response({'error': '项目未配置 Git 仓库'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # 防止重复触发分析
+    active = RepoAnalysis.objects.filter(project=project, status='analyzing').exists()
+    if active:
+        return Response({'error': '该项目的分析正在进行中'}, status=status.HTTP_409_CONFLICT)
+
     def _analyze_task():
         from .repo_analyzer import analyze_repo
         try:
@@ -1185,6 +1191,11 @@ def repo_analysis_detail(request, project_id):
 @api_view(['GET'])
 def repo_analysis_list(request, project_id):
     """GET /api/projects/<id>/repo/analysis/list/ — 获取历史分析列表"""
+    try:
+        Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
     analyses = RepoAnalysis.objects.filter(project_id=project_id)[:20]
     return Response({
         'analyses': RepoAnalysisSerializer(analyses, many=True).data,
@@ -1248,22 +1259,23 @@ def batch_save_testcases(request, project_id):
         return Response({'error': '用例列表为空'}, status=status.HTTP_400_BAD_REQUEST)
 
     created = []
-    for item in testcases_data:
-        tc = TestCase.objects.create(
-            project=project,
-            name=item.get('name', '未命名用例'),
-            description=item.get('description', ''),
-            steps=item.get('steps', ''),
-            expected_result=item.get('expected_result', ''),
-            markdown_content=item.get('markdown_content', ''),
-            priority=item.get('priority', ''),
-            test_type=item.get('test_type', ''),
-            target_page_or_api=item.get('target_page_or_api', ''),
-            status='draft',
-            is_ai_generated=True,
-            created_by='claude_cli',
-        )
-        created.append(tc)
+    with transaction.atomic():
+        for item in testcases_data:
+            tc = TestCase.objects.create(
+                project=project,
+                name=item.get('name', '未命名用例'),
+                description=item.get('description', ''),
+                steps=item.get('steps', ''),
+                expected_result=item.get('expected_result', ''),
+                markdown_content=item.get('markdown_content', ''),
+                priority=item.get('priority', ''),
+                test_type=item.get('test_type', ''),
+                target_page_or_api=item.get('target_page_or_api', ''),
+                status='draft',
+                is_ai_generated=True,
+                created_by='claude_cli',
+            )
+            created.append(tc)
 
     return Response({
         'testcases': TestCaseSerializer(created, many=True).data,

@@ -14,6 +14,14 @@
           >
             开始分析
           </el-button>
+          <el-button
+            v-if="!analyzing && analysis?.status === 'completed'"
+            type="warning"
+            size="small"
+            @click="startAnalysis"
+          >
+            重新分析
+          </el-button>
         </div>
       </div>
     </template>

@@ -62,7 +62,7 @@ export const getSettings = () => api.get('/settings/')
 export const updateSettings = (data) => api.put('/settings/', { settings: data })
 
 // ─── 仓库分析 + 批量用例生成 ───
-export const repoPull = (projectId) => api.post(`/projects/${projectId}/repo/pull/`)
+export const repoPull = (projectId) => aiApi.post(`/projects/${projectId}/repo/pull/`)
 export const repoAnalyze = (projectId) => aiApi.post(`/projects/${projectId}/repo/analyze/`)
 export const getRepoAnalysis = (projectId) => api.get(`/projects/${projectId}/repo/analysis/`)
 export const getRepoAnalysisList = (projectId) => api.get(`/projects/${projectId}/repo/analysis/list/`)
