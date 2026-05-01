@@ -265,15 +265,97 @@
         </template>
       </div>
     </el-dialog>
+
+    <!-- 参数编辑对话框（执行前） -->
+    <el-dialog v-model="showParamDialog" title="方案执行参数" width="700px" :close-on-click-modal="false">
+      <div v-loading="loadingParams">
+        <template v-if="planParams">
+          <!-- 输入参数 -->
+          <div v-if="inputParamEntries.length > 0" style="margin-bottom: 20px">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
+              <el-icon><Setting /></el-icon>
+              <span style="font-weight: 600">输入参数</span>
+              <el-tag size="small" type="info">{{ inputParamEntries.length }} 个</el-tag>
+              <el-button size="small" text style="margin-left: auto" @click="resetAllParams">全部重置为默认值</el-button>
+            </div>
+            <el-form :model="paramEditValues" label-width="auto" size="small">
+              <el-row :gutter="16">
+                <el-col :span="12" v-for="[pname, pinfo] in inputParamEntries" :key="pname">
+                  <el-form-item :label="pinfo.label || pname">
+                    <div class="param-input-row">
+                      <el-input
+                        v-model="paramEditValues[pname]"
+                        :placeholder="String(pinfo.default)"
+                        clearable
+                        @clear="paramEditValues[pname] = String(pinfo.default)"
+                      />
+                      <el-button size="small" text @click="paramEditValues[pname] = String(pinfo.default)">重置</el-button>
+                    </div>
+                    <!-- Conflict warning -->
+                    <div v-if="pinfo.conflict" class="param-conflict-warning">
+                      <el-icon color="#e6a23c"><WarningFilled /></el-icon>
+                      <span>该参数在多个脚本中有不同默认值</span>
+                      <el-popover trigger="hover" width="300">
+                        <template #reference>
+                          <el-button size="small" text type="warning">查看详情</el-button>
+                        </template>
+                        <div v-for="src in pinfo.sources" :key="src.script_id" style="font-size: 12px; padding: 4px 0">
+                          <span style="font-weight: 500">{{ src.script_name }}:</span>
+                          <code style="margin-left: 4px">{{ src.default || '(空)' }}</code>
+                        </div>
+                      </el-popover>
+                    </div>
+                  </el-form-item>
+                </el-col>
+              </el-row>
+            </el-form>
+          </div>
+
+          <!-- 预期结果参数 -->
+          <div v-if="assertParamEntries.length > 0">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px">
+              <el-icon><CircleCheck /></el-icon>
+              <span style="font-weight: 600">预期结果</span>
+              <el-tag size="small" type="success">{{ assertParamEntries.length }} 个</el-tag>
+            </div>
+            <el-form :model="paramEditValues" label-width="auto" size="small">
+              <el-row :gutter="16">
+                <el-col :span="12" v-for="[pname, pinfo] in assertParamEntries" :key="pname">
+                  <el-form-item :label="pinfo.label || pname">
+                    <div class="param-input-row">
+                      <el-input
+                        v-model="paramEditValues[pname]"
+                        :placeholder="String(pinfo.default)"
+                        clearable
+                        @clear="paramEditValues[pname] = String(pinfo.default)"
+                      />
+                      <el-button size="small" text @click="paramEditValues[pname] = String(pinfo.default)">重置</el-button>
+                    </div>
+                  </el-form-item>
+                </el-col>
+              </el-row>
+            </el-form>
+          </div>
+
+          <!-- 无参数提示 -->
+          <el-empty v-if="inputParamEntries.length === 0 && assertParamEntries.length === 0" description="该方案没有可配置的参数" :image-size="60" />
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="showParamDialog = false">取消</el-button>
+        <el-button type="primary" @click="confirmExecuteWithParams" :loading="executingPlan">确认执行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import {
   getPlans, createPlan, getPlan, updatePlan, deletePlan,
   addPlanItem, deletePlanItem, regeneratePlanToken, reorderPlanItems,
   executePlan, getPlanExecutions, getPlanExecution, getPlanExecutionStatus,
+  getPlanParameters,
   getScripts, getScriptFeatureGroups, getProjects, getProjectTestCases,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -295,8 +377,12 @@ const addingItem = ref(false)
 const showCreateOrEdit = ref(false)
 const showAddItem = ref(false)
 const showExecDetail = ref(false)
+const showParamDialog = ref(false)
+const loadingParams = ref(false)
 const editingPlan = ref(null)
 const execDetail = ref(null)
+const planParams = ref(null)
+const paramEditValues = reactive({})
 const planSearch = ref('')
 
 let pollTimer = null
@@ -318,6 +404,16 @@ const tokenDisplay = computed(() => {
   if (!selectedPlan.value?.api_token) return ''
   const t = String(selectedPlan.value.api_token)
   return t.length > 12 ? t.slice(0, 8) + '****' + t.slice(-4) : t
+})
+
+// Parameter dialog computed
+const inputParamEntries = computed(() => {
+  if (!planParams.value?.parameters) return []
+  return Object.entries(planParams.value.parameters).filter(([, v]) => v.group !== 'assertion')
+})
+const assertParamEntries = computed(() => {
+  if (!planParams.value?.parameters) return []
+  return Object.entries(planParams.value.parameters).filter(([, v]) => v.group === 'assertion')
 })
 
 const planStatusType = (s) => {
@@ -469,9 +565,62 @@ async function handleExecutePlan() {
   if (!selectedPlan.value) return
   executingPlan.value = true
   try {
+    // First fetch aggregated parameters
+    const { data } = await getPlanParameters(selectedPlan.value.id)
+    const params = data.parameters || {}
+    const paramNames = Object.keys(params)
+
+    if (paramNames.length === 0) {
+      // No parameters — execute directly
+      await doPlanExecute({})
+    } else {
+      // Show parameter dialog
+      planParams.value = data
+      // Initialize edit values with defaults
+      for (const [pname, pinfo of Object.entries(params)) {
+        paramEditValues[pname] = String(pinfo.default ?? '')
+      }
+      showParamDialog.value = true
+    }
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '获取参数失败')
+  } finally {
+    executingPlan.value = false
+  }
+}
+
+function resetAllParams() {
+  if (!planParams.value?.parameters) return
+  for (const [pname, pinfo] of Object.entries(planParams.value.parameters)) {
+    paramEditValues[pname] = String(pinfo.default ?? '')
+  }
+}
+
+async function confirmExecuteWithParams() {
+  // Build parameter_overrides from edited values (only changed ones)
+  const overrides = {}
+  if (planParams.value?.parameters) {
+    for (const [pname, pinfo] of Object.entries(planParams.value.parameters)) {
+      const edited = paramEditValues[pname]
+      const defaultVal = String(pinfo.default ?? '')
+      if (edited !== undefined && edited !== defaultVal) {
+        overrides[pname] = edited
+      }
+    }
+  }
+  showParamDialog.value = false
+  await doPlanExecute(overrides)
+}
+
+async function doPlanExecute(parameterOverrides) {
+  executingPlan.value = true
+  try {
     const headers = {}
     if (selectedPlan.value.api_token) headers['X-Plan-Token'] = String(selectedPlan.value.api_token)
-    const { data } = await executePlan(selectedPlan.value.id, false, { headers })
+    const { data } = await executePlan(selectedPlan.value.id, false, {
+      headers,
+      data: { parameter_overrides: parameterOverrides },
+    })
     if (data.status === 'running') {
       ElMessage.success('方案执行已提交')
       startPolling(data.id)
