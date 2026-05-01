@@ -478,6 +478,7 @@ def _parse_analysis_response(raw_text: str) -> list:
             'params': [],
             'response_fields': [],
             'feature_group': '',
+            'feature_description': '',
         })
 
     for api in data.get('apis') or []:
@@ -492,6 +493,7 @@ def _parse_analysis_response(raw_text: str) -> list:
             'params': api.get('params') or [],
             'response_fields': api.get('response_fields') or [],
             'feature_group': '',
+            'feature_description': '',
         })
 
     return items
