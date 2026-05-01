@@ -19,6 +19,7 @@ from .serializers import (
     AgentConfirmRequestSerializer, AgentExecuteRequestSerializer,
     RepoAnalysisSerializer, PreconditionTemplateSerializer,
     BatchGenerateRequestSerializer, BatchSaveRequestSerializer,
+    TestCaseReorderSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -417,7 +418,7 @@ def serve_screenshot(request):
     # 返回文件
     content_type = mimetypes.guess_type(abs_path)[0] or 'image/png'
     try:
-        return FileResponse(open(abs_path, 'rb'), content_type=content_type, close=True)
+        return FileResponse(open(abs_path, 'rb'), content_type=content_type)
     except IOError as e:
         logger.error("Failed to read screenshot file: %s", e)
         raise Http404("无法读取截图文件")
@@ -478,7 +479,9 @@ def execute_project_agent(request, project_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    testcases = project.testcases.filter(status__in=['draft', 'ready'])
+    testcases = project.testcases.filter(
+        status__in=['draft', 'ready']
+    ).order_by('feature_group', 'sort_order')
     if not testcases.exists():
         return Response(
             {'error': '没有可执行的测试用例'},
@@ -551,7 +554,7 @@ def _generate_and_save_testcases(project, requirement, target=''):
     )
 
     created = []
-    for item in generated:
+    for idx, item in enumerate(generated, 1):
         tc = TestCase.objects.create(
             project=project,
             name=item.get('name', '未命名用例'),
@@ -562,6 +565,8 @@ def _generate_and_save_testcases(project, requirement, target=''):
             priority=item.get('priority', ''),
             test_type=item.get('test_type', ''),
             target_page_or_api=target,
+            feature_group=item.get('feature_group', ''),
+            sort_order=idx,
             status='draft',
             is_ai_generated=True,
             created_by='agent',
@@ -1259,7 +1264,7 @@ def batch_save_testcases(request, project_id):
 
     created = []
     with transaction.atomic():
-        for item in testcases_data:
+        for idx, item in enumerate(testcases_data, 1):
             tc = TestCase.objects.create(
                 project=project,
                 name=item.get('name', '未命名用例'),
@@ -1270,6 +1275,8 @@ def batch_save_testcases(request, project_id):
                 priority=item.get('priority', ''),
                 test_type=item.get('test_type', ''),
                 target_page_or_api=item.get('target_page_or_api', ''),
+                feature_group=item.get('feature_group', ''),
+                sort_order=item.get('sort_order', idx),
                 status='draft',
                 is_ai_generated=True,
                 created_by='claude_cli',
@@ -1280,6 +1287,79 @@ def batch_save_testcases(request, project_id):
         'testcases': TestCaseSerializer(created, many=True).data,
         'count': len(created),
     }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+def testcase_reorder(request, project_id):
+    """POST /api/projects/<id>/testcases/reorder/ — 批量调整用例排序和功能点分组"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = TestCaseReorderSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    orders = serializer.validated_data['orders']
+    if not orders:
+        return Response({'error': '排序数据为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 构建更新映射
+    order_map = {}
+    for item in orders:
+        order_map[item['id']] = {
+            'feature_group': item.get('feature_group', ''),
+            'sort_order': item.get('sort_order', 0),
+        }
+
+    tc_ids = list(order_map.keys())
+    testcases = TestCase.objects.filter(id__in=tc_ids, project=project)
+    if testcases.count() != len(tc_ids):
+        found_ids = set(testcases.values_list('id', flat=True))
+        missing = set(tc_ids) - found_ids
+        return Response(
+            {'error': f'用例不存在或不属于该项目: {missing}'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    updated_count = 0
+    with transaction.atomic():
+        for tc in testcases:
+            update_data = order_map[tc.id]
+            tc.feature_group = update_data['feature_group']
+            tc.sort_order = update_data['sort_order']
+            tc.save(update_fields=['feature_group', 'sort_order'])
+            updated_count += 1
+
+    return Response({
+        'updated': updated_count,
+    })
+
+
+@api_view(['GET'])
+def project_feature_groups(request, project_id):
+    """GET /api/projects/<id>/feature-groups/ — 获取项目下所有功能点分组"""
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
+
+    groups = (
+        TestCase.objects.filter(project=project)
+        .values('feature_group')
+        .annotate(count=Count('id'))
+        .order_by('feature_group')
+    )
+
+    result = []
+    for g in groups:
+        name = g['feature_group'] or '未分组'
+        result.append({
+            'name': name,
+            'count': g['count'],
+        })
+
+    return Response({'groups': result})
 
 
 # ─── 前置条件模板 CRUD ───

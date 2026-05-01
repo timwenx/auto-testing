@@ -54,6 +54,12 @@
             <span>{{ row.name || '未命名' }}</span>
           </template>
         </el-table-column>
+        <el-table-column prop="feature_group" label="功能点" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.feature_group" size="small" effect="plain">{{ row.feature_group }}</el-tag>
+            <span v-else style="color: #c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="target_page_or_api" label="目标" min-width="120">
           <template #default="{ row }">
             <span style="color: #909399; font-size: 12px">{{ row.target_page_or_api || '-' }}</span>
@@ -119,6 +125,9 @@
       <el-form v-if="editingCase" label-width="80px" size="small">
         <el-form-item label="用例名称">
           <el-input v-model="editingCase.name" />
+        </el-form-item>
+        <el-form-item label="功能点">
+          <el-input v-model="editingCase.feature_group" placeholder="输入功能点，如「用户登录」" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="editingCase.description" type="textarea" :rows="2" />
@@ -257,6 +266,7 @@ function handleAddEmpty() {
     priority: 'P1',
     test_type: '功能',
     target_page_or_api: '',
+    feature_group: '',
     markdown_content: '',
     source_item: '手动新增',
   })

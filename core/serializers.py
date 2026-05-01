@@ -38,7 +38,8 @@ class TestCaseSerializer(serializers.ModelSerializer):
             'id', 'project', 'project_name', 'name', 'description',
             'steps', 'expected_result', 'status', 'is_ai_generated',
             'markdown_content', 'priority', 'test_type',
-            'target_page_or_api', 'version', 'created_by',
+            'target_page_or_api', 'feature_group', 'sort_order',
+            'version', 'created_by',
             'conversation_history',
             'execution_count', 'created_at', 'updated_at',
         ]
@@ -194,4 +195,25 @@ class BatchSaveRequestSerializer(serializers.Serializer):
     testcases = serializers.ListField(
         child=serializers.DictField(),
         help_text='确认后的用例列表 [{name, description, steps, ...}]',
+    )
+
+
+class TestCaseReorderItemSerializer(serializers.Serializer):
+    """单条用例排序信息"""
+    id = serializers.IntegerField(help_text='用例 ID')
+    feature_group = serializers.CharField(
+        required=False, default='', allow_blank=True,
+        help_text='功能点名称',
+    )
+    sort_order = serializers.IntegerField(
+        required=False, default=0,
+        help_text='排序序号',
+    )
+
+
+class TestCaseReorderSerializer(serializers.Serializer):
+    """批量调整用例排序请求"""
+    orders = serializers.ListField(
+        child=TestCaseReorderItemSerializer(),
+        help_text='用例排序信息列表 [{id, feature_group, sort_order}]',
     )

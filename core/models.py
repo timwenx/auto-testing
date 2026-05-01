@@ -70,6 +70,14 @@ class TestCase(models.Model):
         '测试目标页面/API', max_length=500, blank=True, default='',
         help_text='具体的页面路径或 API 端点'
     )
+    feature_group = models.CharField(
+        '功能点', max_length=200, blank=True, default='',
+        help_text='用例所属功能模块，如「用户登录」「订单管理」'
+    )
+    sort_order = models.IntegerField(
+        '排序序号', default=0,
+        help_text='组内执行顺序，数字越小越先执行'
+    )
     version = models.IntegerField('版本号', default=1)
     created_by = models.CharField(
         '创建方式', max_length=20, choices=CREATED_BY_CHOICES, default='manual'
@@ -82,9 +90,12 @@ class TestCase(models.Model):
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
-        ordering = ['-updated_at']
+        ordering = ['feature_group', 'sort_order', '-updated_at']
         verbose_name = '测试用例'
         verbose_name_plural = '测试用例'
+        indexes = [
+            models.Index(fields=['feature_group', 'sort_order'], name='idx_tc_group_order'),
+        ]
 
     def __str__(self):
         return f"[{self.project.name}] {self.name}"

@@ -27,6 +27,8 @@ export const createTestCase = (data) => api.post('/testcases/', data)
 export const updateTestCase = (id, data) => api.put(`/testcases/${id}/`, data)
 export const deleteTestCase = (id) => api.delete(`/testcases/${id}/`)
 export const getProjectTestCases = (projectId) => api.get(`/projects/${projectId}/testcases/`)
+export const reorderTestcases = (projectId, orders) => api.post(`/projects/${projectId}/testcases/reorder/`, { orders })
+export const getFeatureGroups = (projectId) => api.get(`/projects/${projectId}/feature-groups/`)
 
 // ─── 执行 ───
 export const getExecutions = (params) => api.get('/executions/', { params })

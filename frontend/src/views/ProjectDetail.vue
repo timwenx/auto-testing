@@ -6,6 +6,9 @@
         <div class="card-header">
           <span>{{ project.name }}</span>
           <div>
+            <el-button size="small" @click="openProjectEditor">
+              <el-icon><Edit /></el-icon> 编辑项目
+            </el-button>
             <el-button type="warning" size="small" @click="handleExecuteAllAgent" :loading="executingAllAgent">
               <el-icon><Cpu /></el-icon> Agent 批量执行
             </el-button>
@@ -26,6 +29,14 @@
         <div class="card-header">
           <span>测试用例</span>
           <div>
+            <el-button-group size="small" style="margin-right: 8px">
+              <el-button :type="viewMode === 'grouped' ? 'primary' : ''" @click="viewMode = 'grouped'">
+                分组视图
+              </el-button>
+              <el-button :type="viewMode === 'flat' ? 'primary' : ''" @click="viewMode = 'flat'">
+                列表视图
+              </el-button>
+            </el-button-group>
             <el-button size="small" @click="goToTestCaseManager">
               <el-icon><FolderOpened /></el-icon> 用例管理
             </el-button>
@@ -38,7 +49,71 @@
           </div>
         </div>
       </template>
-      <el-table :data="testcases" style="width: 100%">
+
+      <!-- 分组视图 -->
+      <template v-if="viewMode === 'grouped'">
+        <el-collapse v-model="activeCollapse">
+          <el-collapse-item
+            v-for="groupName in groupNames"
+            :key="groupName"
+            :name="groupName"
+          >
+            <template #title>
+              <div class="group-title">
+                <el-icon style="margin-right: 6px"><Folder /></el-icon>
+                <span>{{ groupName }}</span>
+                <el-tag size="small" type="info" style="margin-left: 8px">
+                  {{ groupedTestcases[groupName]?.length || 0 }}
+                </el-tag>
+              </div>
+            </template>
+            <el-table :data="groupedTestcases[groupName] || []" style="width: 100%" size="small">
+              <el-table-column prop="name" label="用例名称" min-width="180" />
+              <el-table-column prop="priority" label="优先级" width="70">
+                <template #default="{ row }">
+                  <el-tag v-if="row.priority === 'P0'" type="danger" size="small">P0</el-tag>
+                  <el-tag v-else-if="row.priority === 'P1'" type="warning" size="small">P1</el-tag>
+                  <el-tag v-else-if="row.priority === 'P2'" type="info" size="small">P2</el-tag>
+                  <span v-else style="color: #c0c4cc">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="test_type" label="类型" width="70">
+                <template #default="{ row }">
+                  <el-tag v-if="row.test_type" size="small" effect="plain">{{ row.test_type }}</el-tag>
+                  <span v-else style="color: #c0c4cc">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="sort_order" label="序号" width="60" />
+              <el-table-column label="操作" width="380" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" text type="primary" @click="openEditor(row)">编辑</el-button>
+                  <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
+                  <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
+                  <el-button size="small" text @click="showDetail(row)">详情</el-button>
+                  <el-button size="small" text type="info" @click="handleMoveUp(row)">↑</el-button>
+                  <el-button size="small" text type="info" @click="handleMoveDown(row)">↓</el-button>
+                  <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-collapse-item>
+        </el-collapse>
+        <el-empty v-if="!groupNames.length" description="暂无测试用例" />
+      </template>
+
+      <!-- 扁平列表视图（兼容旧模式） -->
+      <el-table v-else :data="testcases" style="width: 100%">
+        <el-table-column prop="feature_group" label="功能点" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.feature_group" size="small" effect="plain">{{ row.feature_group }}</el-tag>
+            <span v-else style="color: #c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="name" label="用例名称" />
         <el-table-column prop="priority" label="优先级" width="90">
           <template #default="{ row }">
@@ -65,6 +140,7 @@
             <span v-else>手动</span>
           </template>
         </el-table-column>
+        <el-table-column prop="sort_order" label="序号" width="70" />
         <el-table-column prop="execution_count" label="执行次数" width="90" />
         <el-table-column label="操作" width="400" fixed="right">
           <template #default="{ row }">
@@ -109,6 +185,20 @@
           <el-form-item label="用例名称">
             <el-input v-model="editingTC.name" />
           </el-form-item>
+          <div style="display: flex; gap: 16px">
+            <el-form-item label="功能点" style="flex: 1">
+              <el-autocomplete
+                v-model="editingTC.feature_group"
+                :fetch-suggestions="queryFeatureGroup"
+                placeholder="输入或选择功能点"
+                clearable
+                style="width: 100%"
+              />
+            </el-form-item>
+            <el-form-item label="排序序号" style="flex: 0 0 200px">
+              <el-input-number v-model="editingTC.sort_order" :min="0" :max="9999" />
+            </el-form-item>
+          </div>
         </el-form>
         <div class="md-editor-layout">
           <div class="md-editor-left">
@@ -136,6 +226,15 @@
       <el-form :model="form" label-width="80px">
         <el-form-item label="用例名称">
           <el-input v-model="form.name" />
+        </el-form-item>
+        <el-form-item label="功能点">
+          <el-autocomplete
+            v-model="form.feature_group"
+            :fetch-suggestions="queryFeatureGroup"
+            placeholder="输入或选择功能点"
+            clearable
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" />
@@ -321,6 +420,43 @@
       </div>
     </el-dialog>
 
+    <!-- 编辑项目弹窗 -->
+    <el-dialog v-model="showEditProject" title="编辑项目" width="600px">
+      <el-form :model="editProjectForm" label-width="100px">
+        <el-form-item label="项目名称">
+          <el-input v-model="editProjectForm.name" />
+        </el-form-item>
+        <el-form-item label="项目描述">
+          <el-input v-model="editProjectForm.description" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="目标 URL">
+          <el-input v-model="editProjectForm.base_url" placeholder="测试目标网址" />
+        </el-form-item>
+        <el-form-item label="Git 仓库">
+          <el-input v-model="editProjectForm.repo_url" placeholder="Git 仓库地址" />
+        </el-form-item>
+        <el-form-item label="仓库账号">
+          <el-input v-model="editProjectForm.repo_username" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="仓库密码">
+          <el-input v-model="editProjectForm.repo_password" type="password" placeholder="留空则不修改" show-password />
+        </el-form-item>
+        <el-form-item label="GitHub 地址">
+          <el-input v-model="editProjectForm.github_url" placeholder="可选" />
+        </el-form-item>
+        <el-form-item label="GitHub Token">
+          <el-input v-model="editProjectForm.github_token" type="password" placeholder="留空则不修改" show-password />
+        </el-form-item>
+        <el-form-item label="本地仓库路径">
+          <el-input v-model="editProjectForm.local_repo_path" placeholder="可选，本地克隆路径" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditProject = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveProject" :loading="savingProject">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 图片预览 -->
     <el-dialog v-model="showImagePreview" title="截图预览" width="70%">
       <div style="text-align: center">
@@ -335,11 +471,12 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import {
-  getProject, getProjectTestCases, createTestCase,
+  getProject, updateProject, getProjectTestCases, createTestCase,
   updateTestCase, deleteTestCase,
   executeTestCaseAgent, executeProjectAgent,
   aiGenerateTestCase, aiAdjustTestCase,
   getExecutions,
+  reorderTestcases, getFeatureGroups,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AgentRefineDialog from './AgentRefineDialog.vue'
@@ -377,7 +514,34 @@ const executionDetail = ref(null)
 const executionDetailLoading = ref(false)
 const previewImage = ref('')
 const showImagePreview = ref(false)
-const form = ref({ name: '', description: '', steps: '', expected_result: '' })
+const form = ref({ name: '', description: '', steps: '', expected_result: '', feature_group: '' })
+const showEditProject = ref(false)
+const savingProject = ref(false)
+const editProjectForm = ref({ name: '', description: '', base_url: '', repo_url: '', repo_username: '', repo_password: '', github_url: '', github_token: '', local_repo_path: '' })
+
+// 分组视图相关
+const viewMode = ref('grouped')  // 'grouped' | 'flat'
+const featureGroups = ref([])  // [{ name, count }]
+const activeCollapse = ref([])
+
+// 分组 computed
+const groupedTestcases = computed(() => {
+  const groups = {}
+  for (const tc of testcases.value) {
+    const key = tc.feature_group || '未分组'
+    if (!groups[key]) groups[key] = []
+    groups[key].push(tc)
+  }
+  // 每组内按 sort_order 排序
+  for (const key of Object.keys(groups)) {
+    groups[key].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  }
+  return groups
+})
+
+const groupNames = computed(() => {
+  return Object.keys(groupedTestcases.value)
+})
 
 // Configure marked for safe rendering
 marked.setOptions({ breaks: true, gfm: true })
@@ -396,6 +560,8 @@ function openEditor(row) {
   editingTC.value = {
     id: row.id,
     name: row.name,
+    feature_group: row.feature_group || '',
+    sort_order: row.sort_order || 0,
     markdown_content: row.markdown_content || `## 测试步骤\n\n${row.steps || ''}\n\n## 预期结果\n\n${row.expected_result || ''}`,
   }
   showEditDialog.value = true
@@ -407,6 +573,8 @@ async function handleSaveTC() {
   try {
     await updateTestCase(editingTC.value.id, {
       name: editingTC.value.name,
+      feature_group: editingTC.value.feature_group,
+      sort_order: editingTC.value.sort_order,
       markdown_content: editingTC.value.markdown_content,
     })
     ElMessage.success('保存成功')
@@ -427,12 +595,16 @@ const statusType = (s) => {
 const loadData = async () => {
   loading.value = true
   try {
-    const [p, tc] = await Promise.all([
+    const [p, tc, fg] = await Promise.all([
       getProject(projectId),
       getProjectTestCases(projectId),
+      getFeatureGroups(projectId),
     ])
     project.value = p.data
     testcases.value = tc.data.results || tc.data
+    featureGroups.value = (fg.data.groups || [])
+    // 默认展开所有分组
+    activeCollapse.value = Object.keys(groupedTestcases.value)
   } finally {
     loading.value = false
   }
@@ -443,7 +615,7 @@ const handleCreateTC = async () => {
   await createTestCase({ ...form.value, project: parseInt(projectId) })
   ElMessage.success('创建成功')
   showCreate.value = false
-  form.value = { name: '', description: '', steps: '', expected_result: '' }
+  form.value = { name: '', description: '', steps: '', expected_result: '', feature_group: '' }
   await loadData()
 }
 
@@ -617,6 +789,93 @@ const handlePreviewImage = (src) => {
   showImagePreview.value = true
 }
 
+function openProjectEditor() {
+  editProjectForm.value = {
+    name: project.value.name || '',
+    description: project.value.description || '',
+    base_url: project.value.base_url || '',
+    repo_url: project.value.repo_url || '',
+    repo_username: project.value.repo_username || '',
+    repo_password: '',
+    github_url: project.value.github_url || '',
+    github_token: '',
+    local_repo_path: project.value.local_repo_path || '',
+  }
+  showEditProject.value = true
+}
+
+async function handleSaveProject() {
+  if (!editProjectForm.value.name) return ElMessage.warning('请输入项目名称')
+  savingProject.value = true
+  try {
+    const data = { ...editProjectForm.value }
+    if (!data.repo_password) delete data.repo_password
+    if (!data.github_token) delete data.github_token
+    await updateProject(projectId, data)
+    ElMessage.success('项目信息已更新')
+    showEditProject.value = false
+    await loadData()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '更新失败')
+  } finally {
+    savingProject.value = false
+  }
+}
+
+// ─── 排序相关 ───
+
+async function handleMoveUp(row) {
+  const group = row.feature_group || '未分组'
+  const members = groupedTestcases.value[group] || []
+  const idx = members.findIndex(tc => tc.id === row.id)
+  if (idx <= 0) return
+  // 交换 sort_order
+  const orders = members.map((tc, i) => ({
+    id: tc.id,
+    feature_group: tc.feature_group || '',
+    sort_order: i + 1,
+  }))
+  // 交换当前和上一个
+  ;[orders[idx].sort_order, orders[idx - 1].sort_order] = [orders[idx - 1].sort_order, orders[idx].sort_order]
+  try {
+    await reorderTestcases(projectId, orders)
+    await loadData()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '排序失败')
+  }
+}
+
+async function handleMoveDown(row) {
+  const group = row.feature_group || '未分组'
+  const members = groupedTestcases.value[group] || []
+  const idx = members.findIndex(tc => tc.id === row.id)
+  if (idx < 0 || idx >= members.length - 1) return
+  const orders = members.map((tc, i) => ({
+    id: tc.id,
+    feature_group: tc.feature_group || '',
+    sort_order: i + 1,
+  }))
+  ;[orders[idx].sort_order, orders[idx + 1].sort_order] = [orders[idx + 1].sort_order, orders[idx].sort_order]
+  try {
+    await reorderTestcases(projectId, orders)
+    await loadData()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '排序失败')
+  }
+}
+
+// feature_group autocomplete 建议列表
+const featureGroupSuggestions = computed(() => {
+  return featureGroups.value.map(g => ({ value: g.name }))
+})
+
+function queryFeatureGroup(queryString, cb) {
+  const results = queryString
+    ? featureGroupSuggestions.value.filter(s => s.value.toLowerCase().includes(queryString.toLowerCase()))
+    : featureGroupSuggestions.value
+  cb(results)
+}
+
 onMounted(loadData)
 </script>
 
@@ -771,5 +1030,16 @@ onMounted(loadData)
   border-radius: 4px;
   overflow-y: auto;
   background: #fafafa;
+}
+.group-title {
+  display: flex;
+  align-items: center;
+  font-weight: 500;
+  font-size: 14px;
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 </style>
