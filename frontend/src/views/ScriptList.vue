@@ -31,11 +31,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="170" />
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="editScript(row)">编辑</el-button>
             <el-button size="small" text type="success" @click="executeScript(row)">执行</el-button>
             <el-button size="small" text type="warning" @click="openReplaySelect(row)">回放</el-button>
+            <el-button size="small" text type="info" @click="handleConvertToScript(row)">转脚本</el-button>
             <el-button size="small" text type="danger" @click="deleteScript(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -121,7 +122,10 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getExecutions, getProjects, updateReplayScript, replayExecute } from '../api'
+import {
+  getExecutions, getProjects, updateReplayScript, replayExecute,
+  getScripts as getScriptModels, convertToScriptModel, executeScript as executeScriptModel,
+} from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const router = useRouter()
@@ -228,6 +232,27 @@ async function deleteScript(row) {
   } catch {
     // cancelled
   }
+}
+
+async function handleConvertToScript(row) {
+  try {
+    await ElMessageBox.confirm('将此执行记录转换为独立的可复用脚本？', '转换确认')
+    const { data } = await convertToScriptModel({ execution_id: row.id })
+    ElMessage.success(`脚本「${data.name}」已创建`)
+    loadScriptModels()
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error(e.response?.data?.error || '转换失败')
+    }
+  }
+}
+
+async function loadScriptModels() {
+  // Also load script model records for reference
+  try {
+    const { data } = await getScriptModels({ status: 'active' })
+    // Just for reference — could be displayed in a separate tab
+  } catch (e) { /* ignore */ }
 }
 
 watch(projectFilter, () => {})

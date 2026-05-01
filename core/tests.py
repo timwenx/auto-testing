@@ -13,6 +13,7 @@ from rest_framework import status
 from .models import (
     Project, TestCase as TC_Model, ExecutionRecord, AIConversation,
     SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate,
+    Script, TestPlan, TestPlanItem, PlanExecution,
 )
 from .execution_engine import _strip_markdown_code_fences, _build_step_logs, _extract_screenshots
 
@@ -2990,3 +2991,584 @@ class BatchSaveFeatureGroupTest(TestCase):
         self.assertEqual(tcs[0].sort_order, 1)
         self.assertEqual(tcs[1].sort_order, 2)
         self.assertEqual(tcs[2].sort_order, 3)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Script Model + API Tests
+# ══════════════════════════════════════════════════════════════════
+
+class ScriptModelTest(TestCase):
+    def setUp(self):
+        self.project = Project.objects.create(name='ScriptTest', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='Login Test',
+            steps='Navigate to login', expected_result='Login succeeds',
+        )
+
+    def test_create_script(self):
+        script = Script.objects.create(
+            project=self.project, testcase=self.tc,
+            name='Login Script', feature_group='登录',
+            script_data={'version': 1, 'parameters': {}, 'steps': []},
+            status='draft', version=1,
+        )
+        self.assertEqual(str(script), '[draft] Login Script (v1)')
+        self.assertEqual(script.project, self.project)
+        self.assertEqual(script.testcase, self.tc)
+
+    def test_default_values(self):
+        script = Script.objects.create(project=self.project, name='Test')
+        self.assertEqual(script.status, 'draft')
+        self.assertEqual(script.version, 1)
+        self.assertEqual(script.sort_order, 0)
+        self.assertEqual(script.feature_group, '')
+
+    def test_ordering(self):
+        Script.objects.create(project=self.project, name='B', feature_group='Group2', sort_order=2)
+        Script.objects.create(project=self.project, name='A', feature_group='Group1', sort_order=1)
+        scripts = list(Script.objects.all())
+        self.assertEqual(scripts[0].name, 'A')
+        self.assertEqual(scripts[1].name, 'B')
+
+
+class ScriptAPITest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='ScriptAPITest', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC1', steps='Step 1', expected_result='OK',
+        )
+
+    def test_script_list(self):
+        Script.objects.create(project=self.project, name='S1', script_data={'steps': []})
+        Script.objects.create(project=self.project, name='S2', script_data={'steps': []})
+        resp = self.client.get('/api/scripts/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data['scripts']), 2)
+
+    def test_script_list_filter_by_project(self):
+        p2 = Project.objects.create(name='Other', base_url='https://other.com')
+        Script.objects.create(project=self.project, name='S1')
+        Script.objects.create(project=p2, name='S2')
+        resp = self.client.get('/api/scripts/', {'project': self.project.id})
+        self.assertEqual(len(resp.data['scripts']), 1)
+        self.assertEqual(resp.data['scripts'][0]['name'], 'S1')
+
+    def test_script_detail(self):
+        script = Script.objects.create(
+            project=self.project, testcase=self.tc,
+            name='Detail Script', script_data={'version': 1, 'parameters': {}, 'steps': []},
+        )
+        resp = self.client.get(f'/api/scripts/{script.id}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['name'], 'Detail Script')
+        self.assertEqual(resp.data['testcase_name'], 'TC1')
+
+    def test_script_update(self):
+        script = Script.objects.create(project=self.project, name='Old Name')
+        resp = self.client.put(
+            f'/api/scripts/{script.id}/update/',
+            {'name': 'New Name', 'feature_group': 'Login', 'status': 'active'},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        script.refresh_from_db()
+        self.assertEqual(script.name, 'New Name')
+        self.assertEqual(script.feature_group, 'Login')
+        self.assertEqual(script.status, 'active')
+
+    def test_script_delete(self):
+        script = Script.objects.create(project=self.project, name='ToDelete')
+        resp = self.client.delete(f'/api/scripts/{script.id}/delete/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(Script.objects.filter(id=script.id).exists())
+
+    def test_script_convert(self):
+        """Test converting an ExecutionRecord to a Script model"""
+        record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc,
+            execution_mode='agent', status='passed',
+            log='=== TOOL_CALLS_JSON ===\n{"tool_calls":[{"tool":"browser_navigate","input":{"url":"https://example.com"}}]}',
+            step_logs=[{'step_num': 1, 'action': 'navigate', 'tool_name': 'browser_navigate', 'target': 'https://example.com', 'result': 'OK'}],
+        )
+        resp = self.client.post('/api/scripts/convert/', {
+            'execution_id': record.id,
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn('name', resp.data)
+        self.assertEqual(resp.data['project'], self.project.id)
+        # Verify Script was created
+        script = Script.objects.get(source_execution=record)
+        self.assertEqual(script.testcase, self.tc)
+
+    def test_script_convert_non_agent_rejected(self):
+        record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc,
+            execution_mode='script', status='passed',
+        )
+        resp = self.client.post('/api/scripts/convert/', {
+            'execution_id': record.id,
+        }, format='json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_script_convert_non_terminal_rejected(self):
+        record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc,
+            execution_mode='agent', status='running',
+        )
+        resp = self.client.post('/api/scripts/convert/', {
+            'execution_id': record.id,
+        }, format='json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_script_feature_groups(self):
+        Script.objects.create(project=self.project, name='S1', feature_group='Login')
+        Script.objects.create(project=self.project, name='S2', feature_group='Login')
+        Script.objects.create(project=self.project, name='S3', feature_group='Order')
+        resp = self.client.get('/api/scripts/feature-groups/', {'project': self.project.id})
+        self.assertEqual(resp.status_code, 200)
+        groups = resp.data['groups']
+        self.assertEqual(len(groups), 2)
+        # Find Login group
+        login_g = next(g for g in groups if g['name'] == 'Login')
+        self.assertEqual(login_g['count'], 2)
+
+
+class ScriptExecuteTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='ScriptExecTest', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='TC', steps='s', expected_result='ok',
+        )
+        # Create an execution record with replay script data
+        self.record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc,
+            execution_mode='agent', status='passed',
+            replay_script={'version': 1, 'name': 'test', 'base_url': 'https://example.com',
+                          'parameters': {}, 'steps': [
+                              {'step_num': 1, 'enabled': True, 'tool_name': 'browser_navigate',
+                               'description': 'Navigate', 'inputs': {'url': 'https://example.com'}, 'parameters': []}
+                          ]},
+        )
+        self.script = Script.objects.create(
+            project=self.project, testcase=self.tc,
+            source_execution=self.record, name='Test Script',
+            script_data=self.record.replay_script, status='active',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_script_execute(self, mock_submit):
+        resp = self.client.post(f'/api/scripts/{self.script.id}/execute/', format='json')
+        self.assertEqual(resp.status_code, 202)
+        mock_submit.assert_called_once()
+        # Verify ExecutionRecord was created
+        new_record = ExecutionRecord.objects.filter(source_execution=self.record, execution_mode='replay').first()
+        self.assertIsNotNone(new_record)
+
+    def test_script_execute_no_source(self):
+        script = Script.objects.create(
+            project=self.project, name='No Source',
+            script_data={'steps': []}, status='active',
+        )
+        resp = self.client.post(f'/api/scripts/{script.id}/execute/', format='json')
+        self.assertEqual(resp.status_code, 400)
+
+
+# ══════════════════════════════════════════════════════════════════
+# TestPlan + TestPlanItem Tests
+# ══════════════════════════════════════════════════════════════════
+
+class TestPlanModelTest(TestCase):
+    def setUp(self):
+        self.project = Project.objects.create(name='PlanTest', base_url='https://example.com')
+
+    def test_create_plan(self):
+        plan = TestPlan.objects.create(project=self.project, name='Smoke Test')
+        self.assertIn('draft', str(plan))
+        self.assertTrue(plan.api_token)  # Auto-generated UUID
+
+    def test_unique_api_token(self):
+        plan1 = TestPlan.objects.create(project=self.project, name='Plan1')
+        plan2 = TestPlan.objects.create(project=self.project, name='Plan2')
+        self.assertNotEqual(plan1.api_token, plan2.api_token)
+
+    def test_plan_item_script_type(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='ok')
+        record = ExecutionRecord.objects.create(project=self.project, testcase=tc, execution_mode='agent', status='passed')
+        script = Script.objects.create(project=self.project, name='S1', source_execution=record, script_data={})
+        item = TestPlanItem.objects.create(
+            test_plan=plan, item_type='script', script=script, sort_order=1,
+        )
+        self.assertIn('Script', str(item))
+        self.assertIn('S1', str(item))
+
+    def test_plan_item_feature_group_type(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        item = TestPlanItem.objects.create(
+            test_plan=plan, item_type='feature_group', feature_group_name='Login', sort_order=1,
+        )
+        self.assertIn('Feature', str(item))
+        self.assertIn('Login', str(item))
+
+    def test_plan_item_ordering(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        TestPlanItem.objects.create(test_plan=plan, item_type='feature_group', feature_group_name='B', sort_order=2)
+        TestPlanItem.objects.create(test_plan=plan, item_type='feature_group', feature_group_name='A', sort_order=1)
+        items = list(plan.items.all())
+        self.assertEqual(items[0].feature_group_name, 'A')
+        self.assertEqual(items[1].feature_group_name, 'B')
+
+
+class TestPlanAPITest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='PlanAPITest', base_url='https://example.com')
+
+    def test_plan_create(self):
+        resp = self.client.post('/api/plans/create/', {
+            'project': self.project.id, 'name': 'My Plan', 'description': 'Test plan',
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['name'], 'My Plan')
+        self.assertIn('api_token', resp.data)
+
+    def test_plan_list(self):
+        TestPlan.objects.create(project=self.project, name='Plan1')
+        TestPlan.objects.create(project=self.project, name='Plan2')
+        resp = self.client.get('/api/plans/')
+        self.assertEqual(len(resp.data['plans']), 2)
+
+    def test_plan_list_filter_project(self):
+        p2 = Project.objects.create(name='Other', base_url='https://other.com')
+        TestPlan.objects.create(project=self.project, name='Plan1')
+        TestPlan.objects.create(project=p2, name='Plan2')
+        resp = self.client.get('/api/plans/', {'project': self.project.id})
+        self.assertEqual(len(resp.data['plans']), 1)
+
+    def test_plan_detail(self):
+        plan = TestPlan.objects.create(project=self.project, name='Detail Plan')
+        resp = self.client.get(f'/api/plans/{plan.id}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['name'], 'Detail Plan')
+        self.assertEqual(resp.data['item_count'], 0)
+
+    def test_plan_update(self):
+        plan = TestPlan.objects.create(project=self.project, name='Old Name')
+        resp = self.client.put(f'/api/plans/{plan.id}/update/', {
+            'name': 'New Name', 'status': 'active',
+        }, format='json')
+        self.assertEqual(resp.status_code, 200)
+        plan.refresh_from_db()
+        self.assertEqual(plan.name, 'New Name')
+        self.assertEqual(plan.status, 'active')
+
+    def test_plan_delete(self):
+        plan = TestPlan.objects.create(project=self.project, name='ToDelete')
+        resp = self.client.delete(f'/api/plans/{plan.id}/delete/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(TestPlan.objects.filter(id=plan.id).exists())
+
+    def test_add_script_item(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='ok')
+        record = ExecutionRecord.objects.create(project=self.project, testcase=tc, status='passed')
+        script = Script.objects.create(project=self.project, name='S1', source_execution=record, script_data={}, status='active')
+        resp = self.client.post(f'/api/plans/{plan.id}/items/', {
+            'item_type': 'script', 'script_id': script.id,
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['item_type'], 'script')
+        self.assertEqual(resp.data['script'], script.id)
+
+    def test_add_feature_group_item(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        resp = self.client.post(f'/api/plans/{plan.id}/items/', {
+            'item_type': 'feature_group', 'feature_group_name': 'Login',
+        }, format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data['feature_group_name'], 'Login')
+
+    def test_add_script_item_missing_id(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        resp = self.client.post(f'/api/plans/{plan.id}/items/', {
+            'item_type': 'script',
+        }, format='json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_feature_group_item_missing_name(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        resp = self.client.post(f'/api/plans/{plan.id}/items/', {
+            'item_type': 'feature_group',
+        }, format='json')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_reorder_items(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        item1 = TestPlanItem.objects.create(test_plan=plan, item_type='feature_group', feature_group_name='A', sort_order=1)
+        item2 = TestPlanItem.objects.create(test_plan=plan, item_type='feature_group', feature_group_name='B', sort_order=2)
+        resp = self.client.put(f'/api/plans/{plan.id}/items/reorder/', {
+            'orders': [{'id': item1.id, 'sort_order': 2}, {'id': item2.id, 'sort_order': 1}],
+        }, format='json')
+        self.assertEqual(resp.status_code, 200)
+        item1.refresh_from_db()
+        item2.refresh_from_db()
+        self.assertEqual(item1.sort_order, 2)
+        self.assertEqual(item2.sort_order, 1)
+
+    def test_delete_item(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        item = TestPlanItem.objects.create(test_plan=plan, item_type='feature_group', feature_group_name='A')
+        resp = self.client.delete(f'/api/plans/items/{item.id}/delete/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(TestPlanItem.objects.filter(id=item.id).exists())
+
+    def test_regenerate_token(self):
+        plan = TestPlan.objects.create(project=self.project, name='Plan')
+        old_token = plan.api_token
+        resp = self.client.post(f'/api/plans/{plan.id}/regenerate-token/')
+        self.assertEqual(resp.status_code, 200)
+        plan.refresh_from_db()
+        self.assertNotEqual(plan.api_token, old_token)
+
+
+# ══════════════════════════════════════════════════════════════════
+# PlanExecution + CI/CD Tests
+# ══════════════════════════════════════════════════════════════════
+
+class PlanExecutionModelTest(TestCase):
+    def setUp(self):
+        self.project = Project.objects.create(name='PlanExecTest', base_url='https://example.com')
+        self.plan = TestPlan.objects.create(project=self.project, name='Plan')
+
+    def test_create_plan_execution(self):
+        pe = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project,
+            status='running', trigger_source='manual',
+            summary={'total': 5, 'passed': 3, 'failed': 1, 'error': 0, 'skipped': 1},
+        )
+        self.assertIn('running', str(pe))
+        self.assertIn('Plan', str(pe))
+
+    def test_execution_record_plan_execution_fk(self):
+        pe = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project, status='pending',
+        )
+        tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='ok')
+        record = ExecutionRecord.objects.create(
+            project=self.project, testcase=tc, status='passed', plan_execution=pe,
+        )
+        self.assertEqual(record.plan_execution, pe)
+        self.assertIn('Plan', str(record))
+
+    def test_execution_record_without_plan(self):
+        tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='ok')
+        record = ExecutionRecord.objects.create(project=self.project, testcase=tc, status='passed')
+        self.assertIsNone(record.plan_execution)
+        self.assertNotIn('方案', str(record))
+
+
+class PlanExecutionAPITest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='PlanExecAPITest', base_url='https://example.com')
+        self.plan = TestPlan.objects.create(project=self.project, name='TestPlan')
+        self.tc = TC_Model.objects.create(project=self.project, name='TC', steps='s', expected_result='ok')
+        self.record = ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, execution_mode='agent', status='passed',
+            replay_script={'version': 1, 'name': 'test', 'base_url': 'https://example.com',
+                          'parameters': {}, 'steps': [
+                              {'step_num': 1, 'enabled': True, 'tool_name': 'browser_navigate',
+                               'description': 'Navigate', 'inputs': {'url': 'https://example.com'}, 'parameters': []}
+                          ]},
+        )
+        self.script = Script.objects.create(
+            project=self.project, name='S1', source_execution=self.record,
+            script_data=self.record.replay_script, status='active',
+        )
+        self.plan_item = TestPlanItem.objects.create(
+            test_plan=self.plan, item_type='script', script=self.script, sort_order=1,
+        )
+
+    def test_plan_execution_list(self):
+        PlanExecution.objects.create(test_plan=self.plan, project=self.project, status='completed')
+        resp = self.client.get('/api/plan-executions/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data['executions']), 1)
+
+    def test_plan_execution_list_filter_plan(self):
+        PlanExecution.objects.create(test_plan=self.plan, project=self.project, status='completed')
+        resp = self.client.get('/api/plan-executions/', {'plan': self.plan.id})
+        self.assertEqual(len(resp.data['executions']), 1)
+
+    def test_plan_execution_detail(self):
+        pe = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project, status='completed',
+            summary={'total': 1, 'passed': 1, 'failed': 0, 'error': 0, 'skipped': 0},
+        )
+        ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='passed', plan_execution=pe,
+        )
+        resp = self.client.get(f'/api/plan-executions/{pe.id}/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['status'], 'completed')
+        self.assertIn('execution_records', resp.data)
+        self.assertEqual(len(resp.data['execution_records']), 1)
+
+    def test_plan_execution_status_lightweight(self):
+        pe = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project, status='running',
+            summary={'total': 2, 'passed': 0, 'failed': 0, 'error': 0, 'skipped': 0},
+        )
+        resp = self.client.get(f'/api/plan-executions/{pe.id}/status/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['status'], 'running')
+        self.assertNotIn('execution_records', resp.data)  # Lightweight response
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_plan_execute_async(self, mock_submit):
+        resp = self.client.post(
+            f'/api/plans/{self.plan.id}/execute/',
+            HTTP_X_PLAN_TOKEN=str(self.plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 202)
+        mock_submit.assert_called_once()
+        pe = PlanExecution.objects.get(test_plan=self.plan)
+        self.assertEqual(pe.status, 'running')
+        self.assertEqual(pe.trigger_source, 'api')
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_plan_execute_with_token_auth(self, mock_submit):
+        resp = self.client.post(
+            f'/api/plans/{self.plan.id}/execute/',
+            HTTP_X_PLAN_TOKEN=str(self.plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 202)
+        pe = PlanExecution.objects.get(test_plan=self.plan)
+        self.assertEqual(pe.trigger_source, 'api')
+
+    def test_plan_execute_wrong_token_rejected(self):
+        resp = self.client.post(
+            f'/api/plans/{self.plan.id}/execute/',
+            HTTP_X_PLAN_TOKEN='wrong-token',
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_plan_execute_no_base_url(self):
+        project = Project.objects.create(name='NoURL')
+        plan = TestPlan.objects.create(project=project, name='NoURLPlan')
+        resp = self.client.post(
+            f'/api/plans/{plan.id}/execute/',
+            HTTP_X_PLAN_TOKEN=str(plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_plan_execute_empty_plan(self):
+        plan = TestPlan.objects.create(project=self.project, name='Empty')
+        resp = self.client.post(
+            f'/api/plans/{plan.id}/execute/',
+            HTTP_X_PLAN_TOKEN=str(plan.api_token),
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_plan_execution_junit_report(self):
+        pe = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project, status='completed',
+            summary={'total': 2, 'passed': 1, 'failed': 1, 'error': 0, 'skipped': 0},
+        )
+        ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='passed',
+            duration=5.2, plan_execution=pe,
+        )
+        ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='failed',
+            duration=3.1, error_message='Button not found', plan_execution=pe,
+        )
+        resp = self.client.get(f'/api/plan-executions/{pe.id}/report/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('xml', resp['Content-Type'])
+        self.assertIn('testsuites', resp.data)
+        self.assertIn('testsuite', resp.data)
+        self.assertIn('failure', resp.data)
+        self.assertIn('Button not found', resp.data)
+
+    def test_plan_execution_junit_report_error_status(self):
+        pe = PlanExecution.objects.create(
+            test_plan=self.plan, project=self.project, status='error',
+            summary={'total': 1, 'passed': 0, 'failed': 0, 'error': 1, 'skipped': 0},
+        )
+        ExecutionRecord.objects.create(
+            project=self.project, testcase=self.tc, status='error',
+            duration=1.0, error_message='Crash', plan_execution=pe,
+        )
+        resp = self.client.get(f'/api/plan-executions/{pe.id}/report/')
+        self.assertIn('<error', resp.data)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Feature Group Execution Tests
+# ══════════════════════════════════════════════════════════════════
+
+class FeatureGroupExecutionTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='FGExecTest', base_url='https://example.com')
+        self.tc1 = TC_Model.objects.create(
+            project=self.project, name='Login Test', steps='s', expected_result='ok',
+            feature_group='Login', sort_order=1, status='ready',
+        )
+        self.tc2 = TC_Model.objects.create(
+            project=self.project, name='Logout Test', steps='s', expected_result='ok',
+            feature_group='Login', sort_order=2, status='ready',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_execute_feature_group(self, mock_submit):
+        resp = self.client.post(f'/api/projects/{self.project.id}/features/Login/execute/')
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.data['count'], 2)
+        self.assertEqual(resp.data['feature_group'], 'Login')
+        mock_submit.assert_called()
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_execute_empty_feature_group(self, mock_submit):
+        resp = self.client.post(f'/api/projects/{self.project.id}/features/Nonexistent/execute/')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_execute_feature_group_no_base_url(self):
+        project = Project.objects.create(name='NoURL')
+        resp = self.client.post(f'/api/projects/{project.id}/features/Login/execute/')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_feature_groups_detailed(self):
+        resp = self.client.get(f'/api/projects/{self.project.id}/feature-groups/', {'detailed': 'true'})
+        self.assertEqual(resp.status_code, 200)
+        groups = resp.data['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['name'], 'Login')
+        self.assertEqual(len(groups[0]['testcases']), 2)
+
+    def test_feature_groups_not_detailed(self):
+        resp = self.client.get(f'/api/projects/{self.project.id}/feature-groups/')
+        groups = resp.data['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertNotIn('testcases', groups[0])
+
+
+class FeatureGroupExecutionUngroupedTest(TestCase):
+    """Test executing the '未分组' (empty feature_group) group"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='UngroupedTest', base_url='https://example.com')
+        self.tc = TC_Model.objects.create(
+            project=self.project, name='Ungrouped TC', steps='s', expected_result='ok',
+            feature_group='', sort_order=1, status='ready',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_execute_ungrouped(self, mock_submit):
+        resp = self.client.post(f'/api/projects/{self.project.id}/features/未分组/execute/')
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.data['count'], 1)

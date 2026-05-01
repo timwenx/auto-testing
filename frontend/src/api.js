@@ -77,4 +77,38 @@ export const createPrecondition = (data) => api.post('/preconditions/create/', d
 export const updatePrecondition = (id, data) => api.put(`/preconditions/${id}/`, data)
 export const deletePrecondition = (id) => api.delete(`/preconditions/${id}/delete/`)
 
+// ─── Script API ───
+export const getScripts = (params) => api.get('/scripts/', { params })
+export const getScript = (id) => api.get(`/scripts/${id}/`)
+export const convertToScriptModel = (data) => aiApi.post('/scripts/convert/', data)
+export const updateScript = (id, data) => api.put(`/scripts/${id}/update/`, data)
+export const deleteScript = (id) => api.delete(`/scripts/${id}/delete/`)
+export const executeScript = (id, data) => aiApi.post(`/scripts/${id}/execute/`, data || {})
+export const getScriptFeatureGroups = (projectId) => api.get('/scripts/feature-groups/', { params: { project: projectId } })
+
+// ─── Feature 分组执行 ───
+export const executeFeatureGroup = (projectId, featureGroup) =>
+  aiApi.post(`/projects/${projectId}/features/${encodeURIComponent(featureGroup)}/execute/`)
+export const getFeatureGroupsDetail = (projectId) =>
+  api.get(`/projects/${projectId}/feature-groups/`, { params: { detailed: true } })
+
+// ─── TestPlan API ───
+export const getPlans = (params) => api.get('/plans/', { params })
+export const createPlan = (data) => api.post('/plans/create/', data)
+export const getPlan = (id) => api.get(`/plans/${id}/`)
+export const updatePlan = (id, data) => api.put(`/plans/${id}/update/`, data)
+export const deletePlan = (id) => api.delete(`/plans/${id}/delete/`)
+export const addPlanItem = (planId, data) => api.post(`/plans/${planId}/items/`, data)
+export const reorderPlanItems = (planId, orders) => api.put(`/plans/${planId}/items/reorder/`, { orders })
+export const deletePlanItem = (itemId) => api.delete(`/plans/items/${itemId}/delete/`)
+export const regeneratePlanToken = (planId) => api.post(`/plans/${planId}/regenerate-token/`)
+
+// ─── PlanExecution API ───
+export const executePlan = (planId, sync = false) =>
+  aiApi.post(`/plans/${planId}/execute/${sync ? '?sync=true' : ''}`)
+export const getPlanExecutions = (params) => api.get('/plan-executions/', { params })
+export const getPlanExecution = (id) => api.get(`/plan-executions/${id}/`)
+export const getPlanExecutionStatus = (id) => api.get(`/plan-executions/${id}/status/`)
+export const getPlanExecutionReport = (id) => api.get(`/plan-executions/${id}/report/`)
+
 export default api
