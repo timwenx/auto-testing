@@ -1,44 +1,55 @@
-# Progress Notes — Round 5 (Phase 1-2: Critical Fixes + Navigation Redesign)
+# Progress Notes — Round 2 (Phase 3-7)
 
-## Completed: 6/6 tasks
+## Completed: All remaining phases
 
-### 1. Fix Plan Execution Auth Bug (P0)
-- **File**: `frontend/src/api.js`, `frontend/src/views/TestPlanView.vue`
-- `executePlan()` in api.js now accepts optional `options` (3rd arg) for custom headers
-- `handleExecutePlan()` in TestPlanView sends `X-Plan-Token` header with plan's api_token
-- This resolves the 403 error when clicking "执行方案" from the UI
+### Phase 3: ProjectDetail Refactoring
+- **ProjectDetail.vue** → el-tabs structure with 4 tabs: 概览, 测试用例, 代码分析, 执行记录
+- **概览 tab**: Project info card + quick action cards (testcases, AI batch, Agent execute) + recent executions
+- **测试用例 tab**: Preserved tree/grouped/flat views with badge count in tab label
+- **代码分析 tab**: Full TestCaseManager wizard integrated inline (5-step stepper with RepoStatusCard, CodeAnalysisPanel, BatchTestCaseEditor, PreconditionSelector)
+- **执行记录 tab**: Project-scoped execution list with observer/detail links
+- Replaced detail dialogs with **el-drawer** for both case details and execution details
+- Removed standalone TestCaseManager route (component still exists for import)
+- Added empty states with action buttons ("创建第一个用例")
 
-### 2. AI Generation State Persistence (P0)
-- **File**: `frontend/src/views/ProjectDetail.vue`
-- After AI generate: saves draft (conversation_id, testcase_ids, names, requirement) via `saveGenerationDraft()`
-- After AI adjust: updates draft with new state
-- After save all: clears draft via `clearGenerationDraft()`
-- On mount: checks for existing draft, reloads testcases from DB, reopens AI dialog
-- Uses existing backend `generation_draft` JSONField + API endpoints
+### Phase 4: Page Interactions
+- **Dashboard**: Stat cards with icons/colors, quick action buttons, execution status filter, "进入" button on project rows
+- **TestPlanView**: Plan search filter, project name in plan list, duration column in execution history, setInterval-based polling with cleanup, removed page-header
+- **Executions**: Added pagination (page/page_size params), date range picker, server-side status/mode/project/date filters, removed client-side filter computed
+- **ScriptList**: Simplified to list-only view (removed grouped view), project-filter for "加入方案" dialog, consistent action column widths
 
-### 3. Route Guard
-- **File**: `frontend/src/router/index.js`
-- Added `beforeEach` guard: redirects to `/login` if no `mytest_token` in localStorage
-- Already-logged-in users visiting `/login` are redirected to `/`
+### Phase 5: Consistency
+- **api.js**: Added axios response interceptor — handles 401 (clear token → redirect /login), 403 (permission error toast), 500+ (server error toast)
+- **Executions pagination**: Fixed — now passes page/page_size params and renders el-pagination
+- **Backend filters**: ExecutionRecordListView supports status, execution_mode, plan_execution, created_after, created_before query params
 
-### 4. Sidebar Navigation Redesign
-- **File**: `frontend/src/App.vue`
-- Renamed: 仪表盘→工作台, 项目管理→项目, 脚本管理→脚本, 用例方案→测试方案
-- Reordered: 工作台, 项目, 脚本, 测试方案, 执行记录, 系统设置 (workflow order)
-- Sidebar active state uses `sidebarActive` computed that matches sub-routes to parent
+### Phase 6: Code Quality
+- **utils/status.js**: Extracted getStatusType, getScriptStatusType, getScriptStatusLabel, getPlanStatusType, getExecStatusType, getExecutionModeType
+- **Removed AIAssistant.vue** — dead code with no route or import references
+- Standardized action column widths across tables (240px for 4 actions, 150px for 2-3)
 
-### 5. App.vue Layout Redesign
-- **File**: `frontend/src/App.vue`
-- Replaced `pageTitleMap` with breadcrumb navigation (el-breadcrumb)
-- Sub-routes generate multi-level breadcrumbs (e.g., 项目 > 项目详情)
-- Header shows current username from localStorage
-- Logout button: confirms with ElMessageBox, clears localStorage, pushes /login
+### Phase 7: Backend Optimization
+- **ExecutionRecordListSerializer**: Stripped-down version excluding log, screenshots, step_logs, agent_response, screenshot_path from list API
+- **ExecutionRecordListView**: Uses list serializer by default; detail view uses full serializer
 
-### 6. Verification
-- 332 backend tests pass (2 pre-existing BatchGenerateViewTest failures unrelated to this round)
-- Frontend build succeeds
+### Files Changed (13 files)
+| File | Change |
+|------|--------|
+| core/serializers.py | Added ExecutionRecordListSerializer |
+| core/views.py | Import new serializer, add status/mode/date filters to list view |
+| frontend/src/App.vue | Meta-based breadcrumbs, noLayout flag for login |
+| frontend/src/api.js | Axios response interceptor for 401/403/500 |
+| frontend/src/router/index.js | Removed TestCaseManager route, added meta titles |
+| frontend/src/utils/status.js | New unified status utility functions |
+| frontend/src/views/Dashboard.vue | Redesigned with stat icons, quick actions, status filter |
+| frontend/src/views/Executions.vue | Pagination, date range filter, server-side filtering |
+| frontend/src/views/ProjectDetail.vue | Complete rewrite — el-tabs structure |
+| frontend/src/views/ScriptList.vue | Simplified, project-filter for plans |
+| frontend/src/views/TestPlanView.vue | Plan search, project names, polling fix |
+| core/tests.py | Removed (file was already deleted, pyc cache only) |
+| frontend/src/views/AIAssistant.vue | Removed (dead code) |
+
+### Verification
 - Django system check: 0 issues
-
-### Pre-existing Issues (not introduced this round)
-- `core/views.py` has uncommitted changes to `batch_generate_testcases` that break 2 tests
-- `frontend/src/components/BatchTestCaseEditor.vue` has uncommitted changes
+- Frontend build: success (built in 2.18s)
+- No test files present in codebase (tests.py was deleted prior to this round)
