@@ -1,5 +1,8 @@
 from rest_framework import serializers
-from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting
+from .models import (
+    Project, TestCase, ExecutionRecord, AIConversation, SystemSetting,
+    RepoAnalysis, PreconditionTemplate,
+)
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -148,3 +151,47 @@ class AgentConfirmRequestSerializer(serializers.Serializer):
 class AgentExecuteRequestSerializer(serializers.Serializer):
     """Agent 执行用例请求"""
     testcase_id = serializers.IntegerField(help_text='要执行的测试用例 ID')
+
+
+# ─── 仓库分析 + 批量生成 API Serializer ───
+
+class RepoAnalysisSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RepoAnalysis
+        fields = ['id', 'project', 'status', 'local_repo_path', 'discovered_items',
+                  'analysis_log', 'created_at']
+        read_only_fields = ['id', 'status', 'local_repo_path', 'discovered_items',
+                            'analysis_log', 'created_at']
+
+
+class PreconditionTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PreconditionTemplate
+        fields = ['id', 'name', 'description', 'steps', 'markdown_content',
+                  'is_default', 'created_at', 'updated_at']
+        read_only_fields = ['is_default', 'created_at', 'updated_at']
+
+
+class BatchGenerateRequestSerializer(serializers.Serializer):
+    """批量生成测试用例请求"""
+    selected_items = serializers.ListField(
+        child=serializers.DictField(),
+        help_text='从分析结果中勾选的 discovered_items 子集',
+    )
+    descriptions = serializers.DictField(
+        child=serializers.CharField(allow_blank=True),
+        required=False, default=dict,
+        help_text='key 为 item 的 path, value 为用户描述',
+    )
+    precondition_id = serializers.IntegerField(
+        required=False, default=None, allow_null=True,
+        help_text='前置条件模板 ID（可选）',
+    )
+
+
+class BatchSaveRequestSerializer(serializers.Serializer):
+    """批量保存测试用例请求"""
+    testcases = serializers.ListField(
+        child=serializers.DictField(),
+        help_text='确认后的用例列表 [{name, description, steps, ...}]',
+    )

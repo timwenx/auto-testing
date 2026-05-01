@@ -1,0 +1,221 @@
+"""
+仓库分析服务 — 通过 Claude API 分析仓库代码，发现前端页面路由和 REST API 端点
+
+核心流程：
+1. clone_or_update_repo 确保代码最新
+2. 获取文件树 + 搜索路由关键词
+3. 读取关键路由文件内容
+4. 构造 Claude API 请求提取页面和 API 列表
+5. 解析响应存入 RepoAnalysis.discovered_items
+"""
+import json
+import logging
+import re
+
+from . import repo_service
+from .ai_engine import _get_client, _get_model
+
+logger = logging.getLogger(__name__)
+
+ANALYSIS_SYSTEM_PROMPT = """你是一个专业的代码分析工程师。你的任务是从项目源代码中识别所有对外暴露的前端页面路由和 REST API 端点。
+
+## 分析要求
+
+### 要提取的内容
+1. **前端页面路由**: Vue Router / React Router / Angular Router 中定义的可访问页面路径
+   - 路由路径 (path)
+   - 页面/组件名称
+   - 页面功能描述
+
+2. **REST API 端点**: 对外暴露的 HTTP API 接口
+   - URL 路径
+   - HTTP 方法 (GET/POST/PUT/DELETE/PATCH)
+   - 功能描述
+   - 包括以下技术栈的路由定义：
+     - Spring Boot: @GetMapping, @PostMapping, @PutMapping, @DeleteMapping, @RequestMapping
+     - Flask: @app.route, @blueprint.route
+     - Django: urlpatterns, path(), re_path()
+     - Express: app.get, app.post, router.get, router.post
+     - FastAPI: @app.get, @app.post
+
+### 不要包含的内容（排除）
+- 内部 Service 层类和方法
+- DAO / Repository 层
+- 工具类和辅助函数
+- Controller 内部的私有方法（只提取带路由注解/装饰器的公开端点）
+- 中间件、拦截器、过滤器
+- 配置文件
+- 数据库迁移
+
+### 返回格式
+返回一个 JSON 对象（不要用 markdown 代码块包裹），结构如下：
+{
+  "pages": [
+    {"path": "/users", "name": "用户管理页", "description": "用户列表的增删改查", "source_file": "src/router/index.js"}
+  ],
+  "apis": [
+    {"path": "/api/users", "method": "GET", "name": "获取用户列表", "description": "分页查询用户列表", "source_file": "src/controllers/UserController.java"}
+  ]
+}
+
+如果无法识别页面或 API（比如纯后端服务没有前端路由），对应的数组返回空即可。
+只返回 JSON，不要其他文字。"""
+
+# 搜索路由定义的关键词
+_ROUTE_KEYWORDS = [
+    'router', 'routes', 'path(', 're_path(',
+    '@RequestMapping', '@GetMapping', '@PostMapping', '@PutMapping', '@DeleteMapping',
+    '@app.route', '@blueprint.route', '@router.',
+    'urlpatterns',
+]
+
+
+def analyze_repo(project) -> 'RepoAnalysis':
+    """
+    分析项目仓库代码，发现页面路由和 API 端点。
+
+    Args:
+        project: Project 模型实例
+
+    Returns:
+        RepoAnalysis 实例（含 discovered_items 和分析日志）
+    """
+    from .models import RepoAnalysis
+
+    analysis = RepoAnalysis.objects.create(
+        project=project,
+        status='analyzing',
+        local_repo_path=project.local_repo_path or '',
+    )
+
+    try:
+        # 1. 确保仓库代码最新
+        logger.info("[RepoAnalyzer] Cloning/updating repo for project #%s", project.id)
+        local_path = repo_service.clone_or_update_repo(project)
+        analysis.local_repo_path = local_path
+
+        # 2. 获取目录树
+        logger.info("[RepoAnalyzer] Getting file tree for project #%s", project.id)
+        file_tree = repo_service.get_repo_file_tree(project)
+
+        # 3. 搜索路由相关文件
+        code_snippets = []
+        seen_files = set()
+
+        for keyword in _ROUTE_KEYWORDS:
+            try:
+                results = repo_service.search_code(project, keyword)
+                for r in results:
+                    if r['file'] not in seen_files:
+                        seen_files.add(r['file'])
+                        try:
+                            content = repo_service.read_file_content(project, r['file'])
+                            if len(content) > 4000:
+                                content = content[:4000] + "\n... (已截断)"
+                            code_snippets.append(f"### 文件: {r['file']}\n```\n{content}\n```")
+                        except Exception as e:
+                            logger.warning("[RepoAnalyzer] Failed to read %s: %s", r['file'], e)
+                    if len(code_snippets) >= 15:
+                        break
+            except Exception as e:
+                logger.warning("[RepoAnalyzer] Search '%s' failed: %s", keyword, e)
+            if len(code_snippets) >= 15:
+                break
+
+        # 4. 构造 Claude API 请求
+        code_section = "\n\n".join(code_snippets) if code_snippets else "（未找到路由相关代码文件）"
+
+        user_message = f"""## 项目目录结构
+```
+{file_tree}
+```
+
+## 路由相关代码文件
+{code_section}
+
+请分析以上项目代码，提取所有前端页面路由和 REST API 端点。"""
+
+        client = _get_client()
+        model = _get_model()
+
+        logger.info("[RepoAnalyzer] Calling Claude API for project #%s (model: %s)", project.id, model)
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=ANALYSIS_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        raw_text = response.content[0].text.strip()
+
+        # 5. 解析响应
+        items = _parse_analysis_response(raw_text)
+
+        analysis.discovered_items = items
+        analysis.analysis_log = raw_text[:10000]  # 保留原始响应（截断）
+        analysis.status = 'completed'
+        analysis.save()
+
+        logger.info("[RepoAnalyzer] Analysis complete for project #%s: %d items found",
+                     project.id, len(items))
+        return analysis
+
+    except Exception as e:
+        logger.exception("[RepoAnalyzer] Analysis failed for project #%s: %s", project.id, e)
+        analysis.status = 'failed'
+        analysis.analysis_log = str(e)[:5000]
+        analysis.save()
+        return analysis
+
+
+def _parse_analysis_response(raw_text: str) -> list:
+    """
+    解析 Claude 返回的 JSON 响应，转为统一的 discovered_items 列表。
+
+    输入格式: {"pages": [...], "apis": [...]}
+    输出格式: [{"type": "page"|"api", "path", "name", "method", "description", "source_file"}, ...]
+    """
+    # 尝试提取 JSON
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        # 尝试从 markdown 代码块中提取
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw_text)
+        if match:
+            data = json.loads(match.group(1).strip())
+        else:
+            # 最后尝试提取花括号
+            match = re.search(r'\{[\s\S]*\}', raw_text)
+            if match:
+                data = json.loads(match.group())
+            else:
+                logger.error("[RepoAnalyzer] Cannot parse response as JSON: %s", raw_text[:500])
+                return []
+
+    if not isinstance(data, dict):
+        return []
+
+    items = []
+
+    # 处理 pages
+    for page in data.get('pages', []):
+        items.append({
+            'type': 'page',
+            'path': page.get('path', ''),
+            'name': page.get('name', ''),
+            'method': None,
+            'description': page.get('description', ''),
+            'source_file': page.get('source_file', ''),
+        })
+
+    # 处理 apis
+    for api in data.get('apis', []):
+        items.append({
+            'type': 'api',
+            'path': api.get('path', ''),
+            'name': api.get('name', ''),
+            'method': api.get('method', ''),
+            'description': api.get('description', ''),
+            'source_file': api.get('source_file', ''),
+        })
+
+    return items
