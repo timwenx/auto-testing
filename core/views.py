@@ -24,6 +24,7 @@ from .serializers import (
     TestPlanSerializer, TestPlanCreateUpdateSerializer,
     TestPlanItemSerializer, TestPlanItemCreateSerializer, TestPlanItemsReorderSerializer,
     PlanExecutionSerializer, PlanExecutionDetailSerializer,
+    PlanExecuteRequestSerializer,
 )
 from . import ai_engine
 from . import execution_engine
@@ -2201,7 +2202,7 @@ def _authenticate_plan_request(request, plan):
 
 @api_view(['POST'])
 def plan_execute(request, pk):
-    """POST /api/plans/<id>/execute/ — 触发方案执行"""
+    """POST /api/plans/<id>/execute/ — 触发方案执行（支持 parameter_overrides）"""
     try:
         plan = TestPlan.objects.select_related('project').prefetch_related('items__script', 'items__testcase').get(pk=pk)
     except TestPlan.DoesNotExist:
@@ -2212,6 +2213,11 @@ def plan_execute(request, pk):
 
     if not plan.project.base_url:
         return Response({'error': '请先在项目中配置测试目标 URL'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Parse optional parameter_overrides from request body
+    serializer = PlanExecuteRequestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    parameter_overrides = serializer.validated_data.get('parameter_overrides', {})
 
     items = plan.items.all().order_by('sort_order')
     if not items.exists():
@@ -2266,17 +2272,29 @@ def plan_execute(request, pk):
     sync_mode = request.query_params.get('sync', '').lower() in ('true', '1', 'yes')
 
     if sync_mode:
-        return _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan)
+        return _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan, parameter_overrides)
     else:
-        _submit_agent_task(lambda: _execute_plan_async(plan_exec, scripts_to_run, agent_testcases_to_run, plan))
+        _submit_agent_task(lambda: _execute_plan_async(plan_exec, scripts_to_run, agent_testcases_to_run, plan, parameter_overrides))
         return Response(PlanExecutionSerializer(plan_exec).data, status=status.HTTP_202_ACCEPTED)
 
 
-def _run_single_script(plan_exec, script, plan):
-    """执行单个脚本并返回结果状态"""
+def _run_single_script(plan_exec, script, plan, parameter_overrides=None):
+    """执行单个脚本并返回结果状态。
+
+    Args:
+        parameter_overrides: plan-level 参数覆盖 dict，直接按参数名传递到脚本执行。
+    """
     source_record = script.source_execution
     if not source_record or not script.script_data:
         return 'skipped'
+
+    # Map plan-level overrides to script-level: filter to only params this script uses
+    script_overrides = {}
+    if parameter_overrides:
+        script_params = script.script_data.get('parameters', {})
+        for pname in script_params:
+            if pname in parameter_overrides:
+                script_overrides[pname] = parameter_overrides[pname]
 
     new_record = ExecutionRecord.objects.create(
         project=plan.project,
@@ -2293,7 +2311,7 @@ def _run_single_script(plan_exec, script, plan):
 
     from .script_executor import ReplayExecutor
     executor = ReplayExecutor(new_record, source_record)
-    executor.run(script.script_data, {})
+    executor.run(script.script_data, script_overrides)
 
     new_record.refresh_from_db()
     return new_record.status
@@ -2351,11 +2369,11 @@ def _finalize_plan_execution(plan_exec):
     plan_exec.save()
 
 
-def _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan):
+def _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan, parameter_overrides=None):
     """同步执行方案（阻塞等待）"""
     try:
         for script in scripts_to_run:
-            _run_single_script(plan_exec, script, plan)
+            _run_single_script(plan_exec, script, plan, parameter_overrides)
         for testcase in agent_testcases_to_run:
             _run_single_agent_testcase(plan_exec, testcase, plan)
         _finalize_plan_execution(plan_exec)
@@ -2368,11 +2386,11 @@ def _execute_plan_sync(plan_exec, scripts_to_run, agent_testcases_to_run, plan):
     return Response(PlanExecutionDetailSerializer(plan_exec).data)
 
 
-def _execute_plan_async(plan_exec, scripts_to_run, agent_testcases_to_run, plan):
+def _execute_plan_async(plan_exec, scripts_to_run, agent_testcases_to_run, plan, parameter_overrides=None):
     """异步执行方案（线程池内运行）"""
     try:
         for script in scripts_to_run:
-            _run_single_script(plan_exec, script, plan)
+            _run_single_script(plan_exec, script, plan, parameter_overrides)
         for testcase in agent_testcases_to_run:
             _run_single_agent_testcase(plan_exec, testcase, plan)
         _finalize_plan_execution(plan_exec)

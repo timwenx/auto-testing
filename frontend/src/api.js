@@ -141,8 +141,10 @@ export const regeneratePlanToken = (planId) => api.post(`/plans/${planId}/regene
 export const getPlanParameters = (planId) => api.get(`/plans/${planId}/parameters/`)
 
 // ─── PlanExecution API ───
-export const executePlan = (planId, sync = false, options = {}) =>
-  aiApi.post(`/plans/${planId}/execute/${sync ? '?sync=true' : ''}`, null, options)
+export const executePlan = (planId, sync = false, options = {}) => {
+  const data = options.data || null
+  return aiApi.post(`/plans/${planId}/execute/${sync ? '?sync=true' : ''}`, data, options)
+}
 export const getPlanExecutions = (params) => api.get('/plan-executions/', { params })
 export const getPlanExecution = (id) => api.get(`/plan-executions/${id}/`)
 export const getPlanExecutionStatus = (id) => api.get(`/plan-executions/${id}/status/`)
