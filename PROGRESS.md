@@ -358,3 +358,28 @@ All 6 tasks fully implemented and verified:
 - All **229 tests pass** (227 previous + 2 new)
 - Frontend builds successfully
 - Django check: 0 issues
+
+## Round 6 — Final fixes and KB update
+
+### Issues Found and Fixed
+
+1. **Duplicate `data = request.data`** (`views.py` line 1061):
+   - Removed redundant re-assignment in `update_replay_script` (was supposedly fixed in round 5 but persisted)
+
+2. **Table checkbox system conflict** (`CodeAnalysisPanel.vue`):
+   - `type="selection"` columns created a parallel Element Plus checkbox system that conflicted with the custom checkbox logic
+   - Replaced with plain columns with custom `#header` and `#default` templates
+   - Header checkbox now uses the same `toggleAllPages`/`toggleAllApis` functions
+   - Removed redundant standalone "全选" checkboxes above tables
+
+3. **Loading state overlaps content** (`PreconditionSelector.vue`):
+   - `el-radio-group` rendered unconditionally while loading, causing empty list flash
+   - Added `v-if="loading"` guard before radio group, `v-else` on radio group
+   - Replaced inline `el-empty` with proper Loading icon + text
+
+### Status
+- All **229 tests pass**
+- Frontend builds successfully
+- Django check: 0 issues
+- Commit: `0013ca9`
+- Django check: 0 issues
