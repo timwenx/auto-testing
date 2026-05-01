@@ -28,9 +28,32 @@
 
     <!-- 分析中 -->
     <div v-if="analyzing" style="text-align: center; padding: 40px 0">
-      <el-icon class="is-loading" style="font-size: 32px; color: #409eff"><Loading /></el-icon>
-      <p style="margin-top: 12px; color: #606266">正在分析仓库代码，请稍候...</p>
-      <p style="color: #909399; font-size: 13px">系统将通过 AI 扫描路由和 API 定义</p>
+      <!-- 正常进度 -->
+      <template v-if="!isStuck">
+        <el-icon class="is-loading" style="font-size: 32px; color: #409eff"><Loading /></el-icon>
+        <p style="margin-top: 12px; color: #606266; font-size: 15px">正在分析仓库代码，请稍候...</p>
+        <p style="color: #909399; font-size: 13px; margin-top: 4px">
+          已用时 <strong>{{ formattedElapsed }}</strong>
+        </p>
+        <p style="color: #909399; font-size: 12px; margin-top: 8px">系统将通过 AI 扫描路由和 API 定义</p>
+      </template>
+
+      <!-- 卡住状态 -->
+      <template v-else>
+        <el-icon style="font-size: 32px; color: #e6a23c"><WarningFilled /></el-icon>
+        <p style="margin-top: 12px; color: #e6a23c; font-size: 15px; font-weight: 600">
+          分析进程似乎已中断
+        </p>
+        <p style="color: #909399; font-size: 13px; margin-top: 4px">
+          已用时 {{ formattedElapsed }}，但服务端心跳已断开超过 30 秒
+        </p>
+        <p style="color: #909399; font-size: 12px; margin-top: 8px">
+          这通常是因为服务器重启或分析进程异常终止
+        </p>
+        <div style="margin-top: 20px">
+          <el-button type="warning" @click="handleResetAndRetry">返回重试</el-button>
+        </div>
+      </template>
     </div>
 
     <!-- 分析失败 -->
@@ -148,7 +171,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { repoAnalyze, getRepoAnalysis } from '../api.js'
+import { WarningFilled } from '@element-plus/icons-vue'
+import { repoAnalyze, getRepoAnalysis, resetRepoAnalysis, checkCliAvailable, getSettings } from '../api.js'
 
 const props = defineProps({
   projectId: { type: Number, required: true },
@@ -158,6 +182,8 @@ const emit = defineEmits(['analysis-complete', 'items-selected', 'back'])
 
 const analysis = ref(null)
 const analyzing = ref(false)
+const isStuck = ref(false)
+const elapsedSeconds = ref(0)
 const activeTab = ref('pages')
 const selectedPageIndices = ref([])
 const selectedApiIndices = ref([])
@@ -178,6 +204,12 @@ const apiItems = computed(() =>
 const totalSelected = computed(() =>
   selectedPageIndices.value.length + selectedApiIndices.value.length
 )
+const formattedElapsed = computed(() => {
+  const s = elapsedSeconds.value
+  const min = Math.floor(s / 60)
+  const sec = s % 60
+  return min > 0 ? `${min}分${sec}秒` : `${sec}秒`
+})
 
 watch(() => props.autoStart, (val) => {
   if (val && !analysis.value && !analyzing.value) {
@@ -227,6 +259,27 @@ async function loadExistingAnalysis() {
 }
 
 async function startAnalysis() {
+  // Check CLI availability if using CLI engine
+  try {
+    const { data: settingsData } = await getSettings()
+    const engine = settingsData.analysis_engine || 'cli'
+    if (engine === 'cli') {
+      const cliPath = settingsData.claude_cli_path || 'claude'
+      try {
+        const { data: cliData } = await checkCliAvailable(cliPath)
+        if (!cliData.available) {
+          ElMessage.warning(
+            `Claude CLI 不可用: ${cliData.error || '未安装'}。请在设置中安装 CLI 或切换到 SDK 模式。`
+          )
+        }
+      } catch {
+        // CLI check failed, continue anyway — backend will handle fallback
+      }
+    }
+  } catch {
+    // Settings fetch failed, continue
+  }
+
   analyzing.value = true
   analysis.value = null
   try {
@@ -254,10 +307,13 @@ function startPolling() {
       const { data } = await getRepoAnalysis(props.projectId)
       if (data.analysis) {
         analysis.value = data.analysis
+        elapsedSeconds.value = data.analysis.elapsed_seconds || 0
+        isStuck.value = data.analysis.is_stuck || false
         if (data.analysis.status === 'completed' || data.analysis.status === 'failed') {
           clearInterval(pollTimer)
           pollTimer = null
           analyzing.value = false
+          isStuck.value = false
           if (data.analysis.status === 'completed') {
             emit('analysis-complete')
           }
@@ -289,6 +345,21 @@ function toggleAllApis(val) {
 function methodTagType(method) {
   const map = { GET: 'success', POST: 'warning', PUT: '', DELETE: 'danger', PATCH: 'info' }
   return map[method] || ''
+}
+
+async function handleResetAndRetry() {
+  try {
+    await resetRepoAnalysis(props.projectId)
+    if (pollTimer) clearInterval(pollTimer)
+    pollTimer = null
+    analyzing.value = false
+    analysis.value = null
+    isStuck.value = false
+    elapsedSeconds.value = 0
+    ElMessage.success('已重置，请重新开始分析')
+  } catch (e) {
+    ElMessage.error('重置失败: ' + (e.response?.data?.error || e.message))
+  }
 }
 
 function handleNext() {

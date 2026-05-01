@@ -39,11 +39,13 @@ urlpatterns = [
 
     # 系统设置
     path('settings/', views.settings_view, name='settings'),
+    path('settings/cli-check/', views.cli_check, name='cli-check'),
 
     # 仓库分析 + 批量用例生成
     path('projects/<int:project_id>/repo/pull/', views.repo_pull, name='repo-pull'),
     path('projects/<int:project_id>/repo/analyze/', views.repo_analyze, name='repo-analyze'),
     path('projects/<int:project_id>/repo/analysis/', views.repo_analysis_detail, name='repo-analysis-detail'),
+    path('projects/<int:project_id>/repo/analysis/reset/', views.repo_analysis_reset, name='repo-analysis-reset'),
     path('projects/<int:project_id>/repo/analysis/list/', views.repo_analysis_list, name='repo-analysis-list'),
     path('projects/<int:project_id>/batch-generate/', views.batch_generate_testcases, name='batch-generate'),
     path('projects/<int:project_id>/batch-save/', views.batch_save_testcases, name='batch-save'),
