@@ -10,7 +10,10 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Project, TestCase as TC_Model, ExecutionRecord, AIConversation, SystemSetting, Screenshot
+from .models import (
+    Project, TestCase as TC_Model, ExecutionRecord, AIConversation,
+    SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate,
+)
 from .execution_engine import _strip_markdown_code_fences, _build_step_logs, _extract_screenshots
 
 
@@ -152,17 +155,17 @@ class ExecuteEndpointTest(TestCase):
     def test_execute_missing_base_url(self):
         no_url_project = Project.objects.create(name='No URL')
         tc = TC_Model.objects.create(project=no_url_project, name='TC', steps='s', expected_result='r')
-        resp = self.client.post(f'/api/testcases/{tc.id}/execute/')
+        resp = self.client.post(f'/api/testcases/{tc.id}/execute-agent/')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('URL', resp.data['error'])
 
     def test_execute_nonexistent_testcase(self):
-        resp = self.client.post('/api/testcases/99999/execute/')
+        resp = self.client.post('/api/testcases/99999/execute-agent/')
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_execute_all_no_testcases(self):
         empty_project = Project.objects.create(name='Empty', base_url='https://example.com')
-        resp = self.client.post(f'/api/projects/{empty_project.id}/execute-all/')
+        resp = self.client.post(f'/api/projects/{empty_project.id}/execute-agent/')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
@@ -918,7 +921,8 @@ class SaveAgentResultHelperTest(TestCase):
         _save_agent_result(self.record, result)
         self.record.refresh_from_db()
         self.assertEqual(self.record.status, 'passed')
-        self.assertEqual(self.record.log, 'ok')
+        # log gets TOOL_CALLS_JSON appended when script is present
+        self.assertIn('ok', self.record.log)
         self.assertEqual(self.record.duration, 5.2)
         self.assertEqual(self.record.step_logs, [{'step_num': 1, 'action': '打开页面'}])
         self.assertEqual(self.record.agent_response, {'response_text': '通过'})
@@ -955,15 +959,20 @@ class SaveAgentResultHelperTest(TestCase):
 
 
 class SaveScriptResultHelperTest(TestCase):
-    """_save_script_result 辅助函数测试"""
+    """_save_script_result 辅助函数测试 — 该函数已移除，改为直接内联"""
 
     def test_saves_basic_fields(self):
+        """验证 _save_agent_result 在无 script 时不会追加 TOOL_CALLS_JSON"""
         p = Project.objects.create(name='P', base_url='https://a.com')
         tc = TC_Model.objects.create(project=p, name='TC', steps='s', expected_result='r')
         record = ExecutionRecord.objects.create(project=p, testcase=tc, status='running')
-        result = {'status': 'passed', 'log': 'ok', 'error_message': '', 'duration': 3.1}
-        from .views import _save_script_result
-        _save_script_result(record, result)
+        result = {
+            'status': 'passed', 'log': 'ok', 'error_message': '', 'duration': 3.1,
+            'script': '',  # no script
+            'step_logs': [], 'screenshots': [], 'agent_response': {},
+        }
+        from .views import _save_agent_result
+        _save_agent_result(record, result)
         record.refresh_from_db()
         self.assertEqual(record.status, 'passed')
         self.assertEqual(record.log, 'ok')
@@ -1025,14 +1034,15 @@ class AgentExecuteExtendedTest(TestCase):
     @mock.patch('core.views._submit_agent_task')
     @mock.patch('core.views._get_ai_model', return_value='claude-sonnet-4-20250514')
     def test_explicit_script_mode_skips_agent(self, mock_model, mock_submit):
+        """agent_execute endpoint always uses agent mode"""
         resp = self.client.post(
             '/api/agent/execute/',
-            {'testcase_id': self.tc.id, 'execution_mode': 'script'},
+            {'testcase_id': self.tc.id},
             format='json',
         )
         self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
-        self.assertEqual(resp.data['execution_mode'], 'script')
-        mock_submit.assert_not_called()
+        self.assertEqual(resp.data['execution_mode'], 'agent')
+        mock_submit.assert_called_once()
 
     @mock.patch('core.views._submit_agent_task')
     @mock.patch('core.views._get_ai_model', return_value='claude-sonnet-4-20250514')
@@ -1071,26 +1081,26 @@ class ExecuteAllEndpointTest(TestCase):
         self.client = APIClient()
         self.project = Project.objects.create(name='P', base_url='https://example.com')
 
-    @mock.patch('core.execution_engine.execute_testcase_async')
-    def test_execute_all_creates_records(self, mock_exec):
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='test-model')
+    def test_execute_all_creates_records(self, mock_model, mock_submit):
         TC_Model.objects.create(project=self.project, name='A', steps='s', expected_result='r', status='draft')
         TC_Model.objects.create(project=self.project, name='B', steps='s', expected_result='r', status='ready')
-        resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
         self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
-        # resp.data may be a ReturnList (list) — handle both
         results = resp.data if isinstance(resp.data, list) else resp.data.get('results', resp.data)
         self.assertEqual(len(results), 2)
-        self.assertEqual(mock_exec.call_count, 2)
+        self.assertEqual(mock_submit.call_count, 2)
 
     def test_execute_all_no_url(self):
         self.project.base_url = ''
         self.project.save()
         TC_Model.objects.create(project=self.project, name='A', steps='s', expected_result='r')
-        resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_execute_all_no_testcases(self):
-        resp = self.client.post(f'/api/projects/{self.project.id}/execute-all/')
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
@@ -1180,7 +1190,7 @@ class BuildStepLogsTest(TestCase):
         self.assertEqual(steps, [])
 
     def test_output_truncated(self):
-        long_output = 'x' * 500
+        long_output = 'x' * 10000
         agent_result = {
             'tool_calls_log': [
                 {
@@ -1191,7 +1201,7 @@ class BuildStepLogsTest(TestCase):
             ],
         }
         steps = _build_step_logs(agent_result)
-        self.assertLessEqual(len(steps[0]['result']), 300)
+        self.assertLessEqual(len(steps[0]['result']), 5000)
 
 
 class ExtractScreenshotsTest(TestCase):
@@ -1996,3 +2006,379 @@ class FrameConsumerTest(TestCase):
         consumer.receive(text_data='not json')
         # 不应抛出异常，不应发送任何消息
         consumer.send.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════
+# 仓库分析 + 批量用例生成 Tests
+# ══════════════════════════════════════════════════════════════════
+
+class RepoAnalysisModelTest(TestCase):
+    """RepoAnalysis 模型测试"""
+
+    def test_create_repo_analysis(self):
+        project = Project.objects.create(name='Test Project')
+        analysis = RepoAnalysis.objects.create(project=project, status='pending')
+        self.assertEqual(analysis.status, 'pending')
+        self.assertEqual(analysis.project, project)
+        self.assertEqual(analysis.discovered_items, [])
+
+    def test_str_representation(self):
+        project = Project.objects.create(name='Test Project')
+        analysis = RepoAnalysis.objects.create(project=project, status='completed')
+        self.assertIn('completed', str(analysis))
+        self.assertIn(str(project.id), str(analysis))
+
+    def test_status_choices(self):
+        project = Project.objects.create(name='Test Project')
+        for status_val in ['pending', 'analyzing', 'completed', 'failed']:
+            analysis = RepoAnalysis.objects.create(project=project, status=status_val)
+            self.assertEqual(analysis.status, status_val)
+
+    def test_ordering_meta(self):
+        """RepoAnalysis.Meta.ordering should be -created_at"""
+        self.assertEqual(RepoAnalysis._meta.ordering, ['-created_at'])
+
+
+class PreconditionTemplateModelTest(TestCase):
+    """PreconditionTemplate 模型测试"""
+
+    def test_create_template(self):
+        tpl = PreconditionTemplate.objects.create(
+            name='Test Template',
+            steps='1. Step one\n2. Step two',
+        )
+        self.assertEqual(tpl.name, 'Test Template')
+        self.assertFalse(tpl.is_default)
+
+    def test_str_default_template(self):
+        tpl = PreconditionTemplate.objects.create(name='SSO Login', is_default=True)
+        self.assertIn('内置', str(tpl))
+
+    def test_str_custom_template(self):
+        tpl = PreconditionTemplate.objects.create(name='Custom', is_default=False)
+        self.assertNotIn('内置', str(tpl))
+
+    def test_default_templates_exist(self):
+        """Data migration should have created 3 default templates"""
+        defaults = PreconditionTemplate.objects.filter(is_default=True)
+        self.assertEqual(defaults.count(), 3)
+        names = list(defaults.values_list('name', flat=True))
+        self.assertIn('SSO 统一登录', names)
+        self.assertIn('管理员登录', names)
+        self.assertIn('普通用户登录', names)
+
+
+class RepoPullViewTest(TestCase):
+    """repo_pull 端点测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(
+            name='Test Project',
+            repo_url='https://github.com/test/repo.git',
+        )
+
+    @mock.patch('core.repo_service.clone_or_update_repo')
+    def test_repo_pull_success(self, mock_clone):
+        mock_clone.return_value = '/tmp/repos/project_1'
+        resp = self.client.post(f'/api/projects/{self.project.id}/repo/pull/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['status'], 'ready')
+        mock_clone.assert_called_once()
+
+    @mock.patch('core.repo_service.clone_or_update_repo')
+    def test_repo_pull_failure(self, mock_clone):
+        mock_clone.side_effect = RuntimeError('Git clone failed')
+        resp = self.client.post(f'/api/projects/{self.project.id}/repo/pull/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Git clone failed', resp.data['error'])
+
+    def test_repo_pull_project_not_found(self):
+        resp = self.client.post('/api/projects/99999/repo/pull/')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class RepoAnalyzeViewTest(TestCase):
+    """repo_analyze 端点测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(
+            name='Test Project',
+            repo_url='https://github.com/test/repo.git',
+            local_repo_path='/tmp/repos/project_1',
+        )
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_repo_analyze_starts_async(self, mock_submit):
+        resp = self.client.post(f'/api/projects/{self.project.id}/repo/analyze/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        self.assertIn('analysis_id', resp.data)
+        self.assertEqual(resp.data['status'], 'pending')
+        mock_submit.assert_called_once()
+
+    def test_repo_analyze_no_repo(self):
+        project = Project.objects.create(name='No Repo')
+        resp = self.client.post(f'/api/projects/{project.id}/repo/analyze/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_repo_analysis_detail(self):
+        analysis = RepoAnalysis.objects.create(
+            project=self.project,
+            status='completed',
+            discovered_items=[{'type': 'page', 'path': '/users', 'name': 'Users'}],
+        )
+        resp = self.client.get(f'/api/projects/{self.project.id}/repo/analysis/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(resp.data['analysis'])
+        self.assertEqual(resp.data['analysis']['status'], 'completed')
+
+    def test_repo_analysis_detail_empty(self):
+        project = Project.objects.create(name='No Analysis')
+        resp = self.client.get(f'/api/projects/{project.id}/repo/analysis/')
+        self.assertIsNone(resp.data['analysis'])
+
+    def test_repo_analysis_list(self):
+        RepoAnalysis.objects.create(project=self.project, status='completed')
+        RepoAnalysis.objects.create(project=self.project, status='failed')
+        resp = self.client.get(f'/api/projects/{self.project.id}/repo/analysis/list/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data['analyses']), 2)
+
+
+class BatchGenerateViewTest(TestCase):
+    """batch_generate_testcases 端点测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='Test Project', base_url='https://example.com')
+
+    @mock.patch('core.batch_generator.generate_testcases_for_items')
+    def test_batch_generate_success(self, mock_generate):
+        mock_generate.return_value = [
+            {'name': 'TC1', 'steps': 'step1', 'expected_result': 'result1'},
+            {'name': 'TC2', 'steps': 'step2', 'expected_result': 'result2'},
+        ]
+        data = {
+            'selected_items': [{'type': 'page', 'path': '/users'}],
+            'descriptions': {'/users': 'Test users page'},
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-generate/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['count'], 2)
+        mock_generate.assert_called_once()
+
+    def test_batch_generate_no_items(self):
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-generate/',
+            {'selected_items': [], 'descriptions': {}},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @mock.patch('core.batch_generator.generate_testcases_for_items')
+    def test_batch_generate_with_precondition(self, mock_generate):
+        mock_generate.return_value = [{'name': 'TC1'}]
+        tpl = PreconditionTemplate.objects.create(name='Test Precondition', steps='Login first')
+        data = {
+            'selected_items': [{'type': 'api', 'path': '/api/users'}],
+            'precondition_id': tpl.id,
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-generate/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+    @mock.patch('core.batch_generator.generate_testcases_for_items')
+    def test_batch_generate_ai_failure(self, mock_generate):
+        mock_generate.side_effect = RuntimeError('AI call failed')
+        data = {
+            'selected_items': [{'type': 'page', 'path': '/'}],
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-generate/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class BatchSaveViewTest(TestCase):
+    """batch_save_testcases 端点测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='Test Project')
+
+    def test_batch_save_success(self):
+        data = {
+            'testcases': [
+                {
+                    'name': 'TC1',
+                    'description': 'desc1',
+                    'steps': 'step1',
+                    'expected_result': 'result1',
+                    'priority': 'P0',
+                    'test_type': '功能',
+                    'target_page_or_api': '/users',
+                },
+                {
+                    'name': 'TC2',
+                    'description': 'desc2',
+                    'steps': 'step2',
+                    'expected_result': 'result2',
+                },
+            ]
+        }
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/', data, format='json'
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['count'], 2)
+        # Verify DB records
+        testcases = TC_Model.objects.filter(project=self.project)
+        self.assertEqual(testcases.count(), 2)
+        tc1 = testcases.get(name='TC1')
+        self.assertTrue(tc1.is_ai_generated)
+        self.assertEqual(tc1.created_by, 'claude_cli')
+        self.assertEqual(tc1.status, 'draft')
+        self.assertEqual(tc1.priority, 'P0')
+        self.assertEqual(tc1.target_page_or_api, '/users')
+
+    def test_batch_save_empty(self):
+        resp = self.client.post(
+            f'/api/projects/{self.project.id}/batch-save/',
+            {'testcases': []},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_batch_save_project_not_found(self):
+        resp = self.client.post(
+            '/api/projects/99999/batch-save/',
+            {'testcases': [{'name': 'TC'}]},
+            format='json',
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class PreconditionCRUDTest(TestCase):
+    """前置条件模板 CRUD 端点测试"""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_list_preconditions(self):
+        PreconditionTemplate.objects.create(name='TPL1', steps='Step 1')
+        PreconditionTemplate.objects.create(name='TPL2', steps='Step 2', is_default=True)
+        resp = self.client.get('/api/preconditions/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        # 2 created + 3 from data migration = 5
+        self.assertEqual(len(resp.data['preconditions']), 5)
+
+    def test_create_precondition(self):
+        data = {'name': 'New Template', 'steps': '1. Do something'}
+        resp = self.client.post('/api/preconditions/create/', data, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['name'], 'New Template')
+        self.assertFalse(resp.data['is_default'])
+
+    def test_update_precondition(self):
+        tpl = PreconditionTemplate.objects.create(name='Old', steps='Old steps')
+        data = {'name': 'Updated', 'steps': 'New steps'}
+        resp = self.client.put(f'/api/preconditions/{tpl.id}/', data, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['name'], 'Updated')
+
+    def test_delete_precondition(self):
+        tpl = PreconditionTemplate.objects.create(name='Delete Me', steps='Steps')
+        resp = self.client.delete(f'/api/preconditions/{tpl.id}/delete/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(PreconditionTemplate.objects.filter(id=tpl.id).exists())
+
+    def test_delete_default_precondition_forbidden(self):
+        tpl = PreconditionTemplate.objects.create(name='Default', steps='Steps', is_default=True)
+        resp = self.client.delete(f'/api/preconditions/{tpl.id}/delete/')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(PreconditionTemplate.objects.filter(id=tpl.id).exists())
+
+    def test_delete_nonexistent(self):
+        resp = self.client.delete('/api/preconditions/99999/delete/')
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class RepoAnalyzerTest(TestCase):
+    """repo_analyzer.py 服务层测试"""
+
+    def setUp(self):
+        self.project = Project.objects.create(
+            name='Test Project',
+            repo_url='https://github.com/test/repo.git',
+            base_url='https://example.com',
+        )
+
+    def test_parse_analysis_response_valid_json(self):
+        from .repo_analyzer import _parse_analysis_response
+        raw = json.dumps({
+            'pages': [{'path': '/users', 'name': 'Users', 'description': 'User list', 'source_file': 'router.js'}],
+            'apis': [{'path': '/api/users', 'method': 'GET', 'name': 'Get Users', 'description': 'List users', 'source_file': 'app.py'}],
+        })
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]['type'], 'page')
+        self.assertEqual(items[0]['path'], '/users')
+        self.assertEqual(items[1]['type'], 'api')
+        self.assertEqual(items[1]['method'], 'GET')
+
+    def test_parse_analysis_response_empty(self):
+        from .repo_analyzer import _parse_analysis_response
+        items = _parse_analysis_response('{"pages": [], "apis": []}')
+        self.assertEqual(items, [])
+
+    def test_parse_analysis_response_markdown_wrapped(self):
+        from .repo_analyzer import _parse_analysis_response
+        raw = '```json\n{"pages": [{"path": "/home", "name": "Home"}], "apis": []}\n```'
+        items = _parse_analysis_response(raw)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['path'], '/home')
+
+    def test_parse_analysis_response_invalid(self):
+        from .repo_analyzer import _parse_analysis_response
+        items = _parse_analysis_response('not valid json at all')
+        self.assertEqual(items, [])
+
+    @mock.patch('core.repo_analyzer._get_client')
+    @mock.patch('core.repo_analyzer.repo_service')
+    def test_analyze_repo_success(self, mock_repo_service, mock_get_client):
+        from .repo_analyzer import analyze_repo
+
+        mock_repo_service.clone_or_update_repo.return_value = '/tmp/repos/project_1'
+        mock_repo_service.get_repo_file_tree.return_value = 'src/\n  index.js\n'
+        mock_repo_service.search_code.return_value = [
+            {'file': 'src/router.js', 'line_num': 1, 'line': 'router'},
+        ]
+        mock_repo_service.read_file_content.return_value = "router.get('/users')"
+
+        mock_response = mock.MagicMock()
+        mock_response.content = [mock.MagicMock()]
+        mock_response.content[0].text = json.dumps({
+            'pages': [{'path': '/users', 'name': 'Users', 'description': 'User list', 'source_file': 'router.js'}],
+            'apis': [],
+        })
+        mock_client = mock.MagicMock()
+        mock_client.messages.create.return_value = mock_response
+        mock_get_client.return_value = mock_client
+
+        result = analyze_repo(self.project)
+        self.assertEqual(result.status, 'completed')
+        self.assertEqual(len(result.discovered_items), 1)
+        self.assertEqual(result.discovered_items[0]['type'], 'page')
+
+    @mock.patch('core.repo_analyzer.repo_service')
+    def test_analyze_repo_clone_failure(self, mock_repo_service):
+        from .repo_analyzer import analyze_repo
+
+        mock_repo_service.clone_or_update_repo.side_effect = RuntimeError('Clone failed')
+        result = analyze_repo(self.project)
+        self.assertEqual(result.status, 'failed')
+        self.assertIn('Clone failed', result.analysis_log)

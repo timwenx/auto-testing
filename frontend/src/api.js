@@ -61,4 +61,18 @@ export const getStats = () => api.get('/stats/')
 export const getSettings = () => api.get('/settings/')
 export const updateSettings = (data) => api.put('/settings/', { settings: data })
 
+// ─── 仓库分析 + 批量用例生成 ───
+export const repoPull = (projectId) => api.post(`/projects/${projectId}/repo/pull/`)
+export const repoAnalyze = (projectId) => aiApi.post(`/projects/${projectId}/repo/analyze/`)
+export const getRepoAnalysis = (projectId) => api.get(`/projects/${projectId}/repo/analysis/`)
+export const getRepoAnalysisList = (projectId) => api.get(`/projects/${projectId}/repo/analysis/list/`)
+export const batchGenerateTestcases = (projectId, data) => aiApi.post(`/projects/${projectId}/batch-generate/`, data)
+export const batchSaveTestcases = (projectId, data) => api.post(`/projects/${projectId}/batch-save/`, data)
+
+// ─── 前置条件模板 ───
+export const getPreconditions = () => api.get('/preconditions/')
+export const createPrecondition = (data) => api.post('/preconditions/create/', data)
+export const updatePrecondition = (id, data) => api.put(`/preconditions/${id}/`, data)
+export const deletePrecondition = (id) => api.delete(`/preconditions/${id}/delete/`)
+
 export default api

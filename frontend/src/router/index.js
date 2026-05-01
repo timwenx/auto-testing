@@ -17,6 +17,11 @@ const routes = [
     component: () => import('../views/ProjectDetail.vue'),
   },
   {
+    path: '/projects/:id/testcases/manage',
+    name: 'TestCaseManager',
+    component: () => import('../views/TestCaseManager.vue'),
+  },
+  {
     path: '/executions',
     name: 'Executions',
     component: () => import('../views/Executions.vue'),
