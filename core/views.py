@@ -12,7 +12,7 @@ from rest_framework.response import Response
 
 from .models import Project, TestCase, ExecutionRecord, AIConversation, SystemSetting, Screenshot, RepoAnalysis, PreconditionTemplate, Script, TestPlan, TestPlanItem, PlanExecution
 from .serializers import (
-    ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer,
+    ProjectSerializer, TestCaseSerializer, ExecutionRecordSerializer, ExecutionRecordListSerializer,
     AIConversationSerializer, AIGenerateRequestSerializer, AIAnalyzeRequestSerializer,
     AIAdjustRequestSerializer, SystemSettingSerializer, SystemSettingBulkUpdateSerializer,
     AgentGenerateRequestSerializer, AgentRefineRequestSerializer,
@@ -197,7 +197,7 @@ class ProjectTestCaseListView(generics.ListAPIView):
 
 class ExecutionRecordListView(generics.ListAPIView):
     queryset = ExecutionRecord.objects.select_related('project', 'testcase').all()
-    serializer_class = ExecutionRecordSerializer
+    serializer_class = ExecutionRecordListSerializer
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -213,6 +213,21 @@ class ExecutionRecordListView(generics.ListAPIView):
         source_exec = self.request.query_params.get('source_execution')
         if source_exec:
             qs = qs.filter(source_execution_id=source_exec)
+        status = self.request.query_params.get('status')
+        if status:
+            qs = qs.filter(status=status)
+        execution_mode = self.request.query_params.get('execution_mode')
+        if execution_mode:
+            qs = qs.filter(execution_mode=execution_mode)
+        plan_execution = self.request.query_params.get('plan_execution')
+        if plan_execution:
+            qs = qs.exclude(plan_execution__isnull=True)
+        created_after = self.request.query_params.get('created_after')
+        if created_after:
+            qs = qs.filter(created_at__date__gte=created_after)
+        created_before = self.request.query_params.get('created_before')
+        if created_before:
+            qs = qs.filter(created_at__date__lte=created_before)
         return qs
 
 

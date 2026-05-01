@@ -1,8 +1,6 @@
 <template>
   <div class="test-plan-view">
-    <el-page-header @back="$router.push('/')" title="返回" content="测试方案" />
-
-    <div style="display: flex; gap: 16px; margin-top: 16px; height: calc(100vh - 140px)">
+    <div style="display: flex; gap: 16px; height: calc(100vh - 120px)">
       <!-- 左侧：方案列表 -->
       <el-card style="width: 280px; flex-shrink: 0" body-style="padding: 0">
         <template #header>
@@ -13,9 +11,12 @@
             </el-button>
           </div>
         </template>
-        <div v-loading="loadingPlans">
+        <div style="margin: 8px 12px">
+          <el-input v-model="planSearch" placeholder="搜索方案..." clearable size="small" />
+        </div>
+        <div v-loading="loadingPlans" style="max-height: calc(100vh - 220px); overflow-y: auto">
           <div
-            v-for="plan in plans"
+            v-for="plan in filteredPlans"
             :key="plan.id"
             class="plan-item"
             :class="{ active: selectedPlan?.id === plan.id }"
@@ -24,10 +25,11 @@
             <div class="plan-item-name">{{ plan.name }}</div>
             <div class="plan-item-meta">
               <el-tag :type="planStatusType(plan.status)" size="small">{{ plan.status }}</el-tag>
+              <span style="color: #909399; font-size: 12px">{{ plan.project_name || '-' }}</span>
               <span style="color: #909399; font-size: 12px">{{ plan.item_count }} 项</span>
             </div>
           </div>
-          <el-empty v-if="!plans.length && !loadingPlans" description="暂无方案" :image-size="60" />
+          <el-empty v-if="!filteredPlans.length && !loadingPlans" description="暂无方案" :image-size="60" />
         </div>
       </el-card>
 
@@ -37,9 +39,7 @@
           <div style="display: flex; justify-content: space-between; align-items: center">
             <div>
               <span style="font-size: 16px; font-weight: 600">{{ selectedPlan.name }}</span>
-              <el-tag :type="planStatusType(selectedPlan.status)" size="small" style="margin-left: 8px">
-                {{ selectedPlan.status }}
-              </el-tag>
+              <el-tag :type="planStatusType(selectedPlan.status)" size="small" style="margin-left: 8px">{{ selectedPlan.status }}</el-tag>
             </div>
             <div>
               <el-button size="small" type="primary" @click="handleExecutePlan" :loading="executingPlan">
@@ -58,7 +58,7 @@
           <el-descriptions-item label="创建时间">{{ selectedPlan.created_at }}</el-descriptions-item>
         </el-descriptions>
 
-        <!-- API 信息 -->
+        <!-- API 信息（默认折叠） -->
         <el-collapse style="margin-bottom: 16px">
           <el-collapse-item title="API 调用信息">
             <div class="api-info">
@@ -138,13 +138,18 @@
               </template>
             </el-table-column>
             <el-table-column prop="trigger_source" label="触发方式" width="100" />
-            <el-table-column label="结果" min-width="200">
+            <el-table-column label="结果" min-width="160">
               <template #default="{ row }">
                 <template v-if="row.summary">
                   <el-tag type="success" size="small" effect="plain">通过 {{ row.summary.passed || 0 }}</el-tag>
                   <el-tag type="danger" size="small" effect="plain" style="margin-left: 4px">失败 {{ (row.summary.failed || 0) + (row.summary.error || 0) }}</el-tag>
                 </template>
                 <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="耗时" width="80">
+              <template #default="{ row }">
+                {{ row.total_duration ? row.total_duration.toFixed(1) + 's' : '-' }}
               </template>
             </el-table-column>
             <el-table-column prop="started_at" label="开始时间" width="160" />
@@ -193,22 +198,12 @@
         </el-form-item>
         <el-form-item v-if="addItemForm.item_type === 'script'" label="选择脚本">
           <el-select v-model="addItemForm.script_id" placeholder="选择脚本" style="width: 100%" filterable>
-            <el-option
-              v-for="s in availableScripts"
-              :key="s.id"
-              :label="s.name"
-              :value="s.id"
-            />
+            <el-option v-for="s in availableScripts" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="addItemForm.item_type === 'feature_group'" label="功能分组">
           <el-select v-model="addItemForm.feature_group_name" placeholder="选择功能分组" style="width: 100%" filterable allow-create>
-            <el-option
-              v-for="g in scriptFeatureGroups"
-              :key="g.name"
-              :label="`${g.name} (${g.count})`"
-              :value="g.name"
-            />
+            <el-option v-for="g in scriptFeatureGroups" :key="g.name" :label="`${g.name} (${g.count})`" :value="g.name" />
           </el-select>
         </el-form-item>
       </el-form>
@@ -253,9 +248,7 @@
             </el-table-column>
             <el-table-column label="操作" width="80">
               <template #default="{ row }">
-                <el-button size="small" text type="primary" @click="$router.push(`/executions/${row.id}/observe`)">
-                  观察
-                </el-button>
+                <el-button size="small" text type="primary" @click="$router.push(`/executions/${row.id}/observe`)">观察</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -266,13 +259,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   getPlans, createPlan, getPlan, updatePlan, deletePlan,
   addPlanItem, deletePlanItem, regeneratePlanToken, reorderPlanItems,
   executePlan, getPlanExecutions, getPlanExecution, getPlanExecutionStatus,
-  getScripts, getScriptFeatureGroups,
-  getProjects,
+  getScripts, getScriptFeatureGroups, getProjects,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -294,11 +286,22 @@ const showAddItem = ref(false)
 const showExecDetail = ref(false)
 const editingPlan = ref(null)
 const execDetail = ref(null)
+const planSearch = ref('')
+
+let pollTimer = null
 
 const planForm = ref({ project: null, name: '', description: '' })
 const addItemForm = ref({ item_type: 'script', script_id: null, feature_group_name: '' })
 
 const apiUrl = window.location.origin
+
+const filteredPlans = computed(() => {
+  if (!planSearch.value) return plans.value
+  const q = planSearch.value.toLowerCase()
+  return plans.value.filter(p =>
+    p.name.toLowerCase().includes(q) || (p.project_name || '').toLowerCase().includes(q)
+  )
+})
 
 const tokenDisplay = computed(() => {
   if (!selectedPlan.value?.api_token) return ''
@@ -321,16 +324,14 @@ async function loadPlans() {
   try {
     const { data } = await getPlans()
     plans.value = data.plans || data.results || data
-  } finally {
-    loadingPlans.value = false
-  }
+  } finally { loadingPlans.value = false }
 }
 
 async function loadProjects() {
   try {
     const { data } = await getProjects()
     projects.value = data.results || data
-  } catch (e) { /* ignore */ }
+  } catch { /* ignore */ }
 }
 
 async function selectPlan(plan) {
@@ -339,9 +340,7 @@ async function selectPlan(plan) {
     selectedPlan.value = data
     planItems.value = data.items || []
     await loadExecutions()
-  } catch (e) {
-    ElMessage.error('加载方案失败')
-  }
+  } catch { ElMessage.error('加载方案失败') }
 }
 
 async function loadExecutions() {
@@ -350,9 +349,7 @@ async function loadExecutions() {
   try {
     const { data } = await getPlanExecutions({ plan: selectedPlan.value.id })
     planExecutions.value = data.executions || data.results || data
-  } finally {
-    loadingExecutions.value = false
-  }
+  } finally { loadingExecutions.value = false }
 }
 
 async function loadScriptsForProject(projectId) {
@@ -363,7 +360,7 @@ async function loadScriptsForProject(projectId) {
     ])
     availableScripts.value = scriptsRes.data.scripts || scriptsRes.data.results || scriptsRes.data || []
     scriptFeatureGroups.value = groupsRes.data.groups || []
-  } catch (e) { /* ignore */ }
+  } catch { /* ignore */ }
 }
 
 function openCreateDialog() {
@@ -389,10 +386,7 @@ async function handleSavePlan() {
   savingPlan.value = true
   try {
     if (editingPlan.value) {
-      await updatePlan(editingPlan.value.id, {
-        name: planForm.value.name,
-        description: planForm.value.description,
-      })
+      await updatePlan(editingPlan.value.id, { name: planForm.value.name, description: planForm.value.description })
       ElMessage.success('方案已更新')
     } else {
       await createPlan(planForm.value)
@@ -400,11 +394,7 @@ async function handleSavePlan() {
     }
     showCreateOrEdit.value = false
     await loadPlans()
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '保存失败')
-  } finally {
-    savingPlan.value = false
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.error || '保存失败') } finally { savingPlan.value = false }
 }
 
 async function handleDeletePlan() {
@@ -417,9 +407,7 @@ async function handleDeletePlan() {
     planItems.value = []
     planExecutions.value = []
     await loadPlans()
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '删除失败')
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.error || '删除失败') }
 }
 
 async function handleAddItem() {
@@ -430,11 +418,7 @@ async function handleAddItem() {
     ElMessage.success('子项已添加')
     showAddItem.value = false
     await selectPlan(selectedPlan.value)
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '添加失败')
-  } finally {
-    addingItem.value = false
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.error || '添加失败') } finally { addingItem.value = false }
 }
 
 async function handleItemMoveUp(index) {
@@ -452,17 +436,11 @@ async function handleItemMoveDown(index) {
 }
 
 async function persistReorder(reordered) {
-  const orders = reordered.map((item, i) => ({
-    id: item.id,
-    sort_order: i + 1,
-  }))
+  const orders = reordered.map((item, i) => ({ id: item.id, sort_order: i + 1 }))
   try {
     await reorderPlanItems(selectedPlan.value.id, orders)
-    // Update local state
     planItems.value = reordered.map((item, i) => ({ ...item, sort_order: i + 1 }))
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '排序失败')
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.error || '排序失败') }
 }
 
 async function handleRemoveItem(item) {
@@ -471,9 +449,7 @@ async function handleRemoveItem(item) {
     await deletePlanItem(item.id)
     ElMessage.success('已移除')
     await selectPlan(selectedPlan.value)
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '移除失败')
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.error || '移除失败') }
 }
 
 async function handleExecutePlan() {
@@ -481,43 +457,42 @@ async function handleExecutePlan() {
   executingPlan.value = true
   try {
     const headers = {}
-    if (selectedPlan.value.api_token) {
-      headers['X-Plan-Token'] = String(selectedPlan.value.api_token)
-    }
+    if (selectedPlan.value.api_token) headers['X-Plan-Token'] = String(selectedPlan.value.api_token)
     const { data } = await executePlan(selectedPlan.value.id, false, { headers })
     if (data.status === 'running') {
       ElMessage.success('方案执行已提交')
-      // 轮询状态
-      pollExecution(data.id)
+      startPolling(data.id)
     } else {
       ElMessage.success('方案执行完成')
     }
     await loadExecutions()
-  } catch (e) {
-    ElMessage.error(e.response?.data?.error || '执行失败')
-  } finally {
-    executingPlan.value = false
-  }
+  } catch (e) { ElMessage.error(e.response?.data?.error || '执行失败') } finally { executingPlan.value = false }
 }
 
-async function pollExecution(execId) {
+// Use setInterval-based polling with cleanup instead of recursive setTimeout
+function startPolling(execId) {
+  stopPolling()
   let tries = 0
-  const maxTries = 120  // 最多轮询 2 分钟
-  const poll = async () => {
-    if (tries >= maxTries) return
+  const maxTries = 120
+  pollTimer = setInterval(async () => {
     tries++
+    if (tries >= maxTries) { stopPolling(); return }
     try {
       const { data } = await getPlanExecutionStatus(execId)
       if (['completed', 'failed', 'error'].includes(data.status)) {
+        stopPolling()
         await loadExecutions()
         ElMessage.info(`方案执行${data.status === 'completed' ? '完成' : '失败'}`)
-        return
       }
-    } catch (e) { /* ignore */ }
-    setTimeout(poll, 1000)
-  }
-  poll()
+    } catch { /* ignore */ }
+  }, 1000)
 }
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+onUnmounted(() => stopPolling())
 
 async function handleRegenerateToken() {
   if (!selectedPlan.value) return
@@ -526,9 +501,7 @@ async function handleRegenerateToken() {
     const { data } = await regeneratePlanToken(selectedPlan.value.id)
     selectedPlan.value = { ...selectedPlan.value, api_token: data.api_token }
     ElMessage.success('Token 已重新生成')
-  } catch (e) {
-    ElMessage.error('重新生成失败')
-  }
+  } catch { ElMessage.error('重新生成失败') }
 }
 
 function copyToken() {
@@ -555,14 +528,9 @@ async function viewExecutionDetail(exec) {
   try {
     const { data } = await getPlanExecution(exec.id)
     execDetail.value = data
-  } catch (e) {
-    ElMessage.error('加载执行详情失败')
-  } finally {
-    loadingExecDetail.value = false
-  }
+  } catch { ElMessage.error('加载执行详情失败') } finally { loadingExecDetail.value = false }
 }
 
-// 当打开添加子项对话框时，加载脚本列表
 watch(showAddItem, async (val) => {
   if (val && selectedPlan.value?.project) {
     await loadScriptsForProject(selectedPlan.value.project)
@@ -577,7 +545,7 @@ onMounted(async () => {
 
 <style scoped>
 .test-plan-view {
-  padding: 16px;
+  padding: 0;
 }
 .plan-item {
   padding: 10px 14px;
@@ -585,51 +553,13 @@ onMounted(async () => {
   border-bottom: 1px solid #f0f0f0;
   transition: background-color 0.2s;
 }
-.plan-item:hover {
-  background-color: #f5f7fa;
-}
-.plan-item.active {
-  background-color: #ecf5ff;
-  border-left: 3px solid #409eff;
-}
-.plan-item-name {
-  font-weight: 500;
-  font-size: 14px;
-  margin-bottom: 4px;
-}
-.plan-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.api-info {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.api-field {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-.api-field label {
-  font-weight: 600;
-  font-size: 12px;
-  color: #606266;
-  white-space: nowrap;
-  min-width: 80px;
-}
-.api-field code {
-  background: #f5f7fa;
-  padding: 2px 8px;
-  border-radius: 3px;
-  font-size: 12px;
-  word-break: break-all;
-}
-.code-block {
-  display: block;
-  font-family: 'Consolas', monospace;
-  font-size: 11px;
-  line-height: 1.4;
-}
+.plan-item:hover { background-color: #f5f7fa; }
+.plan-item.active { background-color: #ecf5ff; border-left: 3px solid #409eff; }
+.plan-item-name { font-weight: 500; font-size: 14px; margin-bottom: 4px; }
+.plan-item-meta { display: flex; align-items: center; gap: 8px; }
+.api-info { display: flex; flex-direction: column; gap: 12px; }
+.api-field { display: flex; align-items: flex-start; gap: 8px; }
+.api-field label { font-weight: 600; font-size: 12px; color: #606266; white-space: nowrap; min-width: 80px; }
+.api-field code { background: #f5f7fa; padding: 2px 8px; border-radius: 3px; font-size: 12px; word-break: break-all; }
+.code-block { display: block; font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.4; }
 </style>
