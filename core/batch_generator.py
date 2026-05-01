@@ -165,6 +165,9 @@ def generate_testcases_single(project, item, user_description, precondition=None
         {item.get('path', ''): user_description},
         precondition_template=precondition,
     )
+    if not results:
+        logger.warning("[BatchGenerator] Single generation returned no results for item: %s",
+                       item.get('path', 'unknown'))
     return results[0] if results else {}
 
 

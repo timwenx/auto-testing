@@ -346,7 +346,7 @@ def serve_screenshot(request):
         if m:
             return int(m.group(1))
         # 绝对路径：尝试从尾部匹配 .../{execution_id}/xxx.png
-        m = re.search(r'[\\/]((\d)+)[\\/][^\\/]+\.\w+$', path)
+        m = re.search(r'[\\/](\d+)[\\/][^\\/]+\.\w+$', path)
         if m:
             return int(m.group(1))
         return None
@@ -417,7 +417,7 @@ def serve_screenshot(request):
     # 返回文件
     content_type = mimetypes.guess_type(abs_path)[0] or 'image/png'
     try:
-        return FileResponse(open(abs_path, 'rb'), content_type=content_type)
+        return FileResponse(open(abs_path, 'rb'), content_type=content_type, close=True)
     except IOError as e:
         logger.error("Failed to read screenshot file: %s", e)
         raise Http404("无法读取截图文件")
@@ -1059,6 +1059,7 @@ def update_replay_script(request, pk):
         return Response({'error': '尚未生成回放脚本'}, status=status.HTTP_404_NOT_FOUND)
 
     data = request.data
+
     if not isinstance(data, dict):
         return Response({'error': '无效的脚本数据'}, status=status.HTTP_400_BAD_REQUEST)
 

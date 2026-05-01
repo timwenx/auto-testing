@@ -322,3 +322,39 @@ All 6 tasks fully implemented and verified:
 - All **227 tests pass**
 - Frontend builds successfully
 - Commit: `63ebc47`
+
+## Round 5 — Quality fixes and edge case handling
+
+### Issues Found and Fixed
+
+1. **Regex pattern bug** (`views.py` line 349):
+   - `((\d)+)` → `(\d+)` — unnecessary nested capture group, fragile by construction
+   - While `group(1)` returned correct results, `group(2)` was wrong
+
+2. **Duplicate `data = request.data`** (`views.py` line 1061):
+   - Removed redundant re-assignment in `update_replay_script`
+
+3. **FileResponse file handle leak** (`views.py` line 420):
+   - Added `close=True` to `FileResponse(open(...))` to prevent FD leak on connection drops
+
+4. **Poll timeout in CodeAnalysisPanel** (`CodeAnalysisPanel.vue`):
+   - Added `pollCount` + `MAX_POLL_COUNT=100` (~5 minutes at 3s interval)
+   - Prevents infinite polling if Claude API hangs in 'analyzing' state
+   - Shows `ElMessage.warning` on timeout
+
+5. **Silent failure in `generate_testcases_single`** (`batch_generator.py`):
+   - Added `logger.warning` when single generation returns empty results
+   - Helps diagnose Claude API failures in production
+
+6. **`_parse_analysis_response` null crash** (`repo_analyzer.py`):
+   - `data.get('pages', [])` → `data.get('pages') or []`
+   - Claude returning `{"pages": null, "apis": null}` caused `TypeError: 'NoneType' is not iterable`
+
+### New Tests (2 added)
+- `RepoAnalyzerParserEdgeTest.test_null_pages_and_apis` — null values don't crash
+- `RepoAnalyzerParserEdgeTest.test_null_pages_with_valid_apis` — null pages + valid apis works
+
+### Status
+- All **229 tests pass** (227 previous + 2 new)
+- Frontend builds successfully
+- Django check: 0 issues
