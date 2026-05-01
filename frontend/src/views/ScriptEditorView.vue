@@ -56,10 +56,8 @@
                     clearable
                     @clear="paramValues[key] = script.parameters[key].default"
                   />
-                  <el-button
-                    size="small" text
-                    @click="paramValues[key] = script.parameters[key].default"
-                  >重置</el-button>
+                  <el-button size="small" text @click="paramValues[key] = script.parameters[key].default">重置</el-button>
+                  <el-button size="small" text type="danger" @click="deleteParam(key)">删除</el-button>
                 </div>
               </el-form-item>
             </el-col>
@@ -85,10 +83,7 @@
                     clearable
                     @clear="paramValues[key] = script.parameters[key].default"
                   />
-                  <el-button
-                    size="small" text
-                    @click="paramValues[key] = script.parameters[key].default"
-                  >重置</el-button>
+                  <el-button size="small" text @click="paramValues[key] = script.parameters[key].default">重置</el-button>
                 </div>
               </el-form-item>
             </el-col>
@@ -314,6 +309,40 @@ function moveStepDown(index) {
 
 function renumberSteps() {
   script.value.steps.forEach((s, i) => { s.step_num = i + 1 })
+}
+
+function deleteParam(key) {
+  const defaultVal = script.value.parameters[key]?.default || ''
+  // 将所有步骤中的 {{key}} 替换回字面值
+  for (const step of script.value.steps) {
+    _resolveTemplateInStep(step, key, defaultVal)
+    step.parameters = (step.parameters || []).filter(p => p !== key)
+  }
+  delete script.value.parameters[key]
+  delete paramValues[key]
+}
+
+function _resolveTemplateInStep(step, paramKey, literalValue) {
+  const placeholder = '{{' + paramKey + '}}'
+  const inputs = step.inputs
+  if (!inputs) return
+  for (const [k, v] of Object.entries(inputs)) {
+    if (typeof v === 'string') {
+      inputs[k] = v.replaceAll(placeholder, literalValue)
+    } else if (Array.isArray(v)) {
+      inputs[k] = v.map(item => {
+        if (typeof item === 'string') return item.replaceAll(placeholder, literalValue)
+        if (item && typeof item === 'object') {
+          const copy = { ...item }
+          for (const [ik, iv] of Object.entries(copy)) {
+            if (typeof iv === 'string') copy[ik] = iv.replaceAll(placeholder, literalValue)
+          }
+          return copy
+        }
+        return item
+      })
+    }
+  }
 }
 
 onMounted(() => {
