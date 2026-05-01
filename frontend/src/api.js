@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
 
 const api = axios.create({
   baseURL: '/api',
@@ -12,6 +13,32 @@ const aiApi = axios.create({
   timeout: 120000,
   headers: { 'Content-Type': 'application/json' },
 })
+
+// ─── 统一错误拦截器 ───
+function setupInterceptors(instance) {
+  instance.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      const status = error.response?.status
+      if (status === 401) {
+        // 未授权 → 清除 token 并跳转登录页
+        localStorage.removeItem('mytest_token')
+        localStorage.removeItem('mytest_user')
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+      } else if (status === 403) {
+        ElMessage.error('权限不足，操作被拒绝')
+      } else if (status && status >= 500) {
+        ElMessage.error('服务器错误，请稍后重试')
+      }
+      return Promise.reject(error)
+    }
+  )
+}
+
+setupInterceptors(api)
+setupInterceptors(aiApi)
 
 // ─── 项目 ───
 export const getProjects = (params) => api.get('/projects/', { params })

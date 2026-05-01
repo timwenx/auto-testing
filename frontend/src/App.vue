@@ -1,5 +1,5 @@
 <template>
-  <div v-if="route.path === '/login'" class="login-wrapper">
+  <div v-if="route.meta?.noLayout" class="login-wrapper">
     <router-view />
   </div>
   <div v-else class="layout">
@@ -41,8 +41,12 @@
     <div class="main-area">
       <div class="header">
         <el-breadcrumb separator="/" class="breadcrumb">
-          <el-breadcrumb-item v-for="item in breadcrumbs" :key="item.path" :to="item.path ? item.path : undefined">
-            {{ item.title }}
+          <el-breadcrumb-item :to="'/'">首页</el-breadcrumb-item>
+          <el-breadcrumb-item v-if="breadcrumbs.parent" :to="breadcrumbs.parentPath">
+            {{ breadcrumbs.parent }}
+          </el-breadcrumb-item>
+          <el-breadcrumb-item v-if="breadcrumbs.current">
+            {{ breadcrumbs.current }}
           </el-breadcrumb-item>
         </el-breadcrumb>
         <div class="header-right">
@@ -71,7 +75,6 @@ const currentUser = computed(() => localStorage.getItem('mytest_user') || 'admin
 
 const sidebarActive = computed(() => {
   const path = route.path
-  // Match sub-routes to their parent sidebar item
   if (path.startsWith('/projects')) return '/projects'
   if (path.startsWith('/scripts')) return '/scripts'
   if (path.startsWith('/plans') || path.startsWith('/plan-executions')) return '/plans'
@@ -80,49 +83,30 @@ const sidebarActive = computed(() => {
 })
 
 const breadcrumbs = computed(() => {
-  const path = route.path
-  const crumbs = [{ title: '首页', path: '/' }]
-
-  const routeMeta = {
-    '/': { title: '工作台' },
-    '/projects': { title: '项目' },
-    '/scripts': { title: '脚本' },
-    '/plans': { title: '测试方案' },
-    '/executions': { title: '执行记录' },
-    '/settings': { title: '系统设置' },
+  const meta = route.meta || {}
+  return {
+    parent: meta.parent ? getParentTitle(meta.parent) : null,
+    parentPath: meta.parentPath || null,
+    current: meta.title && meta.title !== '工作台' ? meta.title : null,
   }
-
-  // Sub-route breadcrumb logic
-  if (path.startsWith('/projects/') && path.includes('/testcases/manage')) {
-    crumbs.push({ title: '项目', path: '/projects' })
-    crumbs.push({ title: '用例管理' })
-  } else if (path.match(/^\/projects\/\d+$/)) {
-    crumbs.push({ title: '项目', path: '/projects' })
-    crumbs.push({ title: '项目详情' })
-  } else if (path.match(/^\/plan-executions\/\d+$/)) {
-    crumbs.push({ title: '测试方案', path: '/plans' })
-    crumbs.push({ title: '执行详情' })
-  } else if (path.match(/^\/executions\/\d+\/observe$/)) {
-    crumbs.push({ title: '执行记录', path: '/executions' })
-    crumbs.push({ title: '执行观察' })
-  } else if (path.match(/^\/executions\/\d+\/script$/)) {
-    crumbs.push({ title: '执行记录', path: '/executions' })
-    crumbs.push({ title: '脚本编辑' })
-  } else if (routeMeta[path]) {
-    crumbs.push({ title: routeMeta[path].title })
-  } else {
-    crumbs.push({ title: route.meta?.title || 'MyTest' })
-  }
-
-  return crumbs
 })
+
+const parentTitles = {
+  Projects: '项目',
+  TestPlans: '测试方案',
+  Executions: '执行记录',
+  Scripts: '脚本',
+  Settings: '系统设置',
+}
+
+function getParentTitle(name) {
+  return parentTitles[name] || name
+}
 
 async function handleLogout() {
   try {
     await ElMessageBox.confirm('确认退出登录？', '提示', { type: 'warning' })
-  } catch {
-    return
-  }
+  } catch { return }
   localStorage.removeItem('mytest_token')
   localStorage.removeItem('mytest_user')
   router.push('/login')
