@@ -80,9 +80,11 @@
     <!-- 参数填写弹窗 -->
     <el-dialog v-model="showParamDialog" title="执行参数" width="640px">
       <template v-if="paramRow">
-        <div v-if="paramKeys.length" style="background:var(--el-fill-color-lighter);padding:16px;border-radius:8px">
+        <!-- 动态参数 -->
+        <div v-if="inputParamKeys.length" style="background:var(--el-fill-color-lighter);padding:16px;border-radius:8px;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--el-text-color-primary)">动态参数</div>
           <el-form :model="paramValues" label-width="auto" size="small">
-            <el-form-item v-for="key in paramKeys" :key="key" :label="paramRow.replay_script.parameters[key].label || key">
+            <el-form-item v-for="key in inputParamKeys" :key="key" :label="paramRow.replay_script.parameters[key].label || key">
               <el-input
                 v-model="paramValues[key]"
                 :placeholder="paramRow.replay_script.parameters[key].default"
@@ -92,7 +94,21 @@
             </el-form-item>
           </el-form>
         </div>
-        <el-empty v-else description="无动态参数" :image-size="48" />
+        <!-- 预期结果 -->
+        <div v-if="assertParamKeys.length" style="background:#f0f9eb;padding:16px;border-radius:8px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--el-text-color-primary)">预期结果</div>
+          <el-form :model="paramValues" label-width="auto" size="small">
+            <el-form-item v-for="key in assertParamKeys" :key="key" :label="paramRow.replay_script.parameters[key].label || key">
+              <el-input
+                v-model="paramValues[key]"
+                :placeholder="paramRow.replay_script.parameters[key].default"
+                clearable
+                @clear="paramValues[key] = paramRow.replay_script.parameters[key].default || ''"
+              />
+            </el-form-item>
+          </el-form>
+        </div>
+        <el-empty v-if="!paramKeys.length" description="无参数" :image-size="48" />
       </template>
       <template #footer>
         <el-button @click="showParamDialog = false">取消</el-button>
@@ -123,6 +139,8 @@ const paramRow = ref(null)
 const paramValues = ref({})
 const executing = ref(false)
 const paramKeys = computed(() => paramRow.value ? Object.keys(paramRow.value.replay_script?.parameters || {}) : [])
+const inputParamKeys = computed(() => paramKeys.value.filter(k => paramRow.value.replay_script.parameters[k]?.group !== 'assertion'))
+const assertParamKeys = computed(() => paramKeys.value.filter(k => paramRow.value.replay_script.parameters[k]?.group === 'assertion'))
 let replayScriptRow = null
 
 const filteredScripts = computed(() => {

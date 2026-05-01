@@ -56,6 +56,46 @@ def _make_label(tool_name, selector, value):
     return labels.get(tool_name, short_val)
 
 
+def _link_assert_selectors(steps, parameters):
+    """
+    后处理：将 browser_assert 步骤 selector 中的硬编码值替换为已有参数引用。
+    例如 tr:has-text('AT001') 中 AT001 如果是某个填写参数的 default，
+    则替换为 tr:has-text('{{param_code_5}}')。
+    """
+    # 收集 default → param_name 映射（排除空值和过短的值）
+    value_to_param = {}
+    for pname, pinfo in parameters.items():
+        default = str(pinfo.get('default', '')).strip()
+        if len(default) >= 2:  # 至少2字符才值得替换
+            value_to_param[default] = pname
+
+    if not value_to_param:
+        return
+
+    # 按 default 值长度降序排列，避免短值误替换长值的一部分
+    sorted_values = sorted(value_to_param.items(), key=lambda x: len(x[0]), reverse=True)
+
+    for step in steps:
+        if step.get('tool_name') != 'browser_assert':
+            continue
+        selector = step.get('inputs', {}).get('selector', '')
+        if not selector:
+            continue
+
+        new_selector = selector
+        referenced_params = []
+        for value, pname in sorted_values:
+            if value in new_selector:
+                ref = '{{' + pname + '}}'
+                new_selector = new_selector.replace(value, ref)
+                if pname not in referenced_params:
+                    referenced_params.append(pname)
+
+        if new_selector != selector:
+            step['inputs']['selector'] = new_selector
+            step['parameters'] = referenced_params
+
+
 def convert_execution_to_script(record):
     """
     将 ExecutionRecord 的 agent 执行数据转换为结构化回放脚本。
@@ -112,6 +152,9 @@ def convert_execution_to_script(record):
 
     if not steps:
         raise ValueError('没有可回放的浏览器操作步骤（仅发现探索/观察类工具调用）')
+
+    # 后处理：断言 selector 中的硬编码值替换为已有参数引用
+    _link_assert_selectors(steps, parameters)
 
     base_url = _extract_base_url(steps, record)
 
@@ -455,11 +498,12 @@ def _convert_step(tool_name, tool_input, step_num, execution_id):
         message = tool_input.get('message', '')
 
         pname = f'param_expected_{step_num}'
-        params = {pname: {
-            'label': f'预期值 ({selector[:20]})',
+        params[pname] = {
+            'label': f'预期值 ({selector[:25]})',
             'type': 'string',
             'default': str(expected),
-        }}
+            'group': 'assertion',
+        }
 
         desc = message or f'验证 {assert_type}: {selector} {operator} {expected}'
         step = {
