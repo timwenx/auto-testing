@@ -89,12 +89,13 @@
                 </template>
               </el-table-column>
               <el-table-column prop="sort_order" label="序号" width="60" />
-              <el-table-column label="操作" width="380" fixed="right">
+              <el-table-column label="操作" width="420" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" text type="primary" @click="openEditor(row)">编辑</el-button>
                   <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
                   <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
                   <el-button size="small" text @click="showDetail(row)">详情</el-button>
+                  <el-button size="small" text type="info" @click="handleViewExecutions(row)">执行记录</el-button>
                   <el-button size="small" text type="info" @click="handleMoveUp(row)">↑</el-button>
                   <el-button size="small" text type="info" @click="handleMoveDown(row)">↓</el-button>
                   <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
@@ -142,13 +143,15 @@
         </el-table-column>
         <el-table-column prop="sort_order" label="序号" width="70" />
         <el-table-column prop="execution_count" label="执行次数" width="90" />
-        <el-table-column label="操作" width="400" fixed="right">
+        <el-table-column label="操作" width="460" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openEditor(row)">编辑</el-button>
             <el-button size="small" text type="warning" @click="handleExecuteAgent(row)">Agent</el-button>
             <el-button size="small" text type="success" @click="handleAgentRefine(row)">调整</el-button>
             <el-button size="small" text @click="showDetail(row)">详情</el-button>
             <el-button size="small" text type="info" @click="handleViewExecutions(row)">执行记录</el-button>
+            <el-button size="small" text type="info" @click="handleMoveUp(row)">↑</el-button>
+            <el-button size="small" text type="info" @click="handleMoveDown(row)">↓</el-button>
             <el-button size="small" text type="danger" @click="handleDeleteTC(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -707,6 +710,7 @@ const handleAIFeedback = async () => {
       expected_result: tc.expected_result || '',
       priority: tc.priority || '',
       test_type: tc.test_type || '',
+      feature_group: tc.feature_group || '',
       markdown_content: tc.markdown_content || '',
     }))
     const { data } = await aiAdjustTestCase({
@@ -829,14 +833,11 @@ async function handleMoveUp(row) {
   const members = groupedTestcases.value[group] || []
   const idx = members.findIndex(tc => tc.id === row.id)
   if (idx <= 0) return
-  // 交换 sort_order
-  const orders = members.map((tc, i) => ({
-    id: tc.id,
-    feature_group: tc.feature_group || '',
-    sort_order: i + 1,
-  }))
-  // 交换当前和上一个
-  ;[orders[idx].sort_order, orders[idx - 1].sort_order] = [orders[idx - 1].sort_order, orders[idx].sort_order]
+  // 只发送需要交换的两条用例
+  const orders = [
+    { id: members[idx].id, feature_group: members[idx].feature_group || '', sort_order: idx },
+    { id: members[idx - 1].id, feature_group: members[idx - 1].feature_group || '', sort_order: idx + 1 },
+  ]
   try {
     await reorderTestcases(projectId, orders)
     await loadData()
@@ -850,12 +851,11 @@ async function handleMoveDown(row) {
   const members = groupedTestcases.value[group] || []
   const idx = members.findIndex(tc => tc.id === row.id)
   if (idx < 0 || idx >= members.length - 1) return
-  const orders = members.map((tc, i) => ({
-    id: tc.id,
-    feature_group: tc.feature_group || '',
-    sort_order: i + 1,
-  }))
-  ;[orders[idx].sort_order, orders[idx + 1].sort_order] = [orders[idx + 1].sort_order, orders[idx].sort_order]
+  // 只发送需要交换的两条用例
+  const orders = [
+    { id: members[idx].id, feature_group: members[idx].feature_group || '', sort_order: idx + 2 },
+    { id: members[idx + 1].id, feature_group: members[idx + 1].feature_group || '', sort_order: idx + 1 },
+  ]
   try {
     await reorderTestcases(projectId, orders)
     await loadData()
