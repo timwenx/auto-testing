@@ -36,6 +36,13 @@
           <el-switch v-model="settings.agent_headless" active-text="是" inactive-text="否" />
           <div class="form-hint">无头模式下不显示浏览器窗口（生产环境建议开启）</div>
         </el-form-item>
+        <el-divider content-position="left">Git 仓库</el-divider>
+        <el-form-item label="仓库存储路径">
+          <el-input v-model="settings.repo_base_path" placeholder="repos">
+            <template #prepend>BASE_DIR/</template>
+          </el-input>
+          <div class="form-hint">Git 仓库克隆的本地根目录（相对于项目根目录），如 repos、/data/repos</div>
+        </el-form-item>
         <el-divider content-position="left">前端</el-divider>
         <el-form-item label="API 地址">
           <el-input v-model="settings.api_base_url" placeholder="/api" />
@@ -76,6 +83,7 @@ const defaultSettings = {
   anthropic_model: 'claude-sonnet-4-20250514',
   max_workers: 3,
   execution_timeout: 120,
+  repo_base_path: 'repos',
   api_base_url: '/api',
   agent_max_turns: 20,
   agent_headless: true,
@@ -97,6 +105,7 @@ const loadSettings = async () => {
       anthropic_model: data.anthropic_model ?? defaultSettings.anthropic_model,
       max_workers: parseInt(data.max_workers) || defaultSettings.max_workers,
       execution_timeout: parseInt(data.execution_timeout) || defaultSettings.execution_timeout,
+      repo_base_path: data.repo_base_path ?? defaultSettings.repo_base_path,
       api_base_url: data.api_base_url ?? defaultSettings.api_base_url,
       agent_max_turns: parseInt(data.agent_max_turns) || defaultSettings.agent_max_turns,
       agent_headless: String(data.agent_headless ?? 'true').toLowerCase() === 'true',
@@ -117,6 +126,7 @@ const handleSave = async () => {
       anthropic_model: String(settings.value.anthropic_model),
       max_workers: String(settings.value.max_workers),
       execution_timeout: String(settings.value.execution_timeout),
+      repo_base_path: String(settings.value.repo_base_path),
       api_base_url: String(settings.value.api_base_url),
       agent_max_turns: String(settings.value.agent_max_turns),
       agent_headless: settings.value.agent_headless ? 'true' : 'false',
@@ -138,6 +148,7 @@ const handleReset = async () => {
       anthropic_model: defaultSettings.anthropic_model,
       max_workers: String(defaultSettings.max_workers),
       execution_timeout: String(defaultSettings.execution_timeout),
+      repo_base_path: defaultSettings.repo_base_path,
       api_base_url: defaultSettings.api_base_url,
       agent_max_turns: String(defaultSettings.agent_max_turns),
       agent_headless: defaultSettings.agent_headless ? 'true' : 'false',
