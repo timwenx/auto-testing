@@ -453,3 +453,29 @@ All tasks from the feature group + sort order plan implemented.
 - Frontend builds successfully
 - Django check: 0 issues
 - Commit: `effd9cf`
+
+## Round 3 — Bug fix and completeness audit
+
+### Issues Found and Fixed
+
+1. **Critical: Move up/down sort_order bug** (`ProjectDetail.vue`):
+   - `handleMoveUp`/`handleMoveDown` only sent 2 items' sort_orders to the API
+   - Other items in the group kept `sort_order=0` (default), causing them to appear before moved items
+   - Example: group `[A(0), B(0), C(0), D(0)]` → move C up → only B and C get new sort_orders (2, 3) while A and D stay at 0 → sorted: `[A(0), D(0), C(2), B(3)]` — wrong!
+   - Fixed: now reassigns ALL items in the group with sequential sort_orders after the swap
+
+2. **Missing sort_order column** (`BatchTestCaseEditor.vue`):
+   - Plan specified adding `sort_order` column to the table, but it was missing
+   - Added `<el-table-column prop="sort_order" label="序号" width="60" />`
+
+3. **Missing sort_order in edit dialog** (`BatchTestCaseEditor.vue`):
+   - Plan specified adding `sort_order` field to the edit dialog, but it was missing
+   - Added `el-input-number` for `sort_order` with min=0, max=9999
+
+### Verification
+- All **246 tests pass**
+- Frontend builds successfully
+- Django check: 0 issues
+- Commit: `f430653`
+- Django check: 0 issues
+- Commit: `effd9cf`
