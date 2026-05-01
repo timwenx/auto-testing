@@ -1,28 +1,44 @@
-# Progress Notes — Round 4 (CLI Dual-Engine — Verification & Bug Fixes)
+# Progress Notes — Round 5 (Phase 1-2: Critical Fixes + Navigation Redesign)
 
-## Status: All 6 plan tasks completed in Round 1. Round 4 fixed bugs and verified.
+## Completed: 6/6 tasks
 
-### Verification & Fixes Applied
+### 1. Fix Plan Execution Auth Bug (P0)
+- **File**: `frontend/src/api.js`, `frontend/src/views/TestPlanView.vue`
+- `executePlan()` in api.js now accepts optional `options` (3rd arg) for custom headers
+- `handleExecutePlan()` in TestPlanView sends `X-Plan-Token` header with plan's api_token
+- This resolves the 403 error when clicking "执行方案" from the UI
 
-1. **`resolve_claude_bin()` wired up** — The function was defined in `cli_service.py` but never called. Now integrated into both `is_cli_available()` and `call_cli()` so the CLI path is properly resolved on Windows (searches APPDATA/npm, uses `which`/`shutil.which`).
+### 2. AI Generation State Persistence (P0)
+- **File**: `frontend/src/views/ProjectDetail.vue`
+- After AI generate: saves draft (conversation_id, testcase_ids, names, requirement) via `saveGenerationDraft()`
+- After AI adjust: updates draft with new state
+- After save all: clears draft via `clearGenerationDraft()`
+- On mount: checks for existing draft, reloads testcases from DB, reopens AI dialog
+- Uses existing backend `generation_draft` JSONField + API endpoints
 
-2. **`batch_save_testcases` missing `@api_view` decorator** — View used `request.data` (DRF attribute) but wasn't decorated with `@api_view(['POST'])`, causing `AttributeError: 'WSGIRequest' object has no attribute 'data'`. Fixed by adding the decorator. All 9 BatchSave tests now pass.
+### 3. Route Guard
+- **File**: `frontend/src/router/index.js`
+- Added `beforeEach` guard: redirects to `/login` if no `mytest_token` in localStorage
+- Already-logged-in users visiting `/login` are redirected to `/`
 
-3. **Test mock fixes** — Two tests (`test_is_cli_available_success`, `test_cli_check_default_path`) failed after wiring `resolve_claude_bin` because the function resolves the actual Windows `claude.exe` path, breaking assertion `['claude', '--version']`. Fixed by mocking `resolve_claude_bin` to pass through input unchanged.
+### 4. Sidebar Navigation Redesign
+- **File**: `frontend/src/App.vue`
+- Renamed: 仪表盘→工作台, 项目管理→项目, 脚本管理→脚本, 用例方案→测试方案
+- Reordered: 工作台, 项目, 脚本, 测试方案, 执行记录, 系统设置 (workflow order)
+- Sidebar active state uses `sidebarActive` computed that matches sub-routes to parent
 
-4. **Cleaned up stray file** — Removed accidentally created `My_Test/core/cli_service.py`.
+### 5. App.vue Layout Redesign
+- **File**: `frontend/src/App.vue`
+- Replaced `pageTitleMap` with breadcrumb navigation (el-breadcrumb)
+- Sub-routes generate multi-level breadcrumbs (e.g., 项目 > 项目详情)
+- Header shows current username from localStorage
+- Logout button: confirms with ElMessageBox, clears localStorage, pushes /login
 
-### Verification Results
-- **334 tests total**: ALL PASS ✅
-- **18 CLI-specific tests**: all pass
-- **9 BatchSave tests**: all pass (were broken before this round)
-- **Frontend build**: succeeds ✅
-- **Django check**: 0 issues ✅
+### 6. Verification
+- 332 backend tests pass (2 pre-existing BatchGenerateViewTest failures unrelated to this round)
+- Frontend build succeeds
+- Django system check: 0 issues
 
-### Files Changed This Round
-| File | Change |
-|------|--------|
-| `core/cli_service.py` | Wire `resolve_claude_bin()` into `is_cli_available()` and `call_cli()` |
-| `core/views.py` | Add `@api_view(['POST'])` decorator to `batch_save_testcases` |
-| `core/tests.py` | Mock `resolve_claude_bin` in 2 tests to prevent Windows path resolution interference |
-| `.claudepotter/kb/README.md` | Update test count (334 all pass), add resolve_claude_bin docs |
+### Pre-existing Issues (not introduced this round)
+- `core/views.py` has uncommitted changes to `batch_generate_testcases` that break 2 tests
+- `frontend/src/components/BatchTestCaseEditor.vue` has uncommitted changes

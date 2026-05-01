@@ -175,7 +175,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { batchGenerateTestcases, batchSaveTestcases } from '../api.js'
+import { batchGenerateTestcases, batchSaveTestcases, getGenerationDraft } from '../api.js'
 
 const props = defineProps({
   projectId: { type: Number, required: true },
@@ -214,22 +214,40 @@ async function handleGenerate() {
   elapsedSeconds.value = 0
   elapsedTimer = setInterval(() => { elapsedSeconds.value++ }, 1000)
   try {
-    const { data } = await batchGenerateTestcases(props.projectId, {
+    await batchGenerateTestcases(props.projectId, {
       selected_items: props.selectedItems,
       descriptions: props.descriptions,
       precondition_id: props.preconditionId,
     })
-    generatedCases.value = data.testcases || []
-    if (generatedCases.value.length === 0) {
-      ElMessage.warning('未生成任何用例，请调整目标或描述后重试')
-    } else {
-      ElMessage.success(`已生成 ${generatedCases.value.length} 条用例`)
-    }
+    // Poll generation_draft until completed or failed
+    const pollTimer = setInterval(async () => {
+      try {
+        const { data } = await getGenerationDraft(props.projectId)
+        const draft = data.draft || {}
+        if (draft.status === 'completed') {
+          clearInterval(pollTimer)
+          generatedCases.value = draft.generated_cases || []
+          generating.value = false
+          if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+          if (generatedCases.value.length === 0) {
+            ElMessage.warning('未生成任何用例，请调整目标或描述后重试')
+          } else {
+            ElMessage.success(`已生成 ${generatedCases.value.length} 条用例`)
+          }
+        } else if (draft.status === 'failed') {
+          clearInterval(pollTimer)
+          generating.value = false
+          if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+          ElMessage.error(draft.error || '生成失败')
+        }
+      } catch (e) {
+        // ignore poll errors, keep trying
+      }
+    }, 2000)
   } catch (e) {
-    ElMessage.error(e.response?.data?.error || '生成失败')
-  } finally {
     generating.value = false
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+    ElMessage.error(e.response?.data?.error || '生成失败')
   }
 }
 
