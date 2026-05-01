@@ -485,6 +485,45 @@ All tasks from the feature group + sort order plan implemented.
 - Django check: 0 issues
 - Commit: `ccd4f71`
 
+## Round 3/3 — Final QA: ScriptList migration, data migration, expandable rows
+
+### Tasks Completed (3/3)
+
+1. **ScriptList.vue migration** — Rewrote to use Script model API instead of legacy `getExecutions`:
+   - Data source: `getScripts()` (Script model) instead of `getExecutions({ has_replay_script: 'true' })`
+   - Two view modes: flat list + grouped by feature_group (el-collapse)
+   - Full CRUD: edit dialog with name/feature_group/status/script_data fields
+   - Script execution via `executeScript()` API with parameter overrides
+   - "加入方案" button → plan selection dialog with `getPlans()` + `addPlanItem()`
+   - Feature group autocomplete from existing scripts
+   - Removed dead code: `loadScriptModels`, unused imports, empty watch
+
+2. **Data migration (0017)** — `RunPython` migration copying `ExecutionRecord.replay_script` → `Script` model:
+   - Only migrates records with non-empty replay_script
+   - Skips records already migrated (idempotent via `Script.objects.filter(source_execution=record).exists()`)
+   - Derives name from testcase, falls back to `脚本-{record.pk}`
+   - Derives feature_group from testcase.feature_group
+   - Sets status='active' for all migrated scripts
+   - No-op reverse migration
+
+3. **Executions.vue expandable rows** — Added `type="expand"` column:
+   - Expand shows: step_logs timeline, screenshot gallery, agent response, error message
+   - Plan execution sub-records display when `plan_execution` FK exists
+   - Added "方案" filter option in execution_mode dropdown (filters by `plan_execution` FK)
+   - Execution mode tag shows `warning` type for plan executions
+   - Kept existing detail dialog and log dialog as alternative views
+   - Added `hasExpandContent()` helper to show empty state
+
+### New Tests (9 added, 316 total)
+- `DataMigrationTest` (4): creates Script records, skips empty, idempotent, no-testcase fallback
+- `ScriptFilterTest` (5): filter by project, feature_group, status; feature-groups endpoint; missing project param
+
+### Status
+- All **316 tests pass** (307 previous + 9 new)
+- Frontend builds successfully
+- Django check: 0 issues
+- Migration 0017 applied successfully
+
 ## Round 2 — Quality audit and fix
 
 ### Issue Found and Fixed

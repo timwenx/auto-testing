@@ -3759,3 +3759,139 @@ class ScriptExecuteAutoSourceTest(TestCase):
         # No new dummy record created
         self.assertEqual(ExecutionRecord.objects.filter(project=self.project).count(), 2)
 
+
+# ══════════════════════════════════════════════════════════════════
+# Data Migration Tests
+# ══════════════════════════════════════════════════════════════════
+
+class DataMigrationTest(TestCase):
+    """Tests for 0017_migrate_replay_scripts data migration."""
+
+    def _run_migration(self):
+        """Execute the data migration function directly via importlib."""
+        import importlib
+        mod = importlib.import_module('core.migrations.0017_migrate_replay_scripts')
+        apps_proxy = type('Apps', (), {'get_model': lambda self, app, model: {
+            'ExecutionRecord': ExecutionRecord,
+            'Script': Script,
+        }.get(model)})()
+        mod.migrate_replay_scripts_to_script_model(apps_proxy, None)
+
+    def test_migrate_replay_script_creates_script_records(self):
+        """Records with replay_script data get migrated to Script model."""
+        project = Project.objects.create(name='Migration Test', base_url='https://example.com')
+        tc = TC_Model.objects.create(project=project, name='TC1', feature_group='登录')
+        record = ExecutionRecord.objects.create(
+            project=project, testcase=tc, status='passed', execution_mode='agent',
+            replay_script={'steps': [{'action': 'click'}], 'parameters': {'url': {}}},
+        )
+        self._run_migration()
+
+        script = Script.objects.filter(source_execution=record).first()
+        self.assertIsNotNone(script)
+        self.assertEqual(script.project_id, project.id)
+        self.assertEqual(script.testcase_id, tc.id)
+        self.assertEqual(script.name, 'TC1')
+        self.assertEqual(script.feature_group, '登录')
+        self.assertEqual(script.status, 'active')
+        self.assertEqual(script.script_data, record.replay_script)
+
+    def test_migrate_skips_empty_replay_script(self):
+        """Records with empty or null replay_script are skipped."""
+        project = Project.objects.create(name='Migration Test 2', base_url='https://example.com')
+        ExecutionRecord.objects.create(
+            project=project, status='passed', execution_mode='agent',
+            replay_script={},
+        )
+        ExecutionRecord.objects.create(
+            project=project, status='passed', execution_mode='script',
+        )
+        self._run_migration()
+        self.assertEqual(Script.objects.count(), 0)
+
+    def test_migrate_idempotent(self):
+        """Running migration twice doesn't create duplicates."""
+        project = Project.objects.create(name='Migration Test 3', base_url='https://example.com')
+        tc = TC_Model.objects.create(project=project, name='TC2')
+        record = ExecutionRecord.objects.create(
+            project=project, testcase=tc, status='passed', execution_mode='agent',
+            replay_script={'steps': [{'action': 'navigate'}]},
+        )
+        self._run_migration()
+        self._run_migration()
+        self.assertEqual(Script.objects.filter(source_execution=record).count(), 1)
+
+    def test_migrate_no_testcase(self):
+        """Records without testcase get a default name."""
+        project = Project.objects.create(name='Migration Test 4', base_url='https://example.com')
+        record = ExecutionRecord.objects.create(
+            project=project, status='passed', execution_mode='agent',
+            replay_script={'steps': [{'action': 'check'}]},
+        )
+        self._run_migration()
+
+        script = Script.objects.filter(source_execution=record).first()
+        self.assertIsNotNone(script)
+        self.assertEqual(script.name, f'脚本-{record.pk}')
+        self.assertEqual(script.feature_group, '')
+
+
+# ══════════════════════════════════════════════════════════════════
+# Script List/Filter API Tests
+# ══════════════════════════════════════════════════════════════════
+
+class ScriptFilterTest(TestCase):
+    """Tests for Script list API filtering."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project1 = Project.objects.create(name='P1', base_url='https://a.com')
+        self.project2 = Project.objects.create(name='P2', base_url='https://b.com')
+        self.tc = TC_Model.objects.create(project=self.project1, name='TC', feature_group='登录')
+
+    def test_filter_by_project(self):
+        Script.objects.create(project=self.project1, name='S1', status='active', script_data={})
+        Script.objects.create(project=self.project2, name='S2', status='active', script_data={})
+
+        resp = self.client.get('/api/scripts/', {'project': self.project1.id})
+        self.assertEqual(resp.status_code, 200)
+        scripts = resp.data.get('scripts', resp.data)
+        self.assertEqual(len(scripts), 1)
+        self.assertEqual(scripts[0]['name'], 'S1')
+
+    def test_filter_by_feature_group(self):
+        Script.objects.create(project=self.project1, name='S1', feature_group='登录', status='active', script_data={})
+        Script.objects.create(project=self.project1, name='S2', feature_group='注册', status='active', script_data={})
+
+        resp = self.client.get('/api/scripts/', {'feature_group': '登录'})
+        self.assertEqual(resp.status_code, 200)
+        scripts = resp.data.get('scripts', resp.data)
+        self.assertEqual(len(scripts), 1)
+        self.assertEqual(scripts[0]['feature_group'], '登录')
+
+    def test_filter_by_status(self):
+        Script.objects.create(project=self.project1, name='S1', status='draft', script_data={})
+        Script.objects.create(project=self.project1, name='S2', status='active', script_data={})
+
+        resp = self.client.get('/api/scripts/', {'status': 'active'})
+        self.assertEqual(resp.status_code, 200)
+        scripts = resp.data.get('scripts', resp.data)
+        self.assertEqual(len(scripts), 1)
+        self.assertEqual(scripts[0]['status'], 'active')
+
+    def test_script_feature_groups_endpoint(self):
+        Script.objects.create(project=self.project1, name='S1', feature_group='登录', status='active', script_data={})
+        Script.objects.create(project=self.project1, name='S2', feature_group='登录', status='active', script_data={})
+        Script.objects.create(project=self.project1, name='S3', feature_group='注册', status='active', script_data={})
+
+        resp = self.client.get('/api/scripts/feature-groups/', {'project': self.project1.id})
+        self.assertEqual(resp.status_code, 200)
+        groups = resp.data['groups']
+        self.assertEqual(len(groups), 2)
+        login_group = next(g for g in groups if g['name'] == '登录')
+        self.assertEqual(login_group['count'], 2)
+
+    def test_script_feature_groups_missing_project(self):
+        resp = self.client.get('/api/scripts/feature-groups/')
+        self.assertEqual(resp.status_code, 400)
+
