@@ -8,6 +8,7 @@
             <el-select v-model="filters.execution_mode" placeholder="执行模式" clearable size="small" style="width: 130px; margin-right: 8px">
               <el-option label="Script" value="script" />
               <el-option label="Agent" value="agent" />
+              <el-option label="Replay" value="replay" />
             </el-select>
             <el-select v-model="filters.status" placeholder="状态" clearable size="small" style="width: 120px; margin-right: 8px">
               <el-option label="通过" value="passed" />

@@ -32,6 +32,16 @@ const routes = [
     component: () => import('../views/ScriptList.vue'),
   },
   {
+    path: '/plans',
+    name: 'TestPlans',
+    component: () => import('../views/TestPlanView.vue'),
+  },
+  {
+    path: '/plan-executions/:id',
+    name: 'PlanExecutionDetail',
+    component: () => import('../views/PlanExecutionDetailPage.vue'),
+  },
+  {
     path: '/executions/:id/observe',
     name: 'ExecutionObserver',
     component: () => import('../views/ExecutionObserver.vue'),
