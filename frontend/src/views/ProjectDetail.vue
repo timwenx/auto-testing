@@ -833,11 +833,14 @@ async function handleMoveUp(row) {
   const members = groupedTestcases.value[group] || []
   const idx = members.findIndex(tc => tc.id === row.id)
   if (idx <= 0) return
-  // 只发送需要交换的两条用例
-  const orders = [
-    { id: members[idx].id, feature_group: members[idx].feature_group || '', sort_order: idx },
-    { id: members[idx - 1].id, feature_group: members[idx - 1].feature_group || '', sort_order: idx + 1 },
-  ]
+  // Swap the two items in the local array, then persist ALL positions
+  const reordered = [...members]
+  ;[reordered[idx - 1], reordered[idx]] = [reordered[idx], reordered[idx - 1]]
+  const orders = reordered.map((tc, i) => ({
+    id: tc.id,
+    feature_group: tc.feature_group || '',
+    sort_order: i + 1,  // 1-based
+  }))
   try {
     await reorderTestcases(projectId, orders)
     await loadData()
@@ -851,11 +854,14 @@ async function handleMoveDown(row) {
   const members = groupedTestcases.value[group] || []
   const idx = members.findIndex(tc => tc.id === row.id)
   if (idx < 0 || idx >= members.length - 1) return
-  // 只发送需要交换的两条用例
-  const orders = [
-    { id: members[idx].id, feature_group: members[idx].feature_group || '', sort_order: idx + 2 },
-    { id: members[idx + 1].id, feature_group: members[idx + 1].feature_group || '', sort_order: idx + 1 },
-  ]
+  // Swap the two items in the local array, then persist ALL positions
+  const reordered = [...members]
+  ;[reordered[idx], reordered[idx + 1]] = [reordered[idx + 1], reordered[idx]]
+  const orders = reordered.map((tc, i) => ({
+    id: tc.id,
+    feature_group: tc.feature_group || '',
+    sort_order: i + 1,  // 1-based
+  }))
   try {
     await reorderTestcases(projectId, orders)
     await loadData()
