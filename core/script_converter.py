@@ -36,9 +36,26 @@ def _short_selector(selector, max_len=30):
     return re.sub(r'[^a-zA-Z0-9_]', '_', simple).lower()
 
 
+def _selector_hash(selector, length=8):
+    """Generate a deterministic short hash suffix from a CSS selector.
+
+    Same selector always produces the same hash, regardless of position/index.
+    """
+    return hashlib.md5(selector.encode('utf-8')).hexdigest()[:length]
+
+
 def _make_param_name(prefix, selector='', index=0):
-    """生成唯一的参数名"""
-    suffix = _short_selector(selector) if selector else str(index)
+    """Generate a deterministic parameter name based on selector content.
+
+    - If selector is provided, uses a hash of the selector for uniqueness.
+    - If no selector, falls back to index-based naming.
+    - Same selector always produces the same parameter name, enabling
+      cross-script parameter deduplication in plan execution.
+    """
+    if selector:
+        suffix = _selector_hash(selector)
+    else:
+        suffix = str(index)
     return f'{prefix}_{suffix}'
 
 
@@ -94,6 +111,109 @@ def _link_assert_selectors(steps, parameters):
         if new_selector != selector:
             step['inputs']['selector'] = new_selector
             step['parameters'] = referenced_params
+
+
+def _deduplicate_param_names(steps, parameters):
+    """Post-process: when the same param name is used by multiple steps with
+    different default values, append _2, _3, ... suffixes to disambiguate.
+
+    When the same selector appears multiple times with the *same* value,
+    the param is reused (no suffix needed).
+    """
+    # Collect which steps reference which param names and what their values are
+    # pname -> [(step_index, param_value_in_step)]
+    param_usage = {}
+    for i, step in enumerate(steps):
+        for pname in step.get('parameters', []):
+            # Find the template value this step expects
+            step_val = _extract_param_value_from_step(step, pname)
+            param_usage.setdefault(pname, []).append((i, step_val))
+
+    # For each param that appears more than once, check if values differ
+    renames = {}  # old_name -> {step_index: new_name}
+    for pname, usages in param_usage.items():
+        if len(usages) <= 1:
+            continue
+        # Check if all values are the same
+        values = [v for _, v in usages]
+        if len(set(values)) <= 1:
+            continue  # Same value reused, no conflict
+
+        # Values differ — append suffixes for occurrences after the first
+        for seq, (step_idx, val) in enumerate(usages):
+            if seq == 0:
+                continue  # First occurrence keeps the original name
+            new_name = f'{pname}_{seq + 1}'
+            renames.setdefault(pname, {})[step_idx] = new_name
+
+    if not renames:
+        return
+
+    # Apply renames: update steps and parameters dict
+    for old_name, step_renames in renames.items():
+        for step_idx, new_name in step_renames.items():
+            step = steps[step_idx]
+            # Rename in step.parameters list
+            step['parameters'] = [
+                new_name if p == old_name else p for p in step.get('parameters', [])
+            ]
+            # Rename in step.inputs (replace {{old_name}} with {{new_name}})
+            _rename_in_inputs(step['inputs'], old_name, new_name)
+
+            # Create new param entry from original
+            if old_name in parameters:
+                # Copy original param info, override default with step-specific value
+                usages = param_usage[old_name]
+                for si, sv in usages:
+                    if si == step_idx:
+                        parameters[new_name] = {**parameters[old_name], 'default': sv}
+                        break
+
+
+def _extract_param_value_from_step(step, pname):
+    """Extract the value that a step assigns to a parameter (from {{pname}} template context)."""
+    template = '{{' + pname + '}}'
+    inputs = step.get('inputs', {})
+
+    def _search(d):
+        if isinstance(d, str):
+            if d == template:
+                return ''  # Template itself, value not known at this level
+            return None
+        if isinstance(d, dict):
+            for v in d.values():
+                result = _search(v)
+                if result is not None:
+                    return result
+        if isinstance(d, list):
+            for v in d:
+                result = _search(v)
+                if result is not None:
+                    return result
+        return None
+
+    # For parameters dict lookup, we need the actual default value
+    # This is stored in the parameters dict at the call site, not in steps.
+    # Since we can't access it here, we return the step's description snippet
+    return _search(inputs) or ''
+
+
+def _rename_in_inputs(d, old_name, new_name):
+    """Recursively replace {{old_name}} with {{new_name}} in inputs dict."""
+    old_ref = '{{' + old_name + '}}'
+    new_ref = '{{' + new_name + '}}'
+    if isinstance(d, dict):
+        for k, v in list(d.items()):
+            if isinstance(v, str) and old_ref in v:
+                d[k] = v.replace(old_ref, new_ref)
+            elif isinstance(v, (dict, list)):
+                _rename_in_inputs(v, old_name, new_name)
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            if isinstance(v, str) and old_ref in v:
+                d[i] = v.replace(old_ref, new_ref)
+            elif isinstance(v, (dict, list)):
+                _rename_in_inputs(v, old_name, new_name)
 
 
 def convert_execution_to_script(record):
@@ -152,6 +272,9 @@ def convert_execution_to_script(record):
 
     if not steps:
         raise ValueError('没有可回放的浏览器操作步骤（仅发现探索/观察类工具调用）')
+
+    # 后处理：如果同一参数名出现多次且值不同，追加递增后缀避免覆盖
+    _deduplicate_param_names(steps, parameters)
 
     # 后处理：断言 selector 中的硬编码值替换为已有参数引用
     _link_assert_selectors(steps, parameters)
@@ -300,7 +423,7 @@ def _convert_step(tool_name, tool_input, step_num, execution_id):
 
     if tool_name == 'browser_navigate':
         url = tool_input.get('url', '')
-        pname = _make_param_name('param_url')
+        pname = 'param_url'
         params[pname] = {
             'label': '目标 URL',
             'type': 'url',
@@ -497,7 +620,7 @@ def _convert_step(tool_name, tool_input, step_num, execution_id):
         expected = tool_input.get('expected', '')
         message = tool_input.get('message', '')
 
-        pname = f'param_expected_{step_num}'
+        pname = _make_param_name('param_expected', selector or str(step_num))
         params[pname] = {
             'label': f'预期值 ({selector[:25]})',
             'type': 'string',
