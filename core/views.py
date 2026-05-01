@@ -1828,6 +1828,11 @@ def batch_convert_scripts(request):
         )
         created_scripts.append(script)
 
+    # Post-process: normalize parameter names across batch
+    if created_scripts:
+        from .script_converter import normalize_parameter_names
+        normalize_parameter_names(created_scripts)
+
     return Response({
         'scripts': ScriptSerializer(created_scripts, many=True).data,
         'created': len(created_scripts),

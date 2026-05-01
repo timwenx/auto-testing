@@ -718,3 +718,99 @@ def _resolve_template(s, params):
         name = m.group(1)
         return str(params.get(name, m.group(0)))
     return re.sub(r'\{\{(\w+)\}\}', replacer, s)
+
+
+def normalize_parameter_names(scripts):
+    """Post-process a batch of converted scripts to unify parameter names.
+
+    When the same CSS selector appears in multiple scripts with different
+    parameter names (due to conversion from different execution records),
+    this function renames them all to use the first occurrence's name.
+
+    This is possible because Task 1 made _make_param_name selector-based,
+    so same selectors should already produce the same name. However, edge
+    cases (e.g. slightly different selector representations of the same
+    element) may still produce different names. This function catches those
+    by matching on label and default value similarity.
+
+    Args:
+        scripts: list of Script model objects with script_data populated.
+                 Modified in-place.
+
+    Returns:
+        dict mapping {old_name: new_name} for all renames performed.
+    """
+    # Collect all parameters across all scripts
+    # Group by label+default as a heuristic for "same parameter, different name"
+    label_group = {}  # (label, str(default)) -> canonical_name
+
+    # First pass: determine canonical names
+    for script in scripts:
+        params = script.script_data.get('parameters', {})
+        for pname, pinfo in params.items():
+            label = pinfo.get('label', '')
+            default = str(pinfo.get('default', ''))
+            key = (label, default)
+            if key not in label_group and label:  # Only group non-empty labels
+                label_group[key] = pname
+
+    # Second pass: build rename map per script
+    global_renames = {}
+    for script in scripts:
+        params = script.script_data.get('parameters', {})
+        steps = script.script_data.get('steps', [])
+
+        script_renames = {}  # old_name -> new_name for this script
+        for pname, pinfo in params.items():
+            label = pinfo.get('label', '')
+            default = str(pinfo.get('default', ''))
+            key = (label, default)
+            if key in label_group and label_group[key] != pname and label:
+                script_renames[pname] = label_group[key]
+                global_renames[pname] = label_group[key]
+
+        if not script_renames:
+            continue
+
+        # Rename in parameters dict
+        new_params = {}
+        for pname, pinfo in params.items():
+            new_name = script_renames.get(pname, pname)
+            new_params[new_name] = pinfo
+        script.script_data['parameters'] = new_params
+
+        # Rename in steps ({{old}} -> {{new}} and parameters list)
+        for step in steps:
+            old_params = step.get('parameters', [])
+            step['parameters'] = [
+                script_renames.get(p, p) for p in old_params
+            ]
+            _rename_in_inputs_for_normalize(step.get('inputs', {}), script_renames)
+
+        script.save(update_fields=['script_data'])
+
+    return global_renames
+
+
+def _rename_in_inputs_for_normalize(d, renames):
+    """Recursively rename {{old}} -> {{new}} in inputs using a renames dict."""
+    for old_name, new_name in renames.items():
+        old_ref = '{{' + old_name + '}}'
+        new_ref = '{{' + new_name + '}}'
+        _replace_template_in_dict(d, old_ref, new_ref)
+
+
+def _replace_template_in_dict(d, old_ref, new_ref):
+    """Recursively replace old_ref with new_ref in a dict/list/string structure."""
+    if isinstance(d, dict):
+        for k, v in list(d.items()):
+            if isinstance(v, str) and old_ref in v:
+                d[k] = v.replace(old_ref, new_ref)
+            elif isinstance(v, (dict, list)):
+                _replace_template_in_dict(v, old_ref, new_ref)
+    elif isinstance(d, list):
+        for i, v in enumerate(d):
+            if isinstance(v, str) and old_ref in v:
+                d[i] = v.replace(old_ref, new_ref)
+            elif isinstance(v, (dict, list)):
+                _replace_template_in_dict(v, old_ref, new_ref)
