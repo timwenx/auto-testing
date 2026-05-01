@@ -1,5 +1,68 @@
 # Progress
 
+## Round 1/3 — Repo Analysis & Batch Test Case Generation
+
+### Tasks Completed (12/12)
+
+1. **Task 1: RepoAnalysis + PreconditionTemplate models** — New models with migration 0011
+   - `RepoAnalysis`: project FK, status (pending/analyzing/completed/failed), discovered_items JSON, analysis_log
+   - `PreconditionTemplate`: name, description, steps, markdown_content, is_default
+
+2. **Task 2: repo_analyzer.py** — New service module
+   - `analyze_repo(project)` → RepoAnalysis: clones repo, gets file tree, searches routes, calls Claude API
+   - `_parse_analysis_response(raw_text)` → list[dict]: parses Claude's JSON response into discovered_items
+
+3. **Task 3: batch_generator.py** — New service module
+   - `generate_testcases_for_items()` → batch generation with batching (max 15 items per API call)
+   - `generate_testcases_single()` → single item generation (for re-generation)
+   - `_parse_testcases_response()` → JSON array parser
+
+4. **Task 4: API endpoints** — 11 new FBV endpoints + serializers + URL patterns
+   - Repo: pull, analyze, analysis detail/list
+   - Batch: generate (dry-run), save (persist to DB)
+   - Preconditions: list, create, update, delete
+
+5. **Task 5: TestCaseManager.vue** — New page at /projects/:id/testcases/manage
+   - el-steps component for workflow navigation
+   - Integrates RepoStatusCard → CodeAnalysisPanel → PreconditionSelector + BatchTestCaseEditor
+
+6. **Task 6: RepoStatusCard.vue** — Git repo status display + pull button
+
+7. **Task 7: CodeAnalysisPanel.vue** — Analysis triggering, polling, and item selection
+   - 3s polling for analysis status
+   - Page/API tabs with checkboxes, user description inputs
+   - Select all + summary
+
+8. **Task 8: PreconditionSelector.vue** — Precondition template selection + CRUD
+
+9. **Task 9: BatchTestCaseEditor.vue** — Batch generation, preview, edit, save
+   - Table with preview/edit/delete per row
+   - Manual add, re-generate
+   - Batch save to DB
+
+10. **Task 10: api.js** — 9 new API functions (repoPull, repoAnalyze, etc.)
+
+11. **Task 11: Data migration** — 3 built-in templates (SSO, admin, user login)
+
+12. **Task 12: Tests** — 35 new tests + 9 pre-existing test fixes
+    - RepoAnalysisModelTest, PreconditionTemplateModelTest
+    - RepoPullViewTest, RepoAnalyzeViewTest
+    - BatchGenerateViewTest, BatchSaveViewTest
+    - PreconditionCRUDTest, RepoAnalyzerTest
+
+### Pre-existing Test Fixes
+- `SaveAgentResultHelperTest`: log assertion updated for TOOL_CALLS_JSON append
+- `SaveScriptResultHelperTest`: replaced with _save_agent_result test (function removed)
+- `ExecuteEndpointTest`, `ExecuteAllEndpointTest`: corrected URL paths from /execute/ to /execute-agent/
+- `BuildStepLogsTest.test_output_truncated`: updated truncation limit from 300 to 5000
+- `AgentExecuteExtendedTest.test_explicit_script_mode_skips_agent`: corrected to match actual behavior
+
+### Status
+- **199 tests pass** (164 existing + 35 new)
+- **Frontend builds** successfully
+- **Django check**: 0 issues
+- Commits: `0ad64c9` (backend), `27728d1` (frontend + tests)
+
 ## Round 2 — Bug fixes and test repairs
 
 ### Issues Found and Fixed
