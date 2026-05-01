@@ -522,5 +522,66 @@ All tasks from the feature group + sort order plan implemented.
 - Frontend builds successfully
 - Django check: 0 issues
 - Commit: `f430653`
+
+## Round 2 — Quality improvements and missing features (Plan 8: Script/TestPlan/PlanExecution)
+
+### Issues Found and Fixed
+
+#### Critical Frontend Bugs
+1. **Missing `getPlanExecutionStatus` import** (`TestPlanView.vue`):
+   - `pollExecution()` called `getPlanExecutionStatus()` but it wasn't in the import statement
+   - Would crash at runtime during plan execution polling
+   - Added to imports alongside `getPlanExecution`
+
+2. **Dead code in ScriptList.vue**:
+   - `loadScriptModels()` was a no-op — fetched data but never assigned to any reactive variable
+   - After "转脚本" success, list didn't refresh (called no-op function)
+   - Empty `watch(projectFilter, () => {})` — did nothing
+   - Unused `executeScriptModel` import
+   - Fixed: removed dead code, added `await loadScripts()` after successful convert
+
+#### Missing Features
+3. **FeatureTree not integrated** (`ProjectDetail.vue`):
+   - `FeatureTree.vue` component existed but was never imported or used
+   - Added "树形视图" as third view mode alongside "分组视图" and "列表视图"
+   - Left-right layout: FeatureTree on left, detail panel on right
+   - Feature selection shows test case table + execute-all button
+   - Testcase selection shows detail + action buttons
+   - Imports `FeatureTree`, `getFeatureGroupsDetail`, `executeFeatureGroup` from API
+
+4. **No plan item reorder UI** (`TestPlanView.vue`):
+   - `reorderPlanItems` API existed in `api.js` but was never called from UI
+   - Added ↑/↓ buttons on each plan item row
+   - `handleItemMoveUp`/`handleItemMoveDown` swap items and call reorder API
+
+#### Backend Quality Fixes
+5. **Unused imports** (`views.py`):
+   - Removed `Q` from `django.db.models` imports (never used)
+   - Removed `JsonResponse` from `django.http` imports (never used)
+   - Removed redundant local `from django.http import JsonResponse` in `_execute_plan_sync`
+
+6. **Script execute requires source_execution** (`views.py`):
+   - `script_execute` returned 400 error if no `source_execution` existed
+   - Changed: auto-creates a dummy `ExecutionRecord` with the script's data
+   - Scripts created without a source execution can now be executed
+
+7. **Token display masking** (`serializers.py`):
+   - Added `api_token_display` field to `TestPlanSerializer` and `TestPlanCreateUpdateSerializer`
+   - Shows masked token (first 8 + **** + last 4 chars) for display purposes
+   - Full `api_token` still available for curl commands
+
+8. **Self-import in serializer** (`serializers.py`):
+   - `PlanExecutionDetailSerializer.get_execution_records` had redundant `from .serializers import ExecutionRecordSerializer`
+   - Removed — already defined earlier in same file
+
+### New Tests (9 added, 307 total)
+- `TestPlanTokenDisplayTest` (2): token masking, standard UUID token
+- `PlanItemReorderTest` (3): reorder success, invalid item skipped, empty orders rejected
+- `DetailedFeatureGroupsTest` (2): detailed flag returns testcases, non-detailed omits them
+- `ScriptExecuteAutoSourceTest` (2): auto-creates source execution, existing source preserved
+
+### Status
+- All **307 tests pass** (298 previous + 9 new)
+- Frontend builds successfully
 - Django check: 0 issues
-- Commit: `effd9cf`
+- Commit: `bcd3e6b`
