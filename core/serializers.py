@@ -356,6 +356,14 @@ class TestPlanItemsReorderSerializer(serializers.Serializer):
     )
 
 
+class PlanExecuteRequestSerializer(serializers.Serializer):
+    """方案执行请求 — 支持可选的参数覆盖"""
+    parameter_overrides = serializers.DictField(
+        required=False, default=dict,
+        help_text='参数覆盖 key-value，如 {"param_abc123": "新值"}',
+    )
+
+
 # ─── PlanExecution Serializer ───
 
 class PlanExecutionSerializer(serializers.ModelSerializer):
