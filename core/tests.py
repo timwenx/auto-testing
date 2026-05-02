@@ -1091,7 +1091,8 @@ class ExecuteAllEndpointTest(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
         results = resp.data if isinstance(resp.data, list) else resp.data.get('results', resp.data)
         self.assertEqual(len(results), 2)
-        self.assertEqual(mock_submit.call_count, 2)
+        # Both testcases in same feature group → 1 group task submitted
+        self.assertEqual(mock_submit.call_count, 1)
 
     def test_execute_all_no_url(self):
         self.project.base_url = ''
@@ -2928,12 +2929,12 @@ class FeatureGroupsAPITest(TestCase):
 
 
 class ExecuteProjectOrderingTest(TestCase):
-    """验证 execute_project_agent 按 feature_group + sort_order 顺序提交任务"""
+    """验证 execute_project_agent 按 feature_group 分组提交，组内按 sort_order 排序"""
 
     @mock.patch('core.views._submit_agent_task')
     @mock.patch('core.views._get_ai_model', return_value='test-model')
     def test_execution_order_respects_sort(self, mock_model, mock_submit):
-        """批量执行按 feature_group + sort_order 排序提交"""
+        """批量执行按 feature_group 分组提交（每组一个任务），组内按 sort_order 排序"""
         project = Project.objects.create(name='Exec Order', base_url='https://example.com')
         # 按非排序顺序创建
         tc_b = TC_Model.objects.create(
@@ -2951,13 +2952,22 @@ class ExecuteProjectOrderingTest(TestCase):
 
         resp = self.client.post(f'/api/projects/{project.id}/execute-agent/', format='json')
         self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
-        # 提交了 3 个任务
-        self.assertEqual(mock_submit.call_count, 3)
-        # 检查提交顺序: A组(sort_order=1), A组(sort_order=2), B组(sort_order=1)
+        # 2 个功能组 → 2 个组任务提交
+        self.assertEqual(mock_submit.call_count, 2)
+        # 检查所有 record 都已创建，且按 feature_group + sort_order 排序
         records = list(ExecutionRecord.objects.order_by('id'))
-        self.assertEqual(records[0].testcase_id, tc_a.id)
-        self.assertEqual(records[1].testcase_id, tc_a2.id)
-        self.assertEqual(records[2].testcase_id, tc_b.id)
+        self.assertEqual(len(records), 3)
+        record_tc_ids = [r.testcase_id for r in records]
+        # A组用例应该排在 B组前面（因为 A < B 排序）
+        a_ids = [tc_a.id, tc_a2.id]
+        b_ids = [tc_b.id]
+        # 找到 a_ids 和 b_ids 在 record_tc_ids 中的位置
+        a_positions = [record_tc_ids.index(tid) for tid in a_ids if tid in record_tc_ids]
+        b_positions = [record_tc_ids.index(tid) for tid in b_ids if tid in record_tc_ids]
+        # A组的所有 record 都在 B组前面
+        if a_positions and b_positions:
+            self.assertTrue(max(a_positions) < min(b_positions),
+                            f"A组 records should come before B组: A at {a_positions}, B at {b_positions}")
 
 
 class BatchSaveFeatureGroupTest(TestCase):
@@ -4924,3 +4934,223 @@ class NormalizeParameterNamesTest(TestCase):
             # Intersection should be non-empty (shared params)
             common = param_names_sets[0] & param_names_sets[1]
             self.assertTrue(len(common) > 0, "Scripts should share parameter names for same selectors")
+
+
+# ─── Group-Based Sequential Execution Tests ───
+
+
+class SequentialExecutionHelperTest(TestCase):
+    """测试 _execute_testcases_sequential_by_records 辅助函数"""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='SeqTest', base_url='https://example.com')
+
+    @mock.patch('core.views._save_agent_result')
+    @mock.patch('core.views.execution_engine.execute_testcase_with_agent')
+    def test_sequential_execution_runs_in_order(self, mock_execute, mock_save):
+        """组内用例按 sort_order 顺序执行"""
+        tc1 = TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            status='running', sort_order=1,
+        )
+        tc2 = TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            status='running', sort_order=2,
+        )
+        r1 = ExecutionRecord.objects.create(
+            project=self.project, testcase=tc1, status='running', execution_mode='agent',
+        )
+        r2 = ExecutionRecord.objects.create(
+            project=self.project, testcase=tc2, status='running', execution_mode='agent',
+        )
+
+        mock_execute.return_value = {
+            'status': 'passed', 'log': '', 'error_message': '',
+            'duration': 1.0, 'step_logs': [], 'screenshots': [],
+            'agent_response': {},
+        }
+
+        from core.views import _execute_testcases_sequential_by_records
+        _execute_testcases_sequential_by_records([tc1, tc2], [r1, r2], self.project)
+
+        # Should have called execute_testcase_with_agent twice (sequentially)
+        self.assertEqual(mock_execute.call_count, 2)
+        # First call should be tc1, second should be tc2
+        self.assertEqual(mock_execute.call_args_list[0][0][0], tc1)
+        self.assertEqual(mock_execute.call_args_list[1][0][0], tc2)
+
+    @mock.patch('core.views._save_agent_result')
+    @mock.patch('core.views.execution_engine.execute_testcase_with_agent')
+    def test_sequential_continues_after_failure(self, mock_execute, mock_save):
+        """前一个用例失败不影响后续用例执行"""
+        tc1 = TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            status='running', sort_order=1,
+        )
+        tc2 = TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            status='running', sort_order=2,
+        )
+        r1 = ExecutionRecord.objects.create(
+            project=self.project, testcase=tc1, status='running', execution_mode='agent',
+        )
+        r2 = ExecutionRecord.objects.create(
+            project=self.project, testcase=tc2, status='running', execution_mode='agent',
+        )
+
+        # First call throws, second succeeds
+        mock_execute.side_effect = [
+            Exception('Playwright error'),
+            {
+                'status': 'passed', 'log': '', 'error_message': '',
+                'duration': 1.0, 'step_logs': [], 'screenshots': [],
+                'agent_response': {},
+            },
+        ]
+
+        from core.views import _execute_testcases_sequential_by_records
+        _execute_testcases_sequential_by_records([tc1, tc2], [r1, r2], self.project)
+
+        # Both should have been attempted
+        self.assertEqual(mock_execute.call_count, 2)
+        # tc1 should be marked failed
+        tc1.refresh_from_db()
+        self.assertEqual(tc1.status, 'failed')
+        # tc2 should be marked passed
+        tc2.refresh_from_db()
+        self.assertEqual(tc2.status, 'passed')
+
+
+class GroupedBatchExecutionTest(TestCase):
+    """测试 execute_project_agent 按 feature_group 分组并行、组内顺序执行"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='GroupExec', base_url='https://example.com')
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='test-model')
+    def test_two_groups_two_submissions(self, mock_model, mock_submit):
+        """不同功能组各自独立提交到线程池"""
+        # Group A: 2 testcases
+        TC_Model.objects.create(
+            project=self.project, name='A1', steps='s', expected_result='ok',
+            status='ready', feature_group='A', sort_order=1,
+        )
+        TC_Model.objects.create(
+            project=self.project, name='A2', steps='s', expected_result='ok',
+            status='ready', feature_group='A', sort_order=2,
+        )
+        # Group B: 1 testcase
+        TC_Model.objects.create(
+            project=self.project, name='B1', steps='s', expected_result='ok',
+            status='ready', feature_group='B', sort_order=1,
+        )
+
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        results = resp.data if isinstance(resp.data, list) else resp.data.get('results', resp.data)
+        self.assertEqual(len(results), 3)
+        # 2 groups → 2 task submissions
+        self.assertEqual(mock_submit.call_count, 2)
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='test-model')
+    def test_single_group_one_submission(self, mock_model, mock_submit):
+        """所有用例在同一组 → 只提交一个组任务"""
+        TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            status='ready', feature_group='Login', sort_order=1,
+        )
+        TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            status='ready', feature_group='Login', sort_order=2,
+        )
+
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        # 1 group → 1 task submission
+        self.assertEqual(mock_submit.call_count, 1)
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='test-model')
+    def test_no_group_all_in_one_task(self, mock_model, mock_submit):
+        """没有设置 feature_group 的用例 → 全部归入空字符串组"""
+        TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            status='draft',
+        )
+        TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            status='ready',
+        )
+
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        # All in default group → 1 task
+        self.assertEqual(mock_submit.call_count, 1)
+
+    @mock.patch('core.views._submit_agent_task')
+    @mock.patch('core.views._get_ai_model', return_value='test-model')
+    def test_submitted_task_receives_sorted_testcases(self, mock_model, mock_submit):
+        """提交的组任务包含正确排序的用例列表"""
+        TC_Model.objects.create(
+            project=self.project, name='A2', steps='s', expected_result='ok',
+            status='ready', feature_group='A', sort_order=2,
+        )
+        TC_Model.objects.create(
+            project=self.project, name='A1', steps='s', expected_result='ok',
+            status='ready', feature_group='A', sort_order=1,
+        )
+
+        resp = self.client.post(f'/api/projects/{self.project.id}/execute-agent/')
+        self.assertEqual(resp.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(mock_submit.call_count, 1)
+
+        # Verify the submitted task lambda captures correct testcase order
+        # The lambda passed to _submit_agent_task should have tcs=[A1, A2] (sorted)
+        # We can verify by checking the created records' testcase order
+        records = list(ExecutionRecord.objects.order_by('id'))
+        self.assertEqual(len(records), 2)
+        # First record should be A1 (sort_order=1), second should be A2 (sort_order=2)
+        self.assertEqual(records[0].testcase.name, 'A1')
+        self.assertEqual(records[1].testcase.name, 'A2')
+
+
+class FeatureGroupSequentialExecutionTest(TestCase):
+    """测试 execute_feature_group 提交顺序执行任务"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.project = Project.objects.create(name='FGSeqTest', base_url='https://example.com')
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_feature_group_submits_single_sequential_task(self, mock_submit):
+        """功能组执行提交一个顺序任务（而非每个用例单独提交）"""
+        TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            feature_group='Login', sort_order=1, status='ready',
+        )
+        TC_Model.objects.create(
+            project=self.project, name='TC2', steps='s', expected_result='ok',
+            feature_group='Login', sort_order=2, status='ready',
+        )
+
+        resp = self.client.post(f'/api/projects/{self.project.id}/features/Login/execute/')
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.data['count'], 2)
+        # Should submit exactly 1 group task (not 2 individual tasks)
+        self.assertEqual(mock_submit.call_count, 1)
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_feature_group_returns_submitted_count(self, mock_submit):
+        """响应包含 submitted 字段"""
+        TC_Model.objects.create(
+            project=self.project, name='TC1', steps='s', expected_result='ok',
+            feature_group='Login', sort_order=1, status='ready',
+        )
+
+        resp = self.client.post(f'/api/projects/{self.project.id}/features/Login/execute/')
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.data['submitted'], 1)
+        self.assertEqual(resp.data['count'], 1)
