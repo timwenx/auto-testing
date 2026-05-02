@@ -10,4 +10,4 @@ python manage.py migrate --run-syncdb 2>nul
 python manage.py migrate
 
 echo [3/3] 启动后端服务 (http://localhost:8000)...
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 0.0.0.0:8000 

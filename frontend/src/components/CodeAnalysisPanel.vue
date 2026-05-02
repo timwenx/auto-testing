@@ -2,9 +2,27 @@
   <el-card>
     <template #header>
       <div class="card-header">
-        <span>代码分析</span>
-        <div>
+        <div style="display: flex; align-items: center; gap: 8px">
           <el-button size="small" @click="$emit('back')">返回上一步</el-button>
+          <el-button
+            v-if="!analyzing && analysis?.status === 'completed'"
+            size="small"
+            @click="confirmRestart"
+          >
+            重新分析
+          </el-button>
+          <el-button
+            v-if="analysis?.status === 'completed' && analysis.discovered_items?.length"
+            size="small"
+            @click="toggleSelectAll"
+          >
+            {{ totalSelected === allItems.length ? '取消全选' : '全选' }}
+          </el-button>
+          <span v-if="analysis?.status === 'completed' && analysis.discovered_items?.length" style="color: #606266; font-size: 13px">
+            已选 <strong>{{ totalSelected }}</strong>/{{ allItems.length }}
+          </span>
+        </div>
+        <div style="display: flex; gap: 8px">
           <el-button
             v-if="!analyzing && !analysis"
             type="primary"
@@ -15,12 +33,13 @@
             开始分析
           </el-button>
           <el-button
-            v-if="!analyzing && analysis?.status === 'completed'"
-            type="warning"
+            v-if="analysis?.status === 'completed' && analysis.discovered_items?.length"
+            type="primary"
             size="small"
-            @click="confirmRestart"
+            :disabled="totalSelected === 0"
+            @click="handleNext"
           >
-            重新分析
+            下一步：生成用例
           </el-button>
         </div>
       </div>
@@ -104,7 +123,7 @@
             :data="group.items"
             style="width: 100%"
             size="small"
-            row-key="path"
+            :row-key="itemKey"
           >
             <el-table-column type="expand">
               <template #default="{ row }">
@@ -206,8 +225,8 @@
             <el-table-column width="40">
               <template #default="{ row }">
                 <el-checkbox
-                  :model-value="selectedPaths.has(row.path)"
-                  @change="(val) => toggleItem(row.path, val)"
+                  :model-value="selectedPaths.has(itemKey(row))"
+                  @change="(val) => toggleItem(itemKey(row), val)"
                 />
               </template>
             </el-table-column>
@@ -259,22 +278,6 @@
           </el-table>
         </el-collapse-item>
       </el-collapse>
-
-      <!-- 底部汇总 -->
-      <div style="margin-top: 16px; display: flex; justify-content: space-between; align-items: center">
-        <span style="color: #606266">
-          已选择 <strong>{{ totalSelected }}</strong> 个目标
-          （{{ featureGroupsCount }} 个功能点内）
-        </span>
-        <div>
-          <el-button size="small" @click="toggleSelectAll">
-            {{ totalSelected === allItems.length ? '取消全选' : '全选' }}
-          </el-button>
-          <el-button type="primary" :disabled="totalSelected === 0" @click="handleNext">
-            下一步：生成用例
-          </el-button>
-        </div>
-      </div>
     </div>
 
     <!-- 无结果 -->
@@ -341,16 +344,16 @@ const featureGroups = computed(() => {
   }
 
   const groups = Array.from(groupMap.values())
-  // Default: expand all groups
-  if (expandedGroups.value.length === 0 && groups.length > 0) {
-    expandedGroups.value = groups.map(g => g.name)
-  }
   return groups
 })
 
-const featureGroupsCount = computed(() => featureGroups.value.length)
-
 const totalSelected = computed(() => selectedPaths.value.size)
+
+watch(featureGroups, (groups) => {
+  if (expandedGroups.value.length === 0 && groups.length > 0) {
+    expandedGroups.value = groups.map(g => g.name)
+  }
+}, { immediate: true })
 
 const formattedElapsed = computed(() => {
   const s = elapsedSeconds.value
@@ -486,7 +489,11 @@ function startPolling() {
   }, 3000)
 }
 
-// --- Selection logic (path-based, not index-based) ---
+// --- Selection logic (composite key, not path-only) ---
+
+function itemKey(item) {
+  return `${item.path}::${item.source_file}::${item.name}`
+}
 
 function toggleCollapse(groupName) {
   const idx = expandedGroups.value.indexOf(groupName)
@@ -497,12 +504,12 @@ function toggleCollapse(groupName) {
   }
 }
 
-function toggleItem(path, val) {
+function toggleItem(key, val) {
   const newSet = new Set(selectedPaths.value)
   if (val) {
-    newSet.add(path)
+    newSet.add(key)
   } else {
-    newSet.delete(path)
+    newSet.delete(key)
   }
   selectedPaths.value = newSet
 }
@@ -510,7 +517,7 @@ function toggleItem(path, val) {
 function getGroupSelectedCount(groupName) {
   const group = featureGroups.value.find(g => g.name === groupName)
   if (!group) return 0
-  return group.items.filter(item => selectedPaths.value.has(item.path)).length
+  return group.items.filter(item => selectedPaths.value.has(itemKey(item))).length
 }
 
 function getGroupCheckState(groupName) {
@@ -527,10 +534,11 @@ function toggleGroup(groupName, val) {
   if (!group) return
   const newSet = new Set(selectedPaths.value)
   for (const item of group.items) {
+    const key = itemKey(item)
     if (val) {
-      newSet.add(item.path)
+      newSet.add(key)
     } else {
-      newSet.delete(item.path)
+      newSet.delete(key)
     }
   }
   selectedPaths.value = newSet
@@ -540,7 +548,7 @@ function toggleSelectAll() {
   if (totalSelected.value === allItems.value.length) {
     selectedPaths.value = new Set()
   } else {
-    selectedPaths.value = new Set(allItems.value.map(item => item.path))
+    selectedPaths.value = new Set(allItems.value.map(item => itemKey(item)))
   }
 }
 
@@ -577,7 +585,7 @@ async function handleResetAndRetry() {
 }
 
 function handleNext() {
-  const selected = allItems.value.filter(item => selectedPaths.value.has(item.path))
+  const selected = allItems.value.filter(item => selectedPaths.value.has(itemKey(item)))
   emit('items-selected', selected, { ...descriptions.value })
 }
 </script>

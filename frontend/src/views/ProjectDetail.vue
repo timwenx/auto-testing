@@ -140,6 +140,15 @@
                 <el-descriptions-item label="状态">
                   <el-tag :type="statusType(treeSelection.raw?.status)" size="small">{{ treeSelection.raw?.status }}</el-tag>
                 </el-descriptions-item>
+                <el-descriptions-item label="优先级" v-if="treeSelection.raw?.priority">
+                  <el-tag v-if="treeSelection.raw.priority === 'P0'" type="danger" size="small">P0</el-tag>
+                  <el-tag v-else-if="treeSelection.raw.priority === 'P1'" type="warning" size="small">P1</el-tag>
+                  <el-tag v-else-if="treeSelection.raw.priority === 'P2'" type="info" size="small">P2</el-tag>
+                  <span v-else>{{ treeSelection.raw.priority }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="测试类型" v-if="treeSelection.raw?.test_type">
+                  <el-tag size="small" effect="plain">{{ treeSelection.raw.test_type }}</el-tag>
+                </el-descriptions-item>
               </el-descriptions>
               <div style="margin-bottom: 12px">
                 <el-button size="small" type="warning" @click="handleExecuteAgent(treeSelection.raw)">Agent 执行</el-button>
@@ -147,6 +156,20 @@
                 <el-button size="small" @click="openEditor(treeSelection.raw)">编辑</el-button>
                 <el-button size="small" @click="openCaseDrawer(treeSelection.raw)">查看详情</el-button>
               </div>
+              <template v-if="treeSelection.raw?.markdown_content">
+                <div class="markdown-body" style="border: 1px solid #ebeef5; border-radius: 4px; padding: 16px; background: #fafafa" v-html="renderCaseMarkdown(treeSelection.raw.markdown_content)" />
+              </template>
+              <template v-else>
+                <el-descriptions :column="1" border size="small" direction="vertical">
+                  <el-descriptions-item label="描述" v-if="treeSelection.raw?.description">{{ treeSelection.raw.description }}</el-descriptions-item>
+                  <el-descriptions-item label="测试步骤">
+                    <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.steps || '-' }}</pre>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="预期结果">
+                    <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.expected_result || '-' }}</pre>
+                  </el-descriptions-item>
+                </el-descriptions>
+              </template>
             </template>
             <el-empty v-else description="选择左侧功能或用例查看详情" :image-size="80" />
           </div>
@@ -198,7 +221,7 @@
                 :descriptions="wizardItemDescriptions"
                 :precondition-id="wizardPreconditionId"
                 :initial-cases="wizardDraftCases"
-                @back="wizardStep = 2"
+                @back="clearGenerationDraft(projectId); wizardStep = 2"
                 @save-complete="onWizardSaveComplete"
               />
             </div>
@@ -222,7 +245,56 @@
 
       <!-- ═══ 执行记录标签页 ═══ -->
       <el-tab-pane label="执行记录" name="executions">
-        <el-table :data="projectExecutions" size="small" v-loading="loadingExecutions">
+        <el-table :data="projectExecutions" size="small" v-loading="loadingExecutions"
+          row-key="id" :expand-row-keys="execExpandedRows" @expand-change="handleExecExpand">
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div style="padding: 12px 24px">
+                <template v-if="row._expanding">
+                  <div style="text-align: center; padding: 16px; color: #909399">加载中...</div>
+                </template>
+                <template v-else-if="row._stepLogs && row._stepLogs.length">
+                  <h4 style="margin: 0 0 8px; font-size: 13px; color: #606266">执行步骤</h4>
+                  <el-timeline>
+                    <el-timeline-item v-for="step in row._stepLogs" :key="step.step_num" :timestamp="step.timestamp" placement="top">
+                      <el-card shadow="never" body-style="padding: 8px 12px">
+                        <div style="display: flex; justify-content: space-between; align-items: center">
+                          <div>
+                            <el-tag size="small" effect="plain">{{ step.action }}</el-tag>
+                            <span v-if="step.target" style="margin-left: 8px; font-size: 13px; color: #606266">{{ step.target }}</span>
+                          </div>
+                          <el-button v-if="step.screenshot_path" size="small" text type="primary"
+                            @click="handlePreviewImage('/api/executions/screenshots/?path=' + encodeURIComponent(step.screenshot_path))">截图</el-button>
+                        </div>
+                        <div v-if="step.result" style="margin-top: 6px; font-size: 12px; color: #909399; word-break: break-all">{{ step.result }}</div>
+                      </el-card>
+                    </el-timeline-item>
+                  </el-timeline>
+                </template>
+                <template v-else-if="row.error_message">
+                  <el-alert type="error" :closable="false" style="margin-bottom: 8px">{{ row.error_message }}</el-alert>
+                </template>
+                <template v-else>
+                  <div style="color: #909399; font-size: 13px">暂无步骤日志</div>
+                </template>
+                <template v-if="row._agentResponse">
+                  <h4 style="margin: 12px 0 8px; font-size: 13px; color: #606266">Agent 回复</h4>
+                  <div class="agent-response-box">
+                    <pre style="white-space: pre-wrap; margin: 0; font-size: 13px">{{ row._agentResponse }}</pre>
+                  </div>
+                </template>
+                <template v-if="row._screenshots && row._screenshots.length">
+                  <h4 style="margin: 12px 0 8px; font-size: 13px; color: #606266">截图 ({{ row._screenshots.length }})</h4>
+                  <div style="display: flex; gap: 8px; flex-wrap: wrap">
+                    <el-image v-for="(shot, idx) in row._screenshots" :key="idx"
+                      :src="'/api/executions/screenshots/?path=' + encodeURIComponent(typeof shot === 'string' ? shot : shot.path || shot)"
+                      :preview-src-list="row._screenshots.map(s => '/api/executions/screenshots/?path=' + encodeURIComponent(typeof s === 'string' ? s : s.path || s))"
+                      fit="cover" style="width: 120px; height: 80px; border-radius: 4px; border: 1px solid #ebeef5" :initial-index="idx" />
+                  </div>
+                </template>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column prop="testcase_name" label="用例" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
               <div>{{ row.testcase_name }}</div>
@@ -461,7 +533,7 @@ import {
   updateTestCase, deleteTestCase,
   executeTestCaseAgent, executeProjectAgent,
   aiGenerateTestCase, aiAdjustTestCase,
-  getExecutions,
+  getExecutions, getExecution,
   reorderTestcases, getFeatureGroups, getFeatureGroupsDetail, executeFeatureGroup,
   getGenerationDraft, saveGenerationDraft, clearGenerationDraft,
   getRepoAnalysis,
@@ -508,6 +580,7 @@ const savingProject = ref(false)
 const editProjectForm = ref({ name: '', description: '', base_url: '', repo_url: '', repo_username: '', repo_password: '', github_url: '', github_token: '', local_repo_path: '' })
 const showImagePreview = ref(false)
 const previewImage = ref('')
+const execExpandedRows = ref([])
 
 // ─── Drawer states ───
 const showCaseDrawer = ref(false)
@@ -775,15 +848,31 @@ const resetAIDialog = () => {
 
 const toggleCasePreview = (idx) => { expandedCaseIdx.value = expandedCaseIdx.value === idx ? -1 : idx }
 
+// ─── Execution expand ───
+async function handleExecExpand(row, expandedRows) {
+  const isExpanded = expandedRows.some(r => r.id === row.id)
+  if (isExpanded && !row._stepLogs && !row._expanding) {
+    row._expanding = true
+    try {
+      const { data } = await getExecution(row.id)
+      row._stepLogs = data.step_logs || []
+      row._agentResponse = data.agent_response?.response_text || ''
+      row._screenshots = data.screenshots || []
+      row.error_message = data.error_message || row.error_message
+    } catch { row._stepLogs = [] }
+    finally { row._expanding = false }
+  }
+  execExpandedRows.value = expandedRows.map(r => r.id)
+}
+
 // ─── Execution drawer ───
 async function openExecDrawer(row) {
   execDrawerData.value = null
   execDrawerLoading.value = true
   showExecDrawer.value = true
   try {
-    const { data } = await getExecutions({ testcase: row.testcase || row.id })
-    const records = data.results || data
-    if (records.length > 0) execDrawerData.value = records[0]
+    const { data } = await getExecution(row.id)
+    execDrawerData.value = data
   } catch { /* ignore */ } finally { execDrawerLoading.value = false }
 }
 
@@ -908,6 +997,16 @@ async function loadWizardState() {
   try {
     const { data } = await getGenerationDraft(projectId)
     const draft = data.draft || {}
+    // Only resume step 3 if generation is actively running OR has completed results.
+    // Having selected_items alone is NOT enough — that's leftover from step 2 selection.
+    if (draft.status === 'generating') {
+      wizardDraftCases.value = null
+      wizardSelectedItems.value = draft.selected_items || []
+      wizardItemDescriptions.value = draft.descriptions || {}
+      wizardPreconditionId.value = draft.precondition_id || null
+      wizardStep.value = 3
+      return
+    }
     if (draft.generated_cases && draft.generated_cases.length) {
       wizardDraftCases.value = draft.generated_cases
       wizardSelectedItems.value = draft.selected_items || []
