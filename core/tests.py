@@ -2965,9 +2965,10 @@ class ExecuteProjectOrderingTest(TestCase):
         a_positions = [record_tc_ids.index(tid) for tid in a_ids if tid in record_tc_ids]
         b_positions = [record_tc_ids.index(tid) for tid in b_ids if tid in record_tc_ids]
         # A组的所有 record 都在 B组前面
-        if a_positions and b_positions:
-            self.assertTrue(max(a_positions) < min(b_positions),
-                            f"A组 records should come before B组: A at {a_positions}, B at {b_positions}")
+        self.assertTrue(len(a_positions) == 2 and len(b_positions) == 1,
+                        f"Expected 2 A-group and 1 B-group records, got A={a_positions}, B={b_positions}")
+        self.assertTrue(max(a_positions) < min(b_positions),
+                        f"A组 records should come before B组: A at {a_positions}, B at {b_positions}")
 
 
 class BatchSaveFeatureGroupTest(TestCase):
@@ -5154,3 +5155,11 @@ class FeatureGroupSequentialExecutionTest(TestCase):
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(resp.data['submitted'], 1)
         self.assertEqual(resp.data['count'], 1)
+
+    @mock.patch('core.views._submit_agent_task')
+    def test_feature_group_empty_returns_400(self, mock_submit):
+        """功能组无可用用例时返回 400"""
+        resp = self.client.post(f'/api/projects/{self.project.id}/features/NoSuchGroup/execute/')
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('没有可执行', resp.data['error'])
+        self.assertEqual(mock_submit.call_count, 0)
