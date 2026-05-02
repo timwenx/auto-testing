@@ -147,6 +147,64 @@ def _submit_agent_task(task_fn):
     _agent_executor.submit(task_fn)
 
 
+def _execute_testcases_sequential(testcases_qs, project):
+    """顺序执行一组测试用例（阻塞调用，在同一个线程中一个接一个执行）。
+
+    Args:
+        testcases_qs: QuerySet 或 list[TestCase]，已按 sort_order 排序
+        project: Project 对象
+
+    Returns:
+        list[ExecutionRecord]: 创建的执行记录列表
+    """
+    ai_model = _get_ai_model()
+    records = []
+    for tc in testcases_qs:
+        record = ExecutionRecord.objects.create(
+            project=project,
+            testcase=tc,
+            status='running',
+            execution_mode='agent',
+            ai_model=ai_model,
+        )
+        tc.status = 'running'
+        tc.save(update_fields=['status'])
+
+        # 阻塞执行 — 等待完成后才继续下一个
+        result = execution_engine.execute_testcase_with_agent(tc, project.base_url, execution_id=record.pk)
+        _save_agent_result(record, result)
+        tc.status = result['status']
+        tc.save(update_fields=['status'])
+        records.append(record)
+    return records
+
+
+def _execute_testcases_sequential_by_records(testcases, records, project):
+    """顺序执行已创建 ExecutionRecord 的一组测试用例。
+
+    与 _execute_testcases_sequential 不同，此处 records 已预先创建好，
+    只需逐一执行并更新状态。
+
+    Args:
+        testcases: list[TestCase]，已按 sort_order 排序
+        records: list[ExecutionRecord]，与 testcases 一一对应
+        project: Project 对象
+    """
+    for tc, record in zip(testcases, records):
+        try:
+            result = execution_engine.execute_testcase_with_agent(tc, project.base_url, execution_id=record.pk)
+            _save_agent_result(record, result)
+            tc.status = result['status']
+            tc.save(update_fields=['status'])
+        except Exception as e:
+            logger.exception("[GroupTask] 执行用例 %s 失败: %s", tc.name, e)
+            record.status = 'failed'
+            record.error_message = str(e)
+            record.save(update_fields=['status', 'error_message'])
+            tc.status = 'failed'
+            tc.save(update_fields=['status'])
+
+
 def _get_ai_model():
     """获取当前 AI 模型名称，失败返回空字符串"""
     from .ai_engine import _get_model
@@ -487,7 +545,11 @@ def execute_testcase_agent(request, testcase_id):
 
 @api_view(['POST'])
 def execute_project_agent(request, project_id):
-    """通过 Agent 模式批量执行项目下所有就绪/草稿测试用例"""
+    """通过 Agent 模式批量执行项目下所有就绪/草稿测试用例。
+
+    按 feature_group 分组，每个组内按 sort_order 顺序执行，
+    不同功能组之间并行提交到线程池。
+    """
     try:
         project = Project.objects.get(pk=project_id)
     except Project.DoesNotExist:
@@ -499,42 +561,46 @@ def execute_project_agent(request, project_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    testcases = project.testcases.filter(
+    testcases = list(project.testcases.filter(
         status__in=['draft', 'ready']
-    ).order_by('feature_group', 'sort_order')
-    if not testcases.exists():
+    ).order_by('feature_group', 'sort_order'))
+    if not testcases:
         return Response(
             {'error': '没有可执行的测试用例'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    ai_model = _get_ai_model()
-    records = []
+    # 按 feature_group 分组
+    from collections import OrderedDict
+    groups = OrderedDict()
     for tc in testcases:
-        record = ExecutionRecord.objects.create(
-            project=project,
-            testcase=tc,
-            status='running',
-            execution_mode='agent',
-            ai_model=ai_model,
-        )
-        tc.status = 'running'
-        tc.save(update_fields=['status'])
+        fg = tc.feature_group or ''
+        groups.setdefault(fg, []).append(tc)
 
-        def _make_task(r, t):
-            def _agent_task():
-                result = execution_engine.execute_testcase_with_agent(t, project.base_url, execution_id=r.pk)
-                _save_agent_result(r, result)
-                t.status = result['status']
-                t.save(update_fields=['status'])
-                return result
-            return _agent_task
+    # 为每个功能组创建 ExecutionRecord 并保存，然后提交顺序执行任务
+    all_records = []
+    for fg, group_tcs in groups.items():
+        # 预创建所有 ExecutionRecord（HTTP 202 立即返回所有 ID）
+        ai_model = _get_ai_model()
+        group_records = []
+        for tc in group_tcs:
+            record = ExecutionRecord.objects.create(
+                project=project,
+                testcase=tc,
+                status='running',
+                execution_mode='agent',
+                ai_model=ai_model,
+            )
+            tc.status = 'running'
+            tc.save(update_fields=['status'])
+            group_records.append(record)
+        all_records.extend(group_records)
 
-        _submit_agent_task(_make_task(record, tc))
-        records.append(record)
+        # 提交组任务到线程池 — 组内顺序执行
+        _submit_agent_task(lambda tcs=group_tcs, recs=group_records: _execute_testcases_sequential_by_records(tcs, recs, project))
 
     return Response(
-        ExecutionRecordSerializer(records, many=True).data,
+        ExecutionRecordSerializer(all_records, many=True).data,
         status=status.HTTP_202_ACCEPTED,
     )
 
@@ -1871,7 +1937,7 @@ def script_feature_groups(request):
 
 @api_view(['POST'])
 def execute_feature_group(request, project_id, feature_group):
-    """POST /api/projects/<id>/features/<feature_group>/execute/ — 执行指定功能下的所有用例"""
+    """POST /api/projects/<id>/features/<feature_group>/execute/ — 顺序执行指定功能下的所有用例"""
     try:
         project = Project.objects.get(pk=project_id)
     except Project.DoesNotExist:
@@ -1887,17 +1953,18 @@ def execute_feature_group(request, project_id, feature_group):
     # '未分组' 映射到空字符串
     fg_filter = '' if feature_group == '未分组' else feature_group
 
-    testcases = project.testcases.filter(
+    testcases = list(project.testcases.filter(
         feature_group=fg_filter,
         status__in=['draft', 'ready']
-    ).order_by('sort_order')
+    ).order_by('sort_order'))
 
-    if not testcases.exists():
+    if not testcases:
         return Response(
             {'error': f'功能分组「{feature_group}」下没有可执行的测试用例'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # 预创建所有 ExecutionRecord（HTTP 202 立即返回所有 ID）
     ai_model = _get_ai_model()
     records = []
     for tc in testcases:
@@ -1910,22 +1977,15 @@ def execute_feature_group(request, project_id, feature_group):
         )
         tc.status = 'running'
         tc.save(update_fields=['status'])
-
-        def _make_task(r, t):
-            def _agent_task():
-                result = execution_engine.execute_testcase_with_agent(t, project.base_url, execution_id=r.pk)
-                _save_agent_result(r, result)
-                t.status = result['status']
-                t.save(update_fields=['status'])
-                return result
-            return _agent_task
-
-        _submit_agent_task(_make_task(record, tc))
         records.append(record)
+
+    # 提交顺序执行任务到线程池
+    _submit_agent_task(lambda tcs=testcases, recs=records: _execute_testcases_sequential_by_records(tcs, recs, project))
 
     return Response({
         'feature_group': feature_group,
         'execution_ids': [r.id for r in records],
+        'submitted': len(records),
         'count': len(records),
         'records': ExecutionRecordSerializer(records, many=True).data,
     }, status=status.HTTP_202_ACCEPTED)

@@ -117,7 +117,7 @@
                   </el-button>
                 </el-descriptions-item>
               </el-descriptions>
-              <el-table :data="treeSelection.testcases || []" size="small">
+              <el-table ref="featureTableRef" :data="treeSelection.testcases || []" size="small" row-key="id">
                 <el-table-column prop="name" label="用例名称" min-width="180" />
                 <el-table-column prop="status" label="状态" width="80">
                   <template #default="{ row }">
@@ -147,16 +147,6 @@
                 <el-button size="small" @click="openEditor(treeSelection.raw)">编辑</el-button>
                 <el-button size="small" @click="openCaseDrawer(treeSelection.raw)">查看详情</el-button>
               </div>
-              <div v-if="treeSelection.raw?.markdown_content" class="markdown-body" style="max-height: 50vh" v-html="renderCaseMarkdown(treeSelection.raw.markdown_content)" />
-              <el-descriptions v-else :column="1" border size="small">
-                <el-descriptions-item label="描述">{{ treeSelection.raw?.description || '-' }}</el-descriptions-item>
-                <el-descriptions-item label="测试步骤">
-                  <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.steps }}</pre>
-                </el-descriptions-item>
-                <el-descriptions-item label="预期结果">
-                  <pre style="white-space: pre-wrap; margin: 0">{{ treeSelection.raw?.expected_result }}</pre>
-                </el-descriptions-item>
-              </el-descriptions>
             </template>
             <el-empty v-else description="选择左侧功能或用例查看详情" :image-size="80" />
           </div>
@@ -233,10 +223,10 @@
       <!-- ═══ 执行记录标签页 ═══ -->
       <el-tab-pane label="执行记录" name="executions">
         <el-table :data="projectExecutions" size="small" v-loading="loadingExecutions">
-          <el-table-column prop="testcase_name" label="用例" min-width="180" show-overflow-tooltip />
-          <el-table-column prop="execution_mode" label="模式" width="80">
+          <el-table-column prop="testcase_name" label="用例" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-tag size="small" effect="plain">{{ row.execution_mode || 'script' }}</el-tag>
+              <div>{{ row.testcase_name }}</div>
+              <div v-if="row.testcase_feature_group" style="font-size: 11px; color: #909399">{{ row.testcase_feature_group }}</div>
             </template>
           </el-table-column>
           <el-table-column prop="status" label="状态" width="80">
@@ -246,9 +236,6 @@
           </el-table-column>
           <el-table-column prop="duration" label="耗时" width="70">
             <template #default="{ row }">{{ row.duration ? row.duration + 's' : '-' }}</template>
-          </el-table-column>
-          <el-table-column prop="tool_calls_count" label="工具调用" width="80">
-            <template #default="{ row }">{{ row.tool_calls_count || '-' }}</template>
           </el-table-column>
           <el-table-column prop="created_at" label="时间" width="170" />
           <el-table-column label="操作" width="150" fixed="right">
@@ -465,9 +452,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
+import Sortable from 'sortablejs'
 import {
   getProject, updateProject, getProjectTestCases, createTestCase,
   updateTestCase, deleteTestCase,
@@ -505,6 +493,8 @@ const featureGroups = ref([])
 const featureTreeData = ref([])
 const treeSelection = ref(null)
 const executingFeature = ref('')
+const featureTableRef = ref(null)
+let sortableInstance = null
 
 // ─── Dialog states ───
 const showCreate = ref(false)
@@ -563,6 +553,18 @@ const editPreview = computed(() => {
 
 const featureGroupSuggestions = computed(() => {
   return featureGroups.value.filter(g => g.name !== '未分组').map(g => ({ value: g.name }))
+})
+
+// Initialize sortable when feature group is selected
+watch(treeSelection, (val) => {
+  if (val?.type === 'feature') {
+    initSortable()
+  } else {
+    if (sortableInstance) {
+      sortableInstance.destroy()
+      sortableInstance = null
+    }
+  }
 })
 
 // ─── Status helpers ───
@@ -833,6 +835,44 @@ async function handleTreeExecuteFeature(featureGroup) {
 function queryFeatureGroup(queryString, cb) {
   const results = queryString ? featureGroupSuggestions.value.filter(s => s.value.toLowerCase().includes(queryString.toLowerCase())) : featureGroupSuggestions.value
   cb(results)
+}
+
+// ─── Drag-and-drop sort for feature group testcases ───
+function initSortable() {
+  // Destroy previous instance if any
+  if (sortableInstance) {
+    sortableInstance.destroy()
+    sortableInstance = null
+  }
+  nextTick(() => {
+    const tableRef = featureTableRef.value
+    if (!tableRef) return
+    const el = tableRef.$el
+    const tbody = el.querySelector('.el-table__body-wrapper tbody')
+    if (!tbody) return
+
+    sortableInstance = Sortable.create(tbody, {
+      animation: 150,
+      handle: '.el-table__row',
+      onEnd: async ({ oldIndex, newIndex }) => {
+        if (oldIndex === newIndex) return
+        const rows = treeSelection.value?.testcases || []
+        // Reorder the local array
+        const moved = rows.splice(oldIndex, 1)[0]
+        rows.splice(newIndex, 0, moved)
+        // Compute new sort_order values
+        const orders = rows.map((tc, idx) => ({ id: tc.id, sort_order: idx + 1 }))
+        try {
+          await reorderTestcases(projectId, orders)
+          ElMessage.success('排序已保存')
+        } catch (e) {
+          ElMessage.error('排序保存失败')
+          // Revert on failure
+          await loadData()
+        }
+      },
+    })
+  })
 }
 
 // ─── Wizard (code analysis) handlers ───
