@@ -147,43 +147,8 @@ def _submit_agent_task(task_fn):
     _agent_executor.submit(task_fn)
 
 
-def _execute_testcases_sequential(testcases_qs, project):
-    """顺序执行一组测试用例（阻塞调用，在同一个线程中一个接一个执行）。
-
-    Args:
-        testcases_qs: QuerySet 或 list[TestCase]，已按 sort_order 排序
-        project: Project 对象
-
-    Returns:
-        list[ExecutionRecord]: 创建的执行记录列表
-    """
-    ai_model = _get_ai_model()
-    records = []
-    for tc in testcases_qs:
-        record = ExecutionRecord.objects.create(
-            project=project,
-            testcase=tc,
-            status='running',
-            execution_mode='agent',
-            ai_model=ai_model,
-        )
-        tc.status = 'running'
-        tc.save(update_fields=['status'])
-
-        # 阻塞执行 — 等待完成后才继续下一个
-        result = execution_engine.execute_testcase_with_agent(tc, project.base_url, execution_id=record.pk)
-        _save_agent_result(record, result)
-        tc.status = result['status']
-        tc.save(update_fields=['status'])
-        records.append(record)
-    return records
-
-
 def _execute_testcases_sequential_by_records(testcases, records, project):
     """顺序执行已创建 ExecutionRecord 的一组测试用例。
-
-    与 _execute_testcases_sequential 不同，此处 records 已预先创建好，
-    只需逐一执行并更新状态。
 
     Args:
         testcases: list[TestCase]，已按 sort_order 排序
@@ -578,10 +543,10 @@ def execute_project_agent(request, project_id):
         groups.setdefault(fg, []).append(tc)
 
     # 为每个功能组创建 ExecutionRecord 并保存，然后提交顺序执行任务
+    ai_model = _get_ai_model()
     all_records = []
     for fg, group_tcs in groups.items():
         # 预创建所有 ExecutionRecord（HTTP 202 立即返回所有 ID）
-        ai_model = _get_ai_model()
         group_records = []
         for tc in group_tcs:
             record = ExecutionRecord.objects.create(
