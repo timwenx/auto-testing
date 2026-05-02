@@ -452,7 +452,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import Sortable from 'sortablejs'
@@ -867,8 +867,15 @@ function initSortable() {
           ElMessage.success('排序已保存')
         } catch (e) {
           ElMessage.error('排序保存失败')
-          // Revert on failure
+          // Revert on failure: reload data then re-attach Sortable to fresh DOM
           await loadData()
+          // Re-apply the current feature selection from refreshed data
+          const currentRawName = treeSelection.value?.rawName
+          if (currentRawName !== undefined) {
+            const group = featureTreeData.value.find(g => (g.name === '未分组' ? '' : g.name) === currentRawName)
+            if (group) treeSelection.value = { type: 'feature', label: group.name, rawName: currentRawName, count: group.count, testcases: group.testcases || [] }
+          }
+          nextTick(() => initSortable())
         }
       },
     })
@@ -955,6 +962,14 @@ onMounted(async () => {
       }
     }
   } catch { /* ignore */ }
+})
+
+// Cleanup Sortable instance on component unmount
+onUnmounted(() => {
+  if (sortableInstance) {
+    sortableInstance.destroy()
+    sortableInstance = null
+  }
 })
 </script>
 
