@@ -2,9 +2,17 @@
   <el-card>
     <template #header>
       <div class="card-header">
-        <span>批量用例生成</span>
-        <div>
+        <div style="display: flex; gap: 8px">
           <el-button size="small" @click="$emit('back')">返回选择</el-button>
+          <el-button
+            v-if="generatedCases.length"
+            size="small"
+            @click="handleGenerate"
+          >
+            重新生成
+          </el-button>
+        </div>
+        <div style="display: flex; gap: 8px">
           <el-button
             v-if="!generatedCases.length"
             type="primary"
@@ -18,6 +26,7 @@
           <el-button
             v-if="generatedCases.length"
             type="success"
+            size="small"
             :loading="saving"
             @click="handleSave"
           >
@@ -29,14 +38,21 @@
 
     <!-- 生成中 -->
     <div v-if="generating" style="text-align: center; padding: 40px 0">
-      <el-icon class="is-loading" style="font-size: 32px; color: #409eff"><Loading /></el-icon>
-      <p style="margin-top: 12px; color: #606266">正在生成测试用例...</p>
-      <p style="color: #909399; font-size: 13px; margin-top: 4px">
-        已用时 <strong>{{ formattedElapsed }}</strong>
-      </p>
-      <p style="color: #909399; font-size: 13px">
-        为 {{ selectedItems?.length || 0 }} 个目标生成用例，可能需要 1-2 分钟
-      </p>
+      <template v-if="!isStuck">
+        <el-icon class="is-loading" style="font-size: 32px; color: #409eff"><Loading /></el-icon>
+        <p style="margin-top: 12px; color: #606266; font-size: 15px">{{ genProgress || '正在生成测试用例...' }}</p>
+        <p style="color: #909399; font-size: 13px; margin-top: 4px">
+          已用时 <strong>{{ formattedElapsed }}</strong>
+        </p>
+      </template>
+      <template v-else>
+        <el-icon style="font-size: 32px; color: #e6a23c"><WarningFilled /></el-icon>
+        <p style="margin-top: 12px; color: #e6a23c; font-size: 15px; font-weight: 600">生成进程似乎已中断</p>
+        <p style="color: #909399; font-size: 13px; margin-top: 4px">心跳已断开超过 30 秒，通常是服务重启或进程异常</p>
+        <div style="margin-top: 20px">
+          <el-button type="warning" @click="handleResetAndRetry">返回重试</el-button>
+        </div>
+      </template>
     </div>
 
     <!-- 已生成用例列表 -->
@@ -47,7 +63,6 @@
         </span>
         <div>
           <el-button size="small" @click="handleAddEmpty">手动新增</el-button>
-          <el-button size="small" @click="handleGenerate">重新生成</el-button>
         </div>
       </div>
 
@@ -173,9 +188,10 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { batchGenerateTestcases, batchSaveTestcases, getGenerationDraft, saveGenerationDraft } from '../api.js'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { WarningFilled } from '@element-plus/icons-vue'
+import { batchGenerateTestcases, batchSaveTestcases, getGenerationDraft, saveGenerationDraft, clearGenerationDraft } from '../api.js'
 
 const props = defineProps({
   projectId: { type: Number, required: true },
@@ -190,7 +206,10 @@ const generating = ref(false)
 const saving = ref(false)
 const generatedCases = ref(props.initialCases || [])
 const elapsedSeconds = ref(0)
+const genProgress = ref('')
+const isStuck = ref(false)
 let elapsedTimer = null
+let pollTimer = null
 
 const formattedElapsed = computed(() => {
   const s = elapsedSeconds.value
@@ -235,16 +254,105 @@ watch(generatedCases, () => {
   syncTimer = setTimeout(syncDraftToServer, 1500)
 }, { deep: true })
 
+async function resumeGenerationIfNeeded() {
+  try {
+    const { data } = await getGenerationDraft(props.projectId)
+    const draft = data.draft || {}
+    if (draft.status === 'generating') {
+      generating.value = true
+      // Restore elapsed time from server timestamp
+      if (draft.started_at) {
+        const started = new Date(draft.started_at).getTime()
+        const now = Date.now()
+        elapsedSeconds.value = Math.max(0, Math.floor((now - started) / 1000))
+      } else {
+        elapsedSeconds.value = 0
+      }
+      elapsedTimer = setInterval(() => { elapsedSeconds.value++ }, 1000)
+      startDraftPolling()
+    } else if (draft.status === 'completed' && draft.generated_cases?.length) {
+      generatedCases.value = draft.generated_cases
+    } else if (draft.status === 'failed') {
+      ElNotification({ title: '生成失败', message: draft.error || '上次生成失败，请重试', type: 'error', duration: 0 })
+    } else if (draft.status === 'completed' && !draft.generated_cases?.length) {
+      // Backend returned completed but empty — shouldn't happen after fix, but handle gracefully
+      ElNotification({ title: '生成失败', message: 'AI 未能生成有效用例，请调整目标描述后重试', type: 'error', duration: 0 })
+    }
+  } catch { /* ignore */ }
+}
+
+function startDraftPolling() {
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = setInterval(async () => {
+    try {
+      const { data } = await getGenerationDraft(props.projectId)
+      const draft = data.draft || {}
+      if (draft.progress) genProgress.value = draft.progress
+      isStuck.value = !!draft.is_stuck
+      if (draft.status === 'completed') {
+        clearInterval(pollTimer)
+        pollTimer = null
+        generatedCases.value = draft.generated_cases || []
+        generating.value = false
+        genProgress.value = ''
+        isStuck.value = false
+        if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+        if (generatedCases.value.length === 0) {
+          ElNotification({ title: '生成失败', message: '未生成任何用例，请调整目标或描述后重试', type: 'warning', duration: 0 })
+        } else {
+          ElMessage.success(`已生成 ${generatedCases.value.length} 条用例`)
+        }
+      } else if (draft.status === 'failed') {
+        clearInterval(pollTimer)
+        pollTimer = null
+        generating.value = false
+        genProgress.value = ''
+        isStuck.value = false
+        if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+        ElNotification({ title: '生成失败', message: draft.error || '生成失败', type: 'error', duration: 0 })
+      }
+    } catch { /* ignore poll errors */ }
+  }, 2000)
+}
+
+onMounted(() => {
+  // Resume in-progress generation (page refresh case)
+  if (generating.value) return
+  if (generatedCases.value.length) return
+  resumeGenerationIfNeeded()
+})
+
 onUnmounted(() => {
   if (syncTimer) clearTimeout(syncTimer)
+  if (pollTimer) clearInterval(pollTimer)
+  if (elapsedTimer) clearInterval(elapsedTimer)
 })
 // --- End auto-sync ---
+
+async function handleResetAndRetry() {
+  try {
+    await clearGenerationDraft(props.projectId)
+  } catch { /* ignore */ }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+  generating.value = false
+  isStuck.value = false
+  genProgress.value = ''
+  ElMessage.success('已重置，请重新生成')
+}
 
 async function handleGenerate() {
   if (!props.selectedItems?.length) {
     return ElMessage.warning('请先选择目标')
   }
+  // Pre-validate: check that items have enough info for generation
+  const bareItems = props.selectedItems.filter(item => !item.name && !item.path)
+  if (bareItems.length === props.selectedItems.length) {
+    return ElMessage.warning('选中的目标缺少名称或路径信息，无法生成用例')
+  }
   generating.value = true
+  generatedCases.value = []
+  genProgress.value = '正在提交生成请求...'
   elapsedSeconds.value = 0
   elapsedTimer = setInterval(() => { elapsedSeconds.value++ }, 1000)
   try {
@@ -253,35 +361,11 @@ async function handleGenerate() {
       descriptions: props.descriptions,
       precondition_id: props.preconditionId,
     })
-    // Poll generation_draft until completed or failed
-    const pollTimer = setInterval(async () => {
-      try {
-        const { data } = await getGenerationDraft(props.projectId)
-        const draft = data.draft || {}
-        if (draft.status === 'completed') {
-          clearInterval(pollTimer)
-          generatedCases.value = draft.generated_cases || []
-          generating.value = false
-          if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-          if (generatedCases.value.length === 0) {
-            ElMessage.warning('未生成任何用例，请调整目标或描述后重试')
-          } else {
-            ElMessage.success(`已生成 ${generatedCases.value.length} 条用例`)
-          }
-        } else if (draft.status === 'failed') {
-          clearInterval(pollTimer)
-          generating.value = false
-          if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-          ElMessage.error(draft.error || '生成失败')
-        }
-      } catch (e) {
-        // ignore poll errors, keep trying
-      }
-    }, 2000)
+    startDraftPolling()
   } catch (e) {
     generating.value = false
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-    ElMessage.error(e.response?.data?.error || '生成失败')
+    ElNotification({ title: '生成启动失败', message: e.response?.data?.error || '生成启动失败', type: 'error', duration: 0 })
   }
 }
 

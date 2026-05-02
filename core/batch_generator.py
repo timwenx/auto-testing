@@ -15,40 +15,30 @@ from .ai_engine import _get_client, _get_model, _load_template
 
 logger = logging.getLogger(__name__)
 
-BATCH_GENERATE_SYSTEM_PROMPT = """你是一个专业的 QA 测试工程师。你需要根据提供的代码分析结果和用户描述，批量生成高质量的测试用例。
+BATCH_GENERATE_SYSTEM_PROMPT = """你是一个专业的 QA 测试工程师。你需要根据提供的分析结果和用户描述，批量生成高质量的测试用例。
 
 ## 任务说明
 用户从代码分析中选择了若干页面/API 目标，请为每个目标生成测试用例。
-- 一个目标可能生成多条用例（正常流程、边界、异常等）
-- 每条用例必须包含完整字段
+- 一个目标生成 1-3 条用例（正常流程为主，必要时补充边界和异常）
 - 如果提供了前置条件，插入到每条用例的"前置条件"部分
-
-## 使用分析结果中的元素和参数信息
-- 当提供了**页面元素(elements)**时，测试步骤中应直接引用这些 CSS selector 进行操作描述（如「在 `#search-input` 输入用户名」），不要猜测或虚构选择器
-- 当提供了**API 参数(params)**时，请求体示例应使用这些参数名和类型
-- 如果 elements 或 params 为空或缺失，则根据页面/API 描述合理推断测试步骤
 
 ## 返回格式
 返回一个 JSON 数组（不要用 markdown 代码块包裹），每个元素包含：
 {
   "name": "用例名称（简短，用于列表展示）",
   "description": "用例描述",
-  "steps": "测试步骤（自然语言，分步骤描述，页面测试时使用提供的选择器）",
+  "steps": "测试步骤（自然语言，分步骤描述）",
   "expected_result": "预期结果",
   "priority": "P0 或 P1 或 P2",
   "test_type": "功能/边界/异常/安全",
   "feature_group": "所属功能模块（根据测试目标自动归类，如「用户登录」「订单管理」，相同功能用相同名称）",
-  "markdown_content": "完整的 Markdown 测试用例文档",
+  "markdown_content": "按模板格式生成的完整 Markdown 测试用例文档",
   "target_page_or_api": "对应的页面路径或 API 端点",
-  "source_item": "来源目标名称（便于追踪）",
+  "source_item": "来源目标名称",
   "test_context": {
     "context_type": "page 或 api",
     "path": "对应的路径",
-    "method": "HTTP方法（API类型时填写）",
-    "source_file": "来源文件",
-    "elements": ["传递该目标关联的元素列表（如有）"],
-    "params": ["传递该目标关联的参数列表（如有）"],
-    "response_fields": ["传递该目标关联的响应字段列表（如有）"]
+    "method": "HTTP方法（仅API填写）"
   }
 }
 
@@ -96,11 +86,7 @@ def _generate_batch(project, items, user_descriptions, precondition_template, te
         method = item.get('method', '')
         name = item.get('name', '')
         auto_desc = item.get('description', '')
-        source_file = item.get('source_file', '')
         feature_group = item.get('feature_group', '')
-        elements = item.get('elements', [])
-        params = item.get('params', [])
-        response_fields = item.get('response_fields', [])
 
         user_desc = user_descriptions.get(path, '')
 
@@ -111,53 +97,10 @@ def _generate_batch(project, items, user_descriptions, precondition_template, te
             desc += f"- 所属功能: {feature_group}\n"
         if method:
             desc += f"- 方法: {method}\n"
-        if source_file:
-            desc += f"- 来源文件: {source_file}\n"
         if auto_desc:
-            desc += f"- 自动分析描述: {auto_desc}\n"
-
-        # 注入页面元素信息
-        if elements:
-            desc += f"- 页面元素 ({len(elements)} 个):\n"
-            for elem in elements:
-                selector = elem.get('selector', '')
-                elem_type = elem.get('type', '')
-                label = elem.get('label', '')
-                elem_desc = elem.get('description', '')
-                desc += f"  - {selector} ({elem_type}) {label}"
-                if elem_desc:
-                    desc += f" — {elem_desc}"
-                desc += "\n"
-
-        # 注入 API 参数信息
-        if params:
-            desc += f"- 请求参数 ({len(params)} 个):\n"
-            for param in params:
-                p_name = param.get('name', '')
-                p_in = param.get('in', '')
-                p_type = param.get('type', '')
-                p_required = param.get('required', False)
-                p_desc = param.get('description', '')
-                req_mark = '必填' if p_required else '可选'
-                desc += f"  - {p_name} ({p_in}, {p_type}, {req_mark})"
-                if p_desc:
-                    desc += f" — {p_desc}"
-                desc += "\n"
-
-        # 注入 API 响应字段信息
-        if response_fields:
-            desc += f"- 响应字段 ({len(response_fields)} 个):\n"
-            for field in response_fields:
-                f_name = field.get('name', '')
-                f_type = field.get('type', '')
-                f_desc = field.get('description', '')
-                desc += f"  - {f_name} ({f_type})"
-                if f_desc:
-                    desc += f" — {f_desc}"
-                desc += "\n"
-
+            desc += f"- 描述: {auto_desc}\n"
         if user_desc:
-            desc += f"- 用户补充描述: {user_desc}\n"
+            desc += f"- 用户补充: {user_desc}\n"
         targets_desc.append(desc)
 
     targets_section = "\n".join(targets_desc)
@@ -196,17 +139,31 @@ def _generate_batch(project, items, user_descriptions, precondition_template, te
 
     logger.info("[BatchGenerator] Generating testcases for project #%s, %d items (model: %s)",
                 project.id, len(items), model)
+    print(f"[BatchGenerator] 调用 AI API: 项目#{project.id}, {len(items)} 个目标, 模型={model}")
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=8192,
-        system=BATCH_GENERATE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=16384,
+            system=BATCH_GENERATE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+    except Exception as e:
+        print(f"[BatchGenerator] AI API 调用失败: {e}")
+        logger.exception("[BatchGenerator] AI API call failed for project #%s", project.id)
+        return []
+
+    if getattr(response, 'stop_reason', None) == 'max_tokens':
+        logger.warning("[BatchGenerator] Response truncated (hit max_tokens limit, model=%s)", model)
+        print("[BatchGenerator] 警告: AI 响应被截断，尝试修复...")
+
     raw_text = response.content[0].text.strip()
+    print(f"[BatchGenerator] AI 返回 {len(raw_text)} 字符, 解析中...")
 
     # 解析 JSON
-    return _parse_testcases_response(raw_text)
+    result = _parse_testcases_response(raw_text)
+    print(f"[BatchGenerator] 解析结果: {len(result)} 条用例")
+    return result
 
 
 def generate_testcases_single(project, item, user_description, precondition=None) -> dict:
@@ -234,23 +191,61 @@ def generate_testcases_single(project, item, user_description, precondition=None
 
 
 def _parse_testcases_response(raw_text: str) -> list:
-    """从 Claude 响应中解析测试用例 JSON 数组"""
+    """从 AI 响应中解析测试用例 JSON 数组，支持截断修复"""
+    # 1. 直接解析
     try:
         result = json.loads(raw_text)
         return result if isinstance(result, list) else []
     except json.JSONDecodeError:
-        match = re.search(r'```(?:json)?\s*([\s\S]*?)```', raw_text)
-        if match:
+        pass
+
+    # 2. 从 markdown 代码块中提取（贪婪匹配，避免 markdown_content 内嵌的 ``` 截断）
+    match = re.search(r'```(?:json)?\s*([\s\S]*)```', raw_text)
+    if match:
+        try:
+            result = json.loads(match.group(1).strip())
+            return result if isinstance(result, list) else []
+        except json.JSONDecodeError:
+            pass
+
+    # 3. 提取最外层 [...]
+    match = re.search(r'\[[\s\S]*\]', raw_text)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # 4. 修复截断的 JSON（AI 输出被 max_tokens 截断导致缺少闭合括号）
+    repaired = _repair_truncated_json(raw_text)
+    if repaired is not None:
+        return repaired
+
+    logger.error("[BatchGenerator] Cannot parse testcases response (first 300): %s", raw_text[:300])
+    logger.error("[BatchGenerator] Response tail (last 200): %s", raw_text[-200:])
+    return []
+
+
+def _repair_truncated_json(text: str) -> list | None:
+    """尝试修复被截断的 JSON 数组：从最后一个完整的 } 开始截断，补上 ]"""
+    # 找到 JSON 数组起始
+    bracket_start = text.find('[')
+    if bracket_start == -1:
+        return None
+
+    array_text = text[bracket_start:]
+
+    # 策略：从后往前找每一个 }，尝试补全
+    for i in range(len(array_text) - 1, -1, -1):
+        if array_text[i] == '}':
+            candidate = array_text[:i + 1] + ']'
             try:
-                result = json.loads(match.group(1).strip())
-                return result if isinstance(result, list) else []
+                result = json.loads(candidate)
+                if isinstance(result, list) and len(result) > 0:
+                    logger.warning("[BatchGenerator] Repaired truncated JSON: recovered %d items", len(result))
+                    print(f"[BatchGenerator] 修复截断 JSON: 恢复了 {len(result)} 条用例")
+                    return result
             except json.JSONDecodeError:
-                pass
-        match = re.search(r'\[[\s\S]*\]', raw_text)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        logger.error("[BatchGenerator] Cannot parse testcases response: %s", raw_text[:500])
-        return []
+                continue
+
+    return None

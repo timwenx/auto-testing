@@ -309,15 +309,23 @@ def execute_testcase_with_agent(testcase, base_url: str, execution_id=None) -> d
             max_turns = 20
 
         # 构建 system prompt
-        system_prompt = build_test_execution_system_prompt(testcase, base_url, project)
+        system_prompt, has_context = build_test_execution_system_prompt(testcase, base_url, project)
 
-        # 初始用户消息
-        user_message = (
-            f"请执行以下测试用例:\n\n"
-            f"用例: {testcase.name}\n"
-            f"目标 URL: {base_url}\n\n"
-            f"请先探索代码理解项目，然后使用浏览器工具逐步执行测试，最后调用 report_result 报告结果。"
-        )
+        # 初始用户消息 — 根据上下文调整
+        if has_context:
+            user_message = (
+                f"请执行以下测试用例:\n\n"
+                f"用例: {testcase.name}\n"
+                f"目标 URL: {base_url}\n\n"
+                f"页面元素信息已在上方提供，请直接使用浏览器工具执行测试，最后调用 report_result 报告结果。"
+            )
+        else:
+            user_message = (
+                f"请执行以下测试用例:\n\n"
+                f"用例: {testcase.name}\n"
+                f"目标 URL: {base_url}\n\n"
+                f"请使用浏览器工具导航到目标页面，通过快照了解页面结构，逐步执行测试，最后调用 report_result 报告结果。"
+            )
         messages = [{"role": "user", "content": user_message}]
 
         # 加载 ExecutionRecord 用于实时步骤持久化
@@ -336,6 +344,7 @@ def execute_testcase_with_agent(testcase, base_url: str, execution_id=None) -> d
             testcase_id=testcase.pk,
             execution_id=execution_id,
             execution_record=execution_record,
+            has_context=has_context,
         )
         agent_result = runner.run(
             system_prompt=system_prompt,

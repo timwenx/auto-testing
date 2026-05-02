@@ -66,10 +66,13 @@
                 </div>
               </div>
             </template>
-            <el-table :data="group.records" style="width: 100%" size="small" row-key="id">
+            <el-table :data="group.records" style="width: 100%" size="small" row-key="id" @expand-change="handleExpandChange">
               <el-table-column type="expand">
                 <template #default="{ row }">
                   <div class="expand-content">
+                    <template v-if="row._loading">
+                      <div style="text-align: center; padding: 16px; color: #909399">加载中...</div>
+                    </template>
                     <template v-if="row.step_logs && row.step_logs.length">
                       <h4 class="expand-section-title">执行步骤</h4>
                       <el-timeline style="margin: 12px 0 16px">
@@ -217,8 +220,23 @@
           <el-descriptions-item label="时间">{{ logRecord.created_at }}</el-descriptions-item>
         </el-descriptions>
         <el-divider />
-        <h4>执行日志</h4>
-        <pre class="log-block">{{ logRecord.log || '暂无日志' }}</pre>
+        <template v-if="logRecord.step_logs && logRecord.step_logs.length">
+          <h4>执行步骤日志</h4>
+          <el-timeline style="margin: 12px 0">
+            <el-timeline-item v-for="step in logRecord.step_logs" :key="step.step_num" :timestamp="step.timestamp || ''" placement="top" :type="step.action === '报告结果' ? 'success' : 'primary'">
+              <div class="step-item">
+                <strong>Step {{ step.step_num }}</strong>: {{ step.action }}
+                <span v-if="step.target" class="step-target">→ {{ step.target }}</span>
+              </div>
+              <div v-if="step.result" class="step-result">{{ step.result }}</div>
+            </el-timeline-item>
+          </el-timeline>
+        </template>
+        <template v-if="logRecord.agent_response && logRecord.agent_response.response_text">
+          <h4>Agent 响应</h4>
+          <pre class="log-block agent-response">{{ logRecord.agent_response.response_text }}</pre>
+        </template>
+        <el-empty v-if="!logRecord.step_logs?.length && !logRecord.agent_response?.response_text && !logRecord.error_message" description="暂无日志数据" :image-size="48" />
         <template v-if="logRecord.error_message">
           <h4 style="color: #f56c6c; margin-top: 12px">错误信息</h4>
           <pre class="log-block error">{{ logRecord.error_message }}</pre>
@@ -236,7 +254,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getExecutions, getProjects, batchConvertScripts } from '../api'
+import { getExecutions, getExecution, getProjects, batchConvertScripts } from '../api'
 import { ElMessage } from 'element-plus'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 
@@ -277,7 +295,21 @@ const truncate = (text, len) => text ? (text.length > len ? text.slice(0, len) +
 const hasExpandContent = (row) => {
   return (row.step_logs && row.step_logs.length) || (row.screenshots && row.screenshots.length) ||
     (row.agent_response && row.agent_response.response_text) || row.error_message ||
-    (row._plan_sub_records && row._plan_sub_records.length)
+    (row._plan_sub_records && row._plan_sub_records.length) || row._loading
+}
+
+const handleExpandChange = async (row, expandedRows) => {
+  if (expandedRows.some(r => r.id === row.id) && !row.step_logs && !row._loading) {
+    row._loading = true
+    try {
+      const { data } = await getExecution(row.id)
+      row.step_logs = data.step_logs || []
+      row.screenshots = data.screenshots || []
+      row.agent_response = data.agent_response || row.agent_response
+      row.error_message = data.error_message || row.error_message
+    } catch { /* keep existing data */ }
+    finally { row._loading = false }
+  }
 }
 
 const previewImage = (path) => { previewImageUrl.value = `/api/executions/screenshots/?path=${encodeURIComponent(path)}`; showImageDialog.value = true }
@@ -345,8 +377,22 @@ const loadExecutions = async () => {
 
 onUnmounted(() => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } })
 
-const showDetail = (row) => { detailRecord.value = row; showDetailDialog.value = true }
-const showLog = (row) => { logRecord.value = row; showLogDialog.value = true }
+const showDetail = async (row) => {
+  detailRecord.value = null
+  showDetailDialog.value = true
+  try {
+    const { data } = await getExecution(row.id)
+    detailRecord.value = data
+  } catch { detailRecord.value = row }
+}
+const showLog = async (row) => {
+  logRecord.value = null
+  showLogDialog.value = true
+  try {
+    const { data } = await getExecution(row.id)
+    logRecord.value = data
+  } catch { logRecord.value = row }
+}
 const navigateToObserver = (id) => router.push({ name: 'ExecutionObserver', params: { id } })
 const navigateToReplay = (id) => router.push({ name: 'ExecutionObserver', params: { id }, query: { replay: 'true' } })
 const navigateToScriptEditor = (id) => router.push({ name: 'ScriptEditor', params: { id } })

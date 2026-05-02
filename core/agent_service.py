@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-from .agent_tools import get_tool_schemas, get_tool_executor, get_browser_tool_names
+from .agent_tools import get_tool_schemas_for_context, get_tool_executor_for_context, get_browser_tool_names
 
 logger = logging.getLogger(__name__)
 
@@ -306,11 +306,12 @@ class AgentRunner:
         result = runner.run(system_prompt="...", messages=[...], max_turns=20)
     """
 
-    def __init__(self, project, testcase_id=None, execution_id=None, execution_record=None):
+    def __init__(self, project, testcase_id=None, execution_id=None, execution_record=None, has_context=False):
         self.project = project
         self.testcase_id = testcase_id
         self.execution_id = execution_id
         self._execution_record = execution_record  # 用于实时持久化步骤到 DB
+        self.has_context = has_context
         self._playwright = None
         self._browser = None
         self._page = None
@@ -423,7 +424,7 @@ class AgentRunner:
 
         client = _get_client()
         model = _get_model()
-        tool_schemas = get_tool_schemas()
+        tool_schemas = get_tool_schemas_for_context(self.has_context)
         browser_tool_names = get_browser_tool_names()
 
         # 构建运行时 context
@@ -520,7 +521,7 @@ class AgentRunner:
                         self._ensure_browser(context)
 
                     # 执行工具
-                    executor = get_tool_executor(tool_name)
+                    executor = get_tool_executor_for_context(tool_name, self.has_context)
                     if executor is None:
                         result_text = f"Error: 未知工具 '{tool_name}'"
                     else:

@@ -1317,6 +1317,7 @@ def repo_analysis_list(request, project_id):
 @api_view(['POST'])
 def batch_generate_testcases(request, project_id):
     """POST /api/projects/<id>/batch-generate/ — 批量生成测试用例（不保存 DB）"""
+    from django.utils import timezone
     try:
         project = Project.objects.get(pk=project_id)
     except Project.DoesNotExist:
@@ -1346,6 +1347,7 @@ def batch_generate_testcases(request, project_id):
         'precondition_id': precondition_id,
         'status': 'generating',
         'step': 3,
+        'started_at': timezone.now().isoformat(),
     }
     project.save(update_fields=['generation_draft', 'updated_at'])
 
@@ -1357,33 +1359,105 @@ def batch_generate_testcases(request, project_id):
 
     def _do_generate():
         from .models import Project as _Project
-        from .batch_generator import generate_testcases_for_items
+        from .batch_generator import generate_testcases_for_items, MAX_ITEMS_PER_BATCH
         from django.db import close_old_connections
+        from django.utils import timezone as _tz
+        import math
+
+        total_items = len(_selected_items)
+        total_batches = math.ceil(total_items / MAX_ITEMS_PER_BATCH)
+
+        def _update_draft(**kwargs):
+            """Update generation draft with progress info"""
+            try:
+                close_old_connections()
+                p = _Project.objects.get(pk=_project_id)
+                draft = dict(p.generation_draft or {})
+                draft.update(kwargs)
+                p.generation_draft = draft
+                p.save(update_fields=['generation_draft', 'updated_at'])
+            except Exception:
+                pass
+
+        # ── Heartbeat: every 10s update last_heartbeat ──
+        _stop_heartbeat = threading.Event()
+
+        def _heartbeat_loop():
+            while not _stop_heartbeat.wait(10):
+                try:
+                    close_old_connections()
+                    p = _Project.objects.get(pk=_project_id)
+                    draft = dict(p.generation_draft or {})
+                    draft['last_heartbeat'] = _tz.now().isoformat()
+                    p.generation_draft = draft
+                    p.save(update_fields=['generation_draft', 'updated_at'])
+                except Exception:
+                    pass
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
+
         try:
             close_old_connections()
-            proj = _Project.objects.get(pk=_project_id)
-            prec = None
-            if _precondition_id:
-                try:
-                    prec = PreconditionTemplate.objects.get(pk=_precondition_id)
-                except PreconditionTemplate.DoesNotExist:
-                    pass
-            testcases = generate_testcases_for_items(
-                proj, _selected_items, _descriptions, prec
-            )
+            print(f"[BatchGenerate] 项目#{_project_id} 开始生成: {total_items} 个目标, {total_batches} 批")
+
+            all_testcases = []
+            for batch_idx in range(total_batches):
+                batch_start = batch_idx * MAX_ITEMS_PER_BATCH
+                batch_end = min(batch_start + MAX_ITEMS_PER_BATCH, total_items)
+                batch_items = _selected_items[batch_start:batch_end]
+                batch_num = batch_idx + 1
+
+                print(f"[BatchGenerate] 项目#{_project_id} 第 {batch_num}/{total_batches} 批 ({len(batch_items)} 个目标)...")
+                _update_draft(
+                    progress=f'正在生成第{batch_start + 1}/{total_items}个目标',
+                    current_batch=batch_num,
+                    total_batches=total_batches,
+                )
+
+                close_old_connections()
+                proj = _Project.objects.get(pk=_project_id)
+                prec = None
+                if _precondition_id:
+                    try:
+                        prec = PreconditionTemplate.objects.get(pk=_precondition_id)
+                    except PreconditionTemplate.DoesNotExist:
+                        pass
+
+                batch_result = generate_testcases_for_items(
+                    proj, batch_items, _descriptions, prec
+                )
+                all_testcases.extend(batch_result)
+                print(f"[BatchGenerate] 项目#{_project_id} 第 {batch_num} 批完成, 累计 {len(all_testcases)} 条用例")
+
+            # No retry — if generation fails, report failure directly
             close_old_connections()
             proj = _Project.objects.get(pk=_project_id)
-            proj.generation_draft = {
-                'selected_items': _selected_items,
-                'descriptions': _descriptions,
-                'precondition_id': _precondition_id,
-                'generated_cases': testcases,
-                'status': 'completed',
-                'step': 3,
-            }
+            if all_testcases:
+                print(f"[BatchGenerate] 项目#{_project_id} 生成完成: {len(all_testcases)} 条用例")
+                proj.generation_draft = {
+                    'selected_items': _selected_items,
+                    'descriptions': _descriptions,
+                    'precondition_id': _precondition_id,
+                    'generated_cases': all_testcases,
+                    'status': 'completed',
+                    'step': 3,
+                    'started_at': proj.generation_draft.get('started_at') if proj.generation_draft else None,
+                }
+            else:
+                print(f"[BatchGenerate] 项目#{_project_id} 生成失败: AI 未返回有效用例")
+                proj.generation_draft = {
+                    'selected_items': _selected_items,
+                    'descriptions': _descriptions,
+                    'precondition_id': _precondition_id,
+                    'status': 'failed',
+                    'error': 'AI 未能生成有效用例，请检查目标描述是否足够详细后重试',
+                    'step': 3,
+                }
             proj.save(update_fields=['generation_draft', 'updated_at'])
         except Exception as e:
             logger.exception("Background batch generate failed for project #%s", _project_id)
+            print(f"[BatchGenerate] 项目#{_project_id} 异常: {e}")
             try:
                 close_old_connections()
                 proj = _Project.objects.get(pk=_project_id)
@@ -1395,6 +1469,9 @@ def batch_generate_testcases(request, project_id):
                 proj.save(update_fields=['generation_draft', 'updated_at'])
             except Exception:
                 logger.exception("Failed to save error state for project #%s", _project_id)
+            finally:
+                _stop_heartbeat.set()
+                heartbeat_thread.join(timeout=2)
 
     import threading
     t = threading.Thread(target=_do_generate, daemon=True)
@@ -1460,7 +1537,32 @@ def generation_draft(request, project_id):
         return Response({'error': '项目不存在'}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == 'GET':
-        draft = project.generation_draft or {}
+        draft = dict(project.generation_draft or {})
+        # Stuck detection: if generating but heartbeat stale > 30s, mark as failed
+        if draft.get('status') == 'generating':
+            from django.utils import timezone as _tz
+            from datetime import datetime
+            is_stuck = False
+            last_hb_str = draft.get('last_heartbeat')
+            started_at_str = draft.get('started_at')
+            ref_str = last_hb_str or started_at_str
+            if ref_str:
+                try:
+                    ref_time = datetime.fromisoformat(ref_str)
+                    if hasattr(ref_time, 'tzinfo') and ref_time.tzinfo is None:
+                        from datetime import timezone as _pytz
+                        ref_time = ref_time.replace(tzinfo=_pytz.utc)
+                    elapsed = (_tz.now() - ref_time).total_seconds()
+                    is_stuck = elapsed > 30
+                except (ValueError, TypeError):
+                    pass
+            if is_stuck:
+                draft['status'] = 'failed'
+                draft['error'] = '生成进程中断（心跳超时），可能是服务重启或进程异常'
+                project.generation_draft = draft
+                project.save(update_fields=['generation_draft', 'updated_at'])
+            else:
+                draft['is_stuck'] = False
         return Response({'draft': draft})
 
     elif request.method == 'POST':
@@ -1559,7 +1661,14 @@ def project_feature_groups(request, project_id):
                 tc_list.append({
                     'id': tc.id,
                     'name': tc.name,
+                    'description': tc.description,
+                    'steps': tc.steps,
+                    'expected_result': tc.expected_result,
+                    'markdown_content': tc.markdown_content,
                     'status': tc.status,
+                    'priority': tc.priority,
+                    'test_type': tc.test_type,
+                    'feature_group': tc.feature_group,
                     'sort_order': tc.sort_order,
                     'latest_execution_status': latest_exec.status if latest_exec else None,
                     'latest_execution_id': latest_exec.id if latest_exec else None,

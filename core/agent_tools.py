@@ -1731,14 +1731,33 @@ def get_all_tools():
     return REPO_TOOLS + BROWSER_TOOLS + [REPORT_RESULT_TOOL]
 
 
+def get_tools_for_context(has_context: bool = False):
+    """Agent 执行时只使用浏览器工具 + report_result，不需要 repo 探索工具。
+    has_context 参数保留以兼容调用方，实际不再区分。"""
+    return BROWSER_TOOLS + [REPORT_RESULT_TOOL]
+
+
 def get_tool_schemas():
     """返回 Anthropic tool_use 格式的 schema 列表（仅 schema 部分）"""
     return [tool['schema'] for tool in get_all_tools()]
 
 
+def get_tool_schemas_for_context(has_context: bool = False):
+    """返回 Anthropic tool_use 格式的 schema 列表（上下文感知）。"""
+    return [tool['schema'] for tool in get_tools_for_context(has_context)]
+
+
 def get_tool_executor(tool_name):
     """根据工具名查找 execute 函数，未找到返回 None"""
     for tool in get_all_tools():
+        if tool['schema']['name'] == tool_name:
+            return tool['execute']
+    return None
+
+
+def get_tool_executor_for_context(tool_name, has_context: bool = False):
+    """根据上下文查找 execute 函数。"""
+    for tool in get_tools_for_context(has_context):
         if tool['schema']['name'] == tool_name:
             return tool['execute']
     return None
@@ -1756,7 +1775,7 @@ def get_browser_tool_names():
 _TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), 'templates', 'agent_execute_prompt.md')
 
 
-def build_test_execution_system_prompt(testcase, base_url: str, project) -> str:
+def build_test_execution_system_prompt(testcase, base_url: str, project) -> tuple:
     """
     构建 Agent 执行测试用例的 system prompt。
 
@@ -1766,7 +1785,7 @@ def build_test_execution_system_prompt(testcase, base_url: str, project) -> str:
         project: Project 对象
 
     Returns:
-        格式化后的 system prompt 字符串
+        (格式化后的 system prompt 字符串, 是否有预提取上下文 bool)
     """
     # 加载模板
     try:
@@ -1782,18 +1801,14 @@ def build_test_execution_system_prompt(testcase, base_url: str, project) -> str:
     else:
         markdown_section = ''
 
-    # 准备 repo_info
-    repo_info = ''
-    if project.repo_url:
-        repo_info = f"- Git 仓库: {project.repo_url}\n- 本地路径: {project.local_repo_path or '未克隆'}"
-
     # 准备 test_context_section
     test_context_section = _format_test_context(testcase)
+    has_context = bool(test_context_section)
 
-    return template.format(
+    prompt = template.format(
         project_name=project.name,
         base_url=base_url,
-        repo_info=repo_info,
+        repo_info='',
         testcase_name=testcase.name,
         testcase_description=testcase.description or '无描述',
         testcase_steps=testcase.steps or '无步骤',
@@ -1801,6 +1816,7 @@ def build_test_execution_system_prompt(testcase, base_url: str, project) -> str:
         markdown_section=markdown_section,
         test_context_section=test_context_section,
     )
+    return prompt, has_context
 
 
 def _format_test_context(testcase) -> str:
