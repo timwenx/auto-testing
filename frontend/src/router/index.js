@@ -32,6 +32,12 @@ const routes = [
     meta: { title: '脚本' },
   },
   {
+    path: '/scripts/:id',
+    name: 'ScriptDetail',
+    component: () => import('../views/ScriptDetail.vue'),
+    meta: { title: '脚本详情', parent: 'Scripts', parentPath: '/scripts' },
+  },
+  {
     path: '/plans',
     name: 'TestPlans',
     component: () => import('../views/TestPlanView.vue'),

@@ -118,6 +118,9 @@
                 </el-descriptions-item>
               </el-descriptions>
               <el-table ref="featureTableRef" :data="treeSelection.testcases || []" size="small" row-key="id">
+                <el-table-column width="40" align="center">
+                  <template #default><el-icon class="drag-handle" style="cursor: grab; color: #c0c4cc"><Rank /></el-icon></template>
+                </el-table-column>
                 <el-table-column prop="name" label="用例名称" min-width="180" />
                 <el-table-column prop="status" label="状态" width="80">
                   <template #default="{ row }">
@@ -527,7 +530,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
-import Sortable from 'sortablejs'
+import { Rank } from '@element-plus/icons-vue'
 import {
   getProject, updateProject, getProjectTestCases, createTestCase,
   updateTestCase, deleteTestCase,
@@ -542,6 +545,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import AgentRefineDialog from './AgentRefineDialog.vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 import FeatureTree from '../components/FeatureTree.vue'
+import { useTableSortable } from '../composables/useTableSortable'
 import RepoStatusCard from '../components/RepoStatusCard.vue'
 import CodeAnalysisPanel from '../components/CodeAnalysisPanel.vue'
 import PreconditionSelector from '../components/PreconditionSelector.vue'
@@ -566,7 +570,37 @@ const featureTreeData = ref([])
 const treeSelection = ref(null)
 const executingFeature = ref('')
 const featureTableRef = ref(null)
-let sortableInstance = null
+
+const { initSortable: initFeatureSortable, destroy: destroyFeatureSortable } = useTableSortable(
+  featureTableRef,
+  async (oldIndex, newIndex) => {
+    const rows = treeSelection.value?.testcases || []
+    const moved = rows.splice(oldIndex, 1)[0]
+    rows.splice(newIndex, 0, moved)
+    const orders = rows.map((tc, idx) => ({ id: tc.id, sort_order: idx + 1 }))
+    try {
+      await reorderTestcases(projectId, orders)
+      ElMessage.success('排序已保存')
+    } catch (e) {
+      ElMessage.error('排序保存失败')
+      await loadData()
+      const currentRawName = treeSelection.value?.rawName
+      if (currentRawName !== undefined) {
+        const group = featureTreeData.value.find(g => (g.name === '未分组' ? '' : g.name) === currentRawName)
+        if (group) treeSelection.value = { type: 'feature', label: group.name, rawName: currentRawName, count: group.count, testcases: group.testcases || [] }
+      }
+      nextTick(() => initFeatureSortable())
+    }
+  }
+)
+// Initialize sortable when feature group is selected
+watch(treeSelection, (val) => {
+  if (val?.type === 'feature') {
+    initFeatureSortable()
+  } else {
+    destroyFeatureSortable()
+  }
+})
 
 // ─── Dialog states ───
 const showCreate = ref(false)
@@ -626,18 +660,6 @@ const editPreview = computed(() => {
 
 const featureGroupSuggestions = computed(() => {
   return featureGroups.value.filter(g => g.name !== '未分组').map(g => ({ value: g.name }))
-})
-
-// Initialize sortable when feature group is selected
-watch(treeSelection, (val) => {
-  if (val?.type === 'feature') {
-    initSortable()
-  } else {
-    if (sortableInstance) {
-      sortableInstance.destroy()
-      sortableInstance = null
-    }
-  }
 })
 
 // ─── Status helpers ───
@@ -750,6 +772,9 @@ const handleExecuteAgent = async (row) => {
 }
 
 const handleExecuteAllAgent = async () => {
+  try {
+    await ElMessageBox.confirm('确认批量提交所有用例的 Agent 执行？', '批量执行', { type: 'warning' })
+  } catch { return }
   executingAllAgent.value = true
   try {
     const { data } = await executeProjectAgent(projectId)
@@ -926,51 +951,6 @@ function queryFeatureGroup(queryString, cb) {
   cb(results)
 }
 
-// ─── Drag-and-drop sort for feature group testcases ───
-function initSortable() {
-  // Destroy previous instance if any
-  if (sortableInstance) {
-    sortableInstance.destroy()
-    sortableInstance = null
-  }
-  nextTick(() => {
-    const tableRef = featureTableRef.value
-    if (!tableRef) return
-    const el = tableRef.$el
-    const tbody = el.querySelector('.el-table__body-wrapper tbody')
-    if (!tbody) return
-
-    sortableInstance = Sortable.create(tbody, {
-      animation: 150,
-      handle: '.el-table__row',
-      onEnd: async ({ oldIndex, newIndex }) => {
-        if (oldIndex === newIndex) return
-        const rows = treeSelection.value?.testcases || []
-        // Reorder the local array
-        const moved = rows.splice(oldIndex, 1)[0]
-        rows.splice(newIndex, 0, moved)
-        // Compute new sort_order values
-        const orders = rows.map((tc, idx) => ({ id: tc.id, sort_order: idx + 1 }))
-        try {
-          await reorderTestcases(projectId, orders)
-          ElMessage.success('排序已保存')
-        } catch (e) {
-          ElMessage.error('排序保存失败')
-          // Revert on failure: reload data then re-attach Sortable to fresh DOM
-          await loadData()
-          // Re-apply the current feature selection from refreshed data
-          const currentRawName = treeSelection.value?.rawName
-          if (currentRawName !== undefined) {
-            const group = featureTreeData.value.find(g => (g.name === '未分组' ? '' : g.name) === currentRawName)
-            if (group) treeSelection.value = { type: 'feature', label: group.name, rawName: currentRawName, count: group.count, testcases: group.testcases || [] }
-          }
-          nextTick(() => initSortable())
-        }
-      },
-    })
-  })
-}
-
 // ─── Wizard (code analysis) handlers ───
 function onWizardItemsSelected(items, descriptions) {
   wizardSelectedItems.value = items
@@ -1063,12 +1043,8 @@ onMounted(async () => {
   } catch { /* ignore */ }
 })
 
-// Cleanup Sortable instance on component unmount
 onUnmounted(() => {
-  if (sortableInstance) {
-    sortableInstance.destroy()
-    sortableInstance = null
-  }
+  destroyFeatureSortable()
 })
 </script>
 

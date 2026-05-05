@@ -104,7 +104,10 @@
             style="margin-left: auto;"
           />
         </div>
-        <el-table :data="script.steps" size="small" stripe border row-key="step_num">
+        <el-table ref="stepsTableRef" :data="script.steps" size="small" stripe border row-key="step_num">
+          <el-table-column width="40" align="center">
+            <template #default><el-icon class="drag-handle" style="cursor: grab; color: #c0c4cc"><Rank /></el-icon></template>
+          </el-table-column>
           <el-table-column type="expand" v-if="showAdvanced">
             <template #default="{ row }">
               <div class="step-expand">
@@ -142,12 +145,6 @@
               </template>
             </template>
           </el-table-column>
-          <el-table-column label="排序" width="80">
-            <template #default="{ $index }">
-              <el-button size="small" text :disabled="$index === 0" @click="moveStepUp($index)">&#9650;</el-button>
-              <el-button size="small" text :disabled="$index === script.steps.length - 1" @click="moveStepDown($index)">&#9660;</el-button>
-            </template>
-          </el-table-column>
           <el-table-column label="启用" width="70">
             <template #default="{ row }">
               <el-switch v-model="row.enabled" size="small" />
@@ -160,13 +157,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Rank } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
   getReplayScript, convertToScript, updateReplayScript, replayExecute,
 } from '../api'
 import { Refresh, Check, VideoPlay, Setting, List, Loading, CircleCheck } from '@element-plus/icons-vue'
+import { useTableSortable } from '../composables/useTableSortable'
 
 const route = useRoute()
 const router = useRouter()
@@ -179,6 +178,17 @@ const saving = ref(false)
 const executing = ref(false)
 const showAdvanced = ref(false)
 const paramValues = reactive({})
+const stepsTableRef = ref(null)
+
+const { initSortable: initStepsSortable, destroy: destroyStepsSortable } = useTableSortable(
+  stepsTableRef,
+  (oldIndex, newIndex) => {
+    const steps = script.value.steps
+    const [item] = steps.splice(oldIndex, 1)
+    steps.splice(newIndex, 0, item)
+    steps.forEach((s, i) => { s.step_num = i + 1 })
+  }
+)
 
 const allParamKeys = computed(() => Object.keys(script.value?.parameters || {}))
 const inputParamKeys = computed(() => allParamKeys.value.filter(k => script.value.parameters[k]?.group !== 'assertion'))
@@ -291,26 +301,6 @@ function goBack() {
   router.back()
 }
 
-function moveStepUp(index) {
-  if (index <= 0) return
-  const steps = script.value.steps
-  const [item] = steps.splice(index, 1)
-  steps.splice(index - 1, 0, item)
-  renumberSteps()
-}
-
-function moveStepDown(index) {
-  const steps = script.value.steps
-  if (index >= steps.length - 1) return
-  const [item] = steps.splice(index, 1)
-  steps.splice(index + 1, 0, item)
-  renumberSteps()
-}
-
-function renumberSteps() {
-  script.value.steps.forEach((s, i) => { s.step_num = i + 1 })
-}
-
 function deleteParam(key) {
   const defaultVal = script.value.parameters[key]?.default || ''
   // 将所有步骤中的 {{key}} 替换回字面值
@@ -345,8 +335,13 @@ function _resolveTemplateInStep(step, paramKey, literalValue) {
   }
 }
 
-onMounted(() => {
-  loadScript()
+onMounted(async () => {
+  await loadScript()
+  initStepsSortable()
+})
+
+onUnmounted(() => {
+  destroyStepsSortable()
 })
 </script>
 

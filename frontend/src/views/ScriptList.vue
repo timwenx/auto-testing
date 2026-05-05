@@ -4,40 +4,96 @@
       <template #header>
         <div class="card-header">
           <span>脚本管理</span>
-          <el-select v-model="projectFilter" placeholder="筛选项目" clearable size="small" style="width: 200px" />
+          <el-select v-model="projectFilter" placeholder="筛选项目" clearable size="small" style="width: 200px">
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
         </div>
       </template>
 
-      <el-table :data="filteredScripts" style="width: 100%" v-loading="loading">
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="project_name" label="项目" width="130" />
-        <el-table-column prop="name" label="脚本名称" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="feature_group" label="功能分组" width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.feature_group || '未分组' }}</template>
-        </el-table-column>
-        <el-table-column label="步骤数" width="80">
-          <template #default="{ row }">{{ row.script_data?.steps?.length || 0 }}</template>
-        </el-table-column>
-        <el-table-column label="参数数" width="80">
-          <template #default="{ row }">{{ Object.keys(row.script_data?.parameters || {}).length }}</template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="scriptStatusType(row.status)" size="small">{{ scriptStatusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="version" label="版本" width="60" />
-        <el-table-column prop="updated_at" label="更新时间" width="170" />
-        <el-table-column label="操作" width="240" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="editScript(row)">编辑</el-button>
-            <el-button size="small" text type="success" @click="executeScriptRow(row)">执行</el-button>
-            <el-button size="small" text type="warning" @click="addToPlan(row)">加入方案</el-button>
-            <el-button size="small" text type="danger" @click="deleteScriptModel(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-empty v-if="!loading && filteredScripts.length === 0" description="暂无脚本，可从执行记录中转换生成" />
+      <div v-loading="loading">
+        <!-- 未分组脚本：直接平铺展示，无需折叠 -->
+        <el-table
+          v-if="ungroupedScripts.length"
+          :data="ungroupedScripts"
+          style="width: 100%"
+          size="small"
+        >
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="project_name" label="项目" width="130" />
+          <el-table-column prop="name" label="脚本名称" min-width="180" show-overflow-tooltip />
+          <el-table-column label="步骤数" width="80">
+            <template #default="{ row }">{{ row.script_data?.steps?.length || 0 }}</template>
+          </el-table-column>
+          <el-table-column label="参数数" width="80">
+            <template #default="{ row }">{{ Object.keys(row.script_data?.parameters || {}).length }}</template>
+          </el-table-column>
+          <el-table-column prop="status" label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="scriptStatusType(row.status)" size="small">{{ scriptStatusLabel(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="version" label="版本" width="60" />
+          <el-table-column prop="updated_at" label="更新时间" width="170" />
+          <el-table-column label="操作" width="240" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" text type="primary" @click="editScript(row)">编辑</el-button>
+              <el-button size="small" text type="success" @click="executeScriptRow(row)">执行</el-button>
+              <el-button size="small" text type="warning" @click="addToPlan(row)">加入方案</el-button>
+              <el-button size="small" text type="danger" @click="deleteScriptModel(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <!-- 分组脚本：el-collapse 折叠面板 -->
+        <el-collapse v-model="expandedGroups" v-if="groupedScripts.length" :class="{ 'has-top-spacing': ungroupedScripts.length }">
+          <el-collapse-item
+            v-for="group in groupedScripts"
+            :key="group.name"
+            :name="group.name"
+          >
+            <template #title>
+              <div class="group-header" @click.stop>
+                <div class="group-header-left">
+                  <el-icon style="margin-right: 6px"><Folder /></el-icon>
+                  <span class="group-name">{{ group.name }}</span>
+                  <el-tag size="small" type="info" style="margin-left: 8px">{{ group.count }} 条</el-tag>
+                  <el-tag v-if="group.active" size="small" type="success" style="margin-left: 4px">{{ group.active }} 活跃</el-tag>
+                  <el-tag v-if="group.draft" size="small" type="warning" style="margin-left: 4px">{{ group.draft }} 草稿</el-tag>
+                  <el-tag v-if="group.archived" size="small" type="info" style="margin-left: 4px">{{ group.archived }} 已归档</el-tag>
+                </div>
+              </div>
+            </template>
+            <el-table :data="group.scripts" style="width: 100%" size="small">
+              <el-table-column prop="id" label="ID" width="60" />
+              <el-table-column prop="project_name" label="项目" width="130" />
+              <el-table-column prop="name" label="脚本名称" min-width="180" show-overflow-tooltip />
+              <el-table-column label="步骤数" width="80">
+                <template #default="{ row }">{{ row.script_data?.steps?.length || 0 }}</template>
+              </el-table-column>
+              <el-table-column label="参数数" width="80">
+                <template #default="{ row }">{{ Object.keys(row.script_data?.parameters || {}).length }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="90">
+                <template #default="{ row }">
+                  <el-tag :type="scriptStatusType(row.status)" size="small">{{ scriptStatusLabel(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="version" label="版本" width="60" />
+              <el-table-column prop="updated_at" label="更新时间" width="170" />
+              <el-table-column label="操作" width="240" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" text type="primary" @click="editScript(row)">编辑</el-button>
+                  <el-button size="small" text type="success" @click="executeScriptRow(row)">执行</el-button>
+                  <el-button size="small" text type="warning" @click="addToPlan(row)">加入方案</el-button>
+                  <el-button size="small" text type="danger" @click="deleteScriptModel(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-collapse-item>
+        </el-collapse>
+
+        <el-empty v-if="!loading && ungroupedScripts.length === 0 && groupedScripts.length === 0" description="暂无脚本，可从执行记录中转换生成" />
+      </div>
     </el-card>
 
     <!-- 参数填写弹窗 -->
@@ -85,37 +141,15 @@
       </template>
     </el-dialog>
 
-    <!-- 编辑脚本弹窗 -->
-    <el-dialog v-model="showEditDialog" title="编辑脚本" width="600px">
-      <el-form :model="editForm" label-width="80px" size="small">
-        <el-form-item label="脚本名称"><el-input v-model="editForm.name" /></el-form-item>
-        <el-form-item label="功能分组">
-          <el-autocomplete v-model="editForm.feature_group" :fetch-suggestions="queryFeatureGroups" placeholder="输入或选择功能分组" clearable />
-        </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="editForm.status">
-            <el-option label="草稿" value="draft" />
-            <el-option label="活跃" value="active" />
-            <el-option label="已归档" value="archived" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="脚本数据">
-          <el-input v-model="editForm.script_data_str" type="textarea" :rows="10" placeholder="JSON 格式脚本内容" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showEditDialog = false">取消</el-button>
-        <el-button type="primary" @click="confirmEdit" :loading="editLoading">保存</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { Folder } from '@element-plus/icons-vue'
 import {
-  getScripts, getProjects, updateScript, deleteScript as deleteScriptApi,
+  getScripts, getProjects, deleteScript as deleteScriptApi,
   executeScript, getPlans, addPlanItem,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -126,6 +160,7 @@ const scripts = ref([])
 const projects = ref([])
 const loading = ref(false)
 const projectFilter = ref(null)
+const expandedGroups = ref([])
 
 const showParamDialog = ref(false)
 const paramRow = ref(null)
@@ -138,14 +173,38 @@ const planLoading = ref(false)
 const selectedPlanId = ref(null)
 let pendingScriptForPlan = null
 
-const showEditDialog = ref(false)
-const editForm = ref({ name: '', feature_group: '', status: 'active', script_data_str: '' })
-const editLoading = ref(false)
-let editingScriptId = null
-
-const filteredScripts = computed(() => {
+// 按项目筛选后的完整列表
+const projectFilteredScripts = computed(() => {
   if (!projectFilter.value) return scripts.value
   return scripts.value.filter(s => s.project === projectFilter.value)
+})
+
+// 未分组脚本（feature_group 为空）
+const ungroupedScripts = computed(() => {
+  return projectFilteredScripts.value.filter(s => !s.feature_group)
+})
+
+// 按功能点分组的脚本
+const groupedScripts = computed(() => {
+  const groups = {}
+  const order = []
+
+  for (const script of projectFilteredScripts.value) {
+    if (!script.feature_group) continue
+    const groupName = script.feature_group
+
+    if (!groups[groupName]) {
+      groups[groupName] = { name: groupName, scripts: [], count: 0, active: 0, draft: 0, archived: 0 }
+      order.push(groupName)
+    }
+    groups[groupName].scripts.push(script)
+    groups[groupName].count++
+    if (script.status === 'active') groups[groupName].active++
+    else if (script.status === 'draft') groups[groupName].draft++
+    else if (script.status === 'archived') groups[groupName].archived++
+  }
+
+  return order.map(name => groups[name])
 })
 
 const paramKeys = computed(() =>
@@ -174,6 +233,9 @@ async function loadScripts() {
     if (projectFilter.value) params.project = projectFilter.value
     const { data } = await getScripts(params)
     scripts.value = data.scripts || data.results || data
+
+    // 自动展开所有分组
+    expandedGroups.value = groupedScripts.value.map(g => g.name)
   } finally { loading.value = false }
 }
 
@@ -183,29 +245,7 @@ async function loadProjects() {
 }
 
 function editScript(row) {
-  editingScriptId = row.id
-  editForm.value = {
-    name: row.name,
-    feature_group: row.feature_group,
-    status: row.status,
-    script_data_str: JSON.stringify(row.script_data || {}, null, 2),
-  }
-  showEditDialog.value = true
-}
-
-async function confirmEdit() {
-  editLoading.value = true
-  try {
-    let scriptData
-    try { scriptData = JSON.parse(editForm.value.script_data_str) } catch { ElMessage.error('脚本数据不是有效的 JSON'); return }
-    await updateScript(editingScriptId, {
-      name: editForm.value.name, feature_group: editForm.value.feature_group,
-      status: editForm.value.status, script_data: scriptData,
-    })
-    ElMessage.success('脚本已更新')
-    showEditDialog.value = false
-    await loadScripts()
-  } catch (e) { ElMessage.error(e.response?.data?.error || '更新失败') } finally { editLoading.value = false }
+  router.push(`/scripts/${row.id}`)
 }
 
 function executeScriptRow(row) {
@@ -235,7 +275,6 @@ async function addToPlan(row) {
   showPlanDialog.value = true
   planLoading.value = true
   try {
-    // Filter plans by the script's project
     const params = {}
     if (row.project) params.project = row.project
     const { data } = await getPlans(params)
@@ -263,14 +302,14 @@ async function deleteScriptModel(row) {
   } catch { /* cancelled */ }
 }
 
-function queryFeatureGroups(query, cb) {
-  const groups = [...new Set(scripts.value.map(s => s.feature_group).filter(Boolean))]
-  cb(groups.filter(g => g.includes(query)).map(g => ({ value: g })))
-}
-
 onMounted(async () => { await Promise.all([loadScripts(), loadProjects()]) })
 </script>
 
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+.group-header { display: flex; justify-content: space-between; align-items: center; width: 100%; padding-right: 16px; }
+.group-header-left { display: flex; align-items: center; }
+.group-name { font-weight: 600; font-size: 14px; }
+.has-top-spacing { margin-top: 16px; }
+:deep(.el-collapse-item__header) { height: auto !important; min-height: 48px; padding: 8px 0; line-height: 1.5; }
 </style>

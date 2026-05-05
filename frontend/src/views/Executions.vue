@@ -163,6 +163,7 @@
 
     <!-- 详情弹窗 -->
     <el-dialog v-model="showDetailDialog" title="执行详情" width="800px" top="5vh">
+      <div v-loading="!detailRecord" style="min-height: 100px">
       <template v-if="detailRecord">
         <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; gap: 8px;" v-if="detailRecord.status === 'running' || (['agent', 'replay'].includes(detailRecord.execution_mode) && isTerminalStatus(detailRecord.status))">
           <el-button v-if="detailRecord.status === 'running'" type="primary" size="small" @click="navigateToObserver(detailRecord.id); showDetailDialog = false">
@@ -208,10 +209,12 @@
           <pre class="log-block error">{{ detailRecord.error_message }}</pre>
         </template>
       </template>
+      </div>
     </el-dialog>
 
     <!-- 日志弹窗 -->
     <el-dialog v-model="showLogDialog" title="执行日志" width="700px">
+      <div v-loading="!logRecord" style="min-height: 100px">
       <template v-if="logRecord">
         <el-descriptions :column="2" border size="small" style="margin-bottom: 16px">
           <el-descriptions-item label="用例">{{ logRecord.testcase_name || '-' }}</el-descriptions-item>
@@ -242,6 +245,7 @@
           <pre class="log-block error">{{ logRecord.error_message }}</pre>
         </template>
       </template>
+      </div>
     </el-dialog>
 
     <!-- 图片预览 -->

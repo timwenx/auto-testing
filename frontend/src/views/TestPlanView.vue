@@ -97,35 +97,21 @@
         <!-- 方案子项列表 -->
         <div style="margin-bottom: 16px">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px">
-            <h4 style="margin: 0">方案子项</h4>
+            <h4 style="margin: 0">方案脚本</h4>
             <el-button size="small" @click="showAddItem = true">
-              <el-icon><Plus /></el-icon> 添加子项
+              <el-icon><Plus /></el-icon> 添加脚本
             </el-button>
           </div>
-          <el-table :data="planItems" size="small" empty-text="暂无子项" row-key="id">
+          <el-table ref="planItemsTableRef" :data="planItems" size="small" empty-text="暂无子项" row-key="id">
+            <el-table-column width="40" align="center">
+              <template #default><el-icon class="drag-handle" style="cursor: grab; color: #c0c4cc"><Rank /></el-icon></template>
+            </el-table-column>
             <el-table-column prop="sort_order" label="序号" width="60" />
-            <el-table-column prop="item_type" label="类型" width="110">
-              <template #default="{ row }">
-                <el-tag
-                  :type="row.item_type === 'script' ? '' : row.item_type === 'agent_testcase' ? 'success' : 'warning'"
-                  size="small"
-                >
-                  {{ row.item_type === 'script' ? '脚本' : row.item_type === 'agent_testcase' ? 'Agent用例' : '功能分组' }}
-                </el-tag>
-              </template>
+            <el-table-column label="功能点" width="140">
+              <template #default="{ row }">{{ row.script_feature_group || '-' }}</template>
             </el-table-column>
-            <el-table-column label="名称" min-width="200">
-              <template #default="{ row }">
-                <span v-if="row.item_type === 'script'">{{ row.script_name || '-' }}</span>
-                <span v-else-if="row.item_type === 'agent_testcase'">{{ row.testcase_name || '-' }}</span>
-                <span v-else>{{ row.feature_group_name || '-' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="排序" width="100">
-              <template #default="{ row, $index }">
-                <el-button size="small" text :disabled="$index === 0" @click="handleItemMoveUp($index)">↑</el-button>
-                <el-button size="small" text :disabled="$index === planItems.length - 1" @click="handleItemMoveDown($index)">↓</el-button>
-              </template>
+            <el-table-column label="脚本名称" min-width="200">
+              <template #default="{ row }">{{ row.script_name || '-' }}</template>
             </el-table-column>
             <el-table-column label="操作" width="80">
               <template #default="{ row }">
@@ -195,35 +181,26 @@
       </template>
     </el-dialog>
 
-    <!-- 添加子项对话框 -->
-    <el-dialog v-model="showAddItem" title="添加子项" width="500px">
-      <el-form :model="addItemForm" label-width="80px">
-        <el-form-item label="类型">
-          <el-radio-group v-model="addItemForm.item_type">
-            <el-radio value="script">脚本</el-radio>
-            <el-radio value="feature_group">功能分组</el-radio>
-            <el-radio value="agent_testcase">Agent用例</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="addItemForm.item_type === 'script'" label="选择脚本">
-          <el-select v-model="addItemForm.script_id" placeholder="选择脚本" style="width: 100%" filterable>
-            <el-option v-for="s in availableScripts" :key="s.id" :label="s.name" :value="s.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="addItemForm.item_type === 'agent_testcase'" label="选择用例">
-          <el-select v-model="addItemForm.testcase_id" placeholder="选择测试用例" style="width: 100%" filterable>
-            <el-option v-for="tc in availableTestcases" :key="tc.id" :label="tc.name" :value="tc.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="addItemForm.item_type === 'feature_group'" label="功能分组">
-          <el-select v-model="addItemForm.feature_group_name" placeholder="选择功能分组" style="width: 100%" filterable allow-create>
-            <el-option v-for="g in scriptFeatureGroups" :key="g.name" :label="`${g.name} (${g.count})`" :value="g.name" />
-          </el-select>
-        </el-form-item>
-      </el-form>
+    <!-- 添加脚本对话框 -->
+    <el-dialog v-model="showAddItem" title="选择脚本" width="500px">
+      <div v-if="availableScripts.length === 0" style="text-align: center; color: #909399; padding: 24px 0">
+        当前项目暂无可用脚本
+      </div>
+      <el-tree
+        v-else
+        ref="scriptTreeRef"
+        :data="scriptTreeData"
+        show-checkbox
+        node-key="value"
+        default-expand-all
+        :props="{ label: 'label', children: 'children', disabled: 'disabled' }"
+        style="max-height: 400px; overflow-y: auto"
+      />
       <template #footer>
         <el-button @click="showAddItem = false">取消</el-button>
-        <el-button type="primary" @click="handleAddItem" :loading="addingItem">添加</el-button>
+        <el-button type="primary" @click="handleAddItem" :loading="addingItem" :disabled="!checkedScriptIds.length">
+          添加 ({{ checkedScriptIds.length }})
+        </el-button>
       </template>
     </el-dialog>
 
@@ -355,14 +332,16 @@
 
 <script setup>
 import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { Rank } from '@element-plus/icons-vue'
 import {
   getPlans, createPlan, getPlan, updatePlan, deletePlan,
   addPlanItem, deletePlanItem, regeneratePlanToken, reorderPlanItems,
   executePlan, getPlanExecutions, getPlanExecution, getPlanExecutionStatus,
   getPlanParameters,
-  getScripts, getScriptFeatureGroups, getProjects, getProjectTestCases,
+  getScripts, getProjects,
 } from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useTableSortable } from '../composables/useTableSortable'
 
 const plans = ref([])
 const selectedPlan = ref(null)
@@ -370,8 +349,6 @@ const planItems = ref([])
 const planExecutions = ref([])
 const projects = ref([])
 const availableScripts = ref([])
-const scriptFeatureGroups = ref([])
-const availableTestcases = ref([])
 const loadingPlans = ref(false)
 const loadingExecutions = ref(false)
 const loadingExecDetail = ref(false)
@@ -390,9 +367,20 @@ const paramEditValues = reactive({})
 const planSearch = ref('')
 
 let pollTimer = null
+const planItemsTableRef = ref(null)
+const scriptTreeRef = ref(null)
+
+const { initSortable: initPlanItemSortable, destroy: destroyPlanItemSortable } = useTableSortable(
+  planItemsTableRef,
+  async (oldIndex, newIndex) => {
+    const reordered = [...planItems.value]
+    const [moved] = reordered.splice(oldIndex, 1)
+    reordered.splice(newIndex, 0, moved)
+    await persistReorder(reordered)
+  }
+)
 
 const planForm = ref({ project: null, name: '', description: '' })
-const addItemForm = ref({ item_type: 'script', script_id: null, testcase_id: null, feature_group_name: '' })
 
 const apiUrl = window.location.origin
 
@@ -402,6 +390,39 @@ const filteredPlans = computed(() => {
   return plans.value.filter(p =>
     p.name.toLowerCase().includes(q) || (p.project_name || '').toLowerCase().includes(q)
   )
+})
+
+// 按功能点分组的脚本树形数据
+const scriptTreeData = computed(() => {
+  const groups = {}
+  const order = []
+  const ungrouped = []
+
+  for (const s of availableScripts.value) {
+    if (s.feature_group) {
+      if (!groups[s.feature_group]) {
+        groups[s.feature_group] = []
+        order.push(s.feature_group)
+      }
+      groups[s.feature_group].push({ value: s.id, label: s.name })
+    } else {
+      ungrouped.push({ value: s.id, label: s.name })
+    }
+  }
+
+  const result = []
+  for (const name of order) {
+    result.push({ value: `group:${name}`, label: name, children: groups[name] })
+  }
+  result.push(...ungrouped)
+  return result
+})
+
+// 获取树中勾选的脚本 ID（排除分组节点）
+const checkedScriptIds = computed(() => {
+  if (!scriptTreeRef.value) return []
+  const checked = scriptTreeRef.value.getCheckedNodes(false, true)
+  return checked.filter(n => !n.children).map(n => n.value)
 })
 
 const tokenDisplay = computed(() => {
@@ -465,14 +486,8 @@ async function loadExecutions() {
 
 async function loadScriptsForProject(projectId) {
   try {
-    const [scriptsRes, groupsRes, testcasesRes] = await Promise.all([
-      getScripts({ project: projectId, status: 'active' }),
-      getScriptFeatureGroups(projectId),
-      getProjectTestCases(projectId),
-    ])
-    availableScripts.value = scriptsRes.data.scripts || scriptsRes.data.results || scriptsRes.data || []
-    scriptFeatureGroups.value = groupsRes.data.groups || []
-    availableTestcases.value = testcasesRes.data.results || testcasesRes.data || []
+    const { data } = await getScripts({ project: projectId, status: 'active' })
+    availableScripts.value = data.scripts || data.results || data || []
   } catch { /* ignore */ }
 }
 
@@ -524,28 +539,17 @@ async function handleDeletePlan() {
 }
 
 async function handleAddItem() {
-  if (!selectedPlan.value) return
+  if (!selectedPlan.value || !checkedScriptIds.value.length) return
   addingItem.value = true
   try {
-    await addPlanItem(selectedPlan.value.id, addItemForm.value)
-    ElMessage.success('子项已添加')
+    const planId = selectedPlan.value.id
+    for (const scriptId of checkedScriptIds.value) {
+      await addPlanItem(planId, { item_type: 'script', script_id: scriptId })
+    }
+    ElMessage.success(`已添加 ${checkedScriptIds.value.length} 个脚本`)
     showAddItem.value = false
     await selectPlan(selectedPlan.value)
   } catch (e) { ElMessage.error(e.response?.data?.error || '添加失败') } finally { addingItem.value = false }
-}
-
-async function handleItemMoveUp(index) {
-  if (index <= 0 || !selectedPlan.value) return
-  const reordered = [...planItems.value]
-  ;[reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]]
-  await persistReorder(reordered)
-}
-
-async function handleItemMoveDown(index) {
-  if (index >= planItems.value.length - 1 || !selectedPlan.value) return
-  const reordered = [...planItems.value]
-  ;[reordered[index], reordered[index + 1]] = [reordered[index + 1], reordered[index]]
-  await persistReorder(reordered)
 }
 
 async function persistReorder(reordered) {
@@ -555,6 +559,13 @@ async function persistReorder(reordered) {
     planItems.value = reordered.map((item, i) => ({ ...item, sort_order: i + 1 }))
   } catch (e) { ElMessage.error(e.response?.data?.error || '排序失败') }
 }
+
+// Re-attach sortable when plan items change
+watch(planItems, () => {
+  if (planItems.value.length > 0 && selectedPlan.value) {
+    initPlanItemSortable()
+  }
+})
 
 async function handleRemoveItem(item) {
   await ElMessageBox.confirm('确认移除该子项？', '提示', { type: 'warning' })
@@ -658,7 +669,10 @@ function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
-onUnmounted(() => stopPolling())
+onUnmounted(() => {
+  stopPolling()
+  destroyPlanItemSortable()
+})
 
 async function handleRegenerateToken() {
   if (!selectedPlan.value) return
@@ -699,8 +713,6 @@ async function viewExecutionDetail(exec) {
 
 watch(showAddItem, async (val) => {
   if (val && selectedPlan.value?.project) {
-    // 先重置表单，避免异步加载完成后覆盖用户已选择的 item_type
-    addItemForm.value = { item_type: 'script', script_id: null, testcase_id: null, feature_group_name: '' }
     await loadScriptsForProject(selectedPlan.value.project)
   }
 })
