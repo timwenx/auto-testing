@@ -65,6 +65,7 @@ export const batchDeleteExecutions = (data) => api.delete('/executions/batch-del
 export const getExecutionSteps = (id) => api.get(`/executions/${id}/steps/`)
 export const executeTestCaseAgent = (testcaseId) => aiApi.post(`/testcases/${testcaseId}/execute-agent/`)
 export const executeProjectAgent = (projectId) => aiApi.post(`/projects/${projectId}/execute-agent/`)
+export const cancelExecution = (id) => aiApi.post(`/executions/${id}/cancel/`)
 
 // ─── 脚本回放 ───
 export const convertToScript = (id) => aiApi.post(`/executions/${id}/convert-script/`)

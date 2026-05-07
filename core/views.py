@@ -523,6 +523,25 @@ def serve_screenshot(request):
 
 
 @api_view(['POST'])
+def execution_cancel(request, pk):
+    """取消正在运行的 Agent 执行"""
+    from .agent_service import cancel_runner
+    try:
+        record = ExecutionRecord.objects.get(pk=pk)
+    except ExecutionRecord.DoesNotExist:
+        return Response({'error': '执行记录不存在'}, status=status.HTTP_404_NOT_FOUND)
+    if record.status != 'running':
+        return Response({'error': f'执行状态为 {record.status}，无法取消'}, status=status.HTTP_400_BAD_REQUEST)
+    success = cancel_runner(pk)
+    if success:
+        record.status = 'cancelled'
+        record.error_message = '用户取消执行'
+        record.save(update_fields=['status', 'error_message'])
+        return Response({'status': 'cancelled', 'message': '取消请求已发送'})
+    return Response({'error': '未找到运行中的 Agent 进程'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST'])
 def execute_testcase_agent(request, testcase_id):
     """通过 Agent 模式执行单个测试用例"""
     try:
