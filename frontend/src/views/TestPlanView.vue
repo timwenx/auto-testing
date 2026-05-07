@@ -75,7 +75,10 @@
               </div>
               <div class="api-field">
                 <label>带参数执行:</label>
-                <code class="code-block">curl -X POST {{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/ -H "X-Plan-Token: {{ selectedPlan.api_token }}" -H "Content-Type: application/json" -d '{"parameter_overrides": {"param_xxx": "值"}}'</code>
+                <div style="flex: 1">
+                  <code class="code-block">curl -X POST {{ apiUrl }}/api/plans/{{ selectedPlan.id }}/execute/ -H "X-Plan-Token: {{ selectedPlan.api_token }}" -H "Content-Type: application/json" -d '{{ curlParamExample }}'</code>
+                </div>
+                <el-button size="small" text @click="copyCurlWithParams">复制</el-button>
               </div>
               <div class="api-field">
                 <label>同步执行:</label>
@@ -431,6 +434,31 @@ const tokenDisplay = computed(() => {
   return t.length > 12 ? t.slice(0, 8) + '****' + t.slice(-4) : t
 })
 
+const curlParamExample = computed(() => {
+  if (!apiParamEntries.value.length) {
+    return '{"parameter_overrides": {}}'
+  }
+  const overrides = {}
+  for (const [pname, pinfo] of apiParamEntries.value.slice(0, 5)) {
+    overrides[pname] = pinfo.default || '值'
+  }
+  const suffix = apiParamEntries.value.length > 5 ? '  // ... 更多参数省略' : ''
+  return JSON.stringify({ parameter_overrides: overrides }) + suffix
+})
+
+const apiParamEntries = ref([])
+
+async function loadApiParams() {
+  if (!selectedPlan.value) return
+  try {
+    const { data } = await getPlanParameters(selectedPlan.value.id)
+    const params = data.parameters || {}
+    apiParamEntries.value = Object.entries(params).filter(([, v]) => v.group !== 'assertion')
+  } catch {
+    apiParamEntries.value = []
+  }
+}
+
 // Parameter dialog computed
 const inputParamEntries = computed(() => {
   if (!planParams.value?.parameters) return []
@@ -471,7 +499,7 @@ async function selectPlan(plan) {
     const { data } = await getPlan(plan.id)
     selectedPlan.value = data
     planItems.value = data.items || []
-    await loadExecutions()
+    await Promise.all([loadExecutions(), loadApiParams()])
   } catch { ElMessage.error('加载方案失败') }
 }
 
@@ -697,6 +725,17 @@ function copyCurlExec() {
 
 function copyCurlSync() {
   const cmd = `curl -X POST "${apiUrl}/api/plans/${selectedPlan.value.id}/execute/?sync=true" -H "X-Plan-Token: ${selectedPlan.value.api_token}"`
+  navigator.clipboard.writeText(cmd)
+  ElMessage.success('已复制')
+}
+
+function copyCurlWithParams() {
+  const overrides = {}
+  for (const [pname, pinfo] of apiParamEntries.value) {
+    overrides[pname] = pinfo.default || '值'
+  }
+  const body = JSON.stringify({ parameter_overrides: overrides })
+  const cmd = `curl -X POST ${apiUrl}/api/plans/${selectedPlan.value.id}/execute/ -H "X-Plan-Token: ${selectedPlan.value.api_token}" -H "Content-Type: application/json" -d '${body}'`
   navigator.clipboard.writeText(cmd)
   ElMessage.success('已复制')
 }
