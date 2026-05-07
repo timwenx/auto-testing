@@ -2,20 +2,21 @@
   <div class="browser-view" :class="{ 'pip-mode': pip, 'fullscreen-mode': fullscreen }">
     <!-- 画面区 -->
     <div class="frame-wrapper">
-      <transition name="fade" mode="out-in">
+      <div class="frame-stack" style="position:relative;width:100%;height:100%">
         <img
           v-if="frameSrc && !imgError"
-          :key="frameKey"
           :src="frameSrc"
           alt="Browser frame"
           class="browser-frame"
+          :class="{ 'frame-fade-in': true }"
           @error="imgError = true"
+          style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;"
         />
-        <div v-else class="frame-placeholder">
+        <div v-if="!frameSrc || imgError" class="frame-placeholder">
           <el-icon :size="32" :color="placeholderIconColor" :class="{ 'is-loading': placeholderLoading }"><Loading /></el-icon>
           <span>{{ placeholderText }}</span>
         </div>
-      </transition>
+      </div>
     </div>
 
     <!-- 控制栏 -->
@@ -213,7 +214,16 @@ const placeholderIconColor = computed(() => {
   color: var(--el-text-color-placeholder);
 }
 
-/* 帧切换过渡 */
+/* 帧切换过渡 — 交叉淡入，消除黑闪 */
+.frame-fade-in {
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.15s ease;

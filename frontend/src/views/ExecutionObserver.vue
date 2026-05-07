@@ -11,6 +11,16 @@
       </el-page-header>
       <div class="header-actions">
         <el-button
+          v-if="status === 'running' && !replayMode"
+          size="small"
+          type="danger"
+          @click="handleCancel"
+          :loading="cancelling"
+        >
+          <el-icon><Close /></el-icon>
+          取消执行
+        </el-button>
+        <el-button
           v-if="canReplay && !replayMode"
           size="small"
           type="primary"
@@ -29,6 +39,12 @@
         </el-button>
       </div>
     </div>
+
+    <!-- WebSocket 断线提示 -->
+    <el-alert v-if="error" type="error" :closable="false" show-icon style="margin: 0 16px">
+      {{ error }}
+      <el-button size="small" @click="connect" style="margin-left: 8px">重新连接</el-button>
+    </el-alert>
 
     <!-- 回放模式 -->
     <ExecutionReplay v-if="replayMode" :execution-id="executionId" />
@@ -108,7 +124,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getExecution, getExecutionSteps } from '../api'
+import { getExecution, getExecutionSteps, cancelExecution } from '../api'
 import { useExecutionObserver } from '../composables/useExecutionObserver'
 import { useFrameObserver } from '../composables/useFrameObserver'
 import ExecutionTimeline from '../components/ExecutionTimeline.vue'
@@ -118,6 +134,7 @@ import BrowserView from '../components/BrowserView.vue'
 import ExecutionReplay from '../components/ExecutionReplay.vue'
 import ScreenshotGallery from '../components/ScreenshotGallery.vue'
 import { VideoPlay, Monitor } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
@@ -161,6 +178,7 @@ const selectedStepIdx = ref(-1)
 const pipMode = ref(false)
 const fullscreenMode = ref(false)
 const lastRestepCount = ref(0) // 追踪上次 REST 回填的步骤数
+const cancelling = ref(false)
 const selectedStep = computed(() => {
   if (selectedStepIdx.value >= 0 && selectedStepIdx.value < steps.value.length) {
     return steps.value[selectedStepIdx.value]
@@ -212,6 +230,22 @@ watch(steps, (newSteps) => {
 
 function goBack() {
   router.back()
+}
+
+async function handleCancel() {
+  cancelling.value = true
+  try {
+    await cancelExecution(executionId.value)
+    ElMessage.success('取消请求已发送')
+    if (executionInfo.value) {
+      executionInfo.value = { ...executionInfo.value, status: 'cancelled' }
+    }
+    disconnect()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.error || '取消失败')
+  } finally {
+    cancelling.value = false
+  }
 }
 
 // 断线重连后 REST 补齐：当 WebSocket 重新连接时，拉取步骤补齐中间丢失的

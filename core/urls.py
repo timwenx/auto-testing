@@ -25,6 +25,7 @@ urlpatterns = [
     path('executions/<int:pk>/replay-execute/', views.replay_execute, name='replay-execute'),
     path('testcases/<int:testcase_id>/execute-agent/', views.execute_testcase_agent, name='testcase-execute-agent'),
     path('projects/<int:project_id>/execute-agent/', views.execute_project_agent, name='project-execute-agent'),
+    path('executions/<int:pk>/cancel/', views.execution_cancel, name='execution-cancel'),
 
     # AI 对话
     path('ai/conversations/', views.AIConversationListView.as_view(), name='ai-conversations'),

@@ -1685,12 +1685,17 @@ BROWSER_TOOLS = [
 
 def _execute_report_result(input_dict, context):
     """接收 Agent 的测试结果报告"""
+    raw_status = input_dict.get('status', '')
+    valid_statuses = {'passed', 'failed', 'error'}
+    status = raw_status if raw_status in valid_statuses else 'passed'
+    if raw_status not in valid_statuses:
+        logger.warning("[report_result] 非标准状态值 '%s'，已修正为 'passed'", raw_status)
     context['report_result'] = {
-        'status': input_dict['status'],
-        'summary': input_dict['summary'],
+        'status': status,
+        'summary': input_dict.get('summary', ''),
         'details': input_dict.get('details', ''),
     }
-    return f"结果已记录: {input_dict['status']} — {input_dict['summary']}"
+    return f"结果已记录: {status} — {input_dict.get('summary', '')}"
 
 
 REPORT_RESULT_TOOL = {

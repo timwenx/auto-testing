@@ -15,10 +15,37 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timezone as dt_timezone
 
 from .agent_tools import get_tool_schemas_for_context, get_tool_executor_for_context, get_browser_tool_names
 
 logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════
+# 全局 Agent 运行时注册表 — 支持取消执行
+# ══════════════════════════════════════════════════════════════════
+_active_runners: dict[int, 'AgentRunner'] = {}
+_active_runners_lock = threading.Lock()
+
+
+def register_runner(execution_id: int, runner: 'AgentRunner'):
+    with _active_runners_lock:
+        _active_runners[execution_id] = runner
+
+
+def unregister_runner(execution_id: int):
+    with _active_runners_lock:
+        _active_runners.pop(execution_id, None)
+
+
+def cancel_runner(execution_id: int) -> bool:
+    """取消指定执行 ID 的 Agent 运行。返回 True 表示成功发起取消。"""
+    with _active_runners_lock:
+        runner = _active_runners.get(execution_id)
+    if runner is None:
+        return False
+    runner._cancel_event.set()
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -322,6 +349,10 @@ class AgentRunner:
         self._total_output_tokens = 0
         # 是否有浏览器工具被调用过（用于决定是否需要清理）
         self._browser_used = False
+        # 取消事件 — 外部调用 cancel_runner() 设置此事件
+        self._cancel_event = threading.Event()
+        # 整体超时（秒），默认 10 分钟
+        self._timeout_seconds = 600
 
     def _auto_screenshot(self, context, step_num):
         """浏览器工具执行后自动截图，保存到 media/{execution_id}/step_{n}.png
@@ -438,11 +469,29 @@ class AgentRunner:
 
         response_text = ''
         turn = 0
+        run_start_time = time.time()
+
+        # 注册到全局运行时注册表（支持外部取消）
+        if self.execution_id:
+            register_runner(self.execution_id, self)
 
         try:
             while turn < max_turns:
                 turn += 1
                 logger.info("[Agent] Turn %d/%d", turn, max_turns)
+
+                # 检查是否已取消
+                if self._cancel_event.is_set():
+                    logger.info("[Agent] 执行被用户取消 (turn %d)", turn)
+                    response_text = '执行已被用户取消'
+                    break
+
+                # 检查整体超时
+                elapsed = time.time() - run_start_time
+                if elapsed > self._timeout_seconds:
+                    logger.warning("[Agent] 整体超时 (%.0fs > %ds)，强制结束", elapsed, self._timeout_seconds)
+                    response_text = f'执行超时（{int(elapsed)}秒）'
+                    break
 
                 # 同线程截图轮询（浏览器已打开时）
                 if self._screenshot_stream:
@@ -591,8 +640,19 @@ class AgentRunner:
                 messages.append({"role": "user", "content": tool_results})
 
         finally:
+            # 从全局注册表移除
+            if self.execution_id:
+                unregister_runner(self.execution_id)
+
             # 确保浏览器资源始终释放
             self._cleanup_browser(context)
+
+            # 判断终止原因
+            cancel_reason = None
+            if self._cancel_event.is_set():
+                cancel_reason = 'cancelled'
+            elif time.time() - run_start_time > self._timeout_seconds:
+                cancel_reason = 'timeout'
 
             if turn >= max_turns:
                 logger.warning("[Agent] 达到最大轮次 %d，强制结束", max_turns)
@@ -601,7 +661,7 @@ class AgentRunner:
             if self.execution_id:
                 try:
                     _emit_step_event(self.execution_id, 'execution_end', {
-                        'status': 'completed',
+                        'status': cancel_reason or 'completed',
                         'total_steps': len(self._tool_calls_log),
                         'input_tokens': self._total_input_tokens,
                         'output_tokens': self._total_output_tokens,

@@ -160,7 +160,7 @@
 import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Rank } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getReplayScript, convertToScript, updateReplayScript, replayExecute,
 } from '../api'
@@ -301,7 +301,17 @@ function goBack() {
   router.back()
 }
 
-function deleteParam(key) {
+async function deleteParam(key) {
+  const affectedSteps = script.value.steps.filter(
+    s => (s.parameters || []).includes(key)
+  )
+  try {
+    await ElMessageBox.confirm(
+      `将删除参数「${key}」，${affectedSteps.length} 个步骤中的引用将被替换为默认值。此操作不可撤销。`,
+      '确认删除参数',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
   const defaultVal = script.value.parameters[key]?.default || ''
   // 将所有步骤中的 {{key}} 替换回字面值
   for (const step of script.value.steps) {
