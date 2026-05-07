@@ -13,6 +13,7 @@ urlpatterns = [
 
     # 执行记录
     path('executions/', views.ExecutionRecordListView.as_view(), name='execution-list'),
+    path('executions/batch-delete/', views.execution_batch_delete, name='execution-batch-delete'),
     path('executions/<int:pk>/', views.ExecutionRecordDetailView.as_view(), name='execution-detail'),
     path('executions/<int:pk>/steps/', views.execution_steps, name='execution-steps'),
     path('executions/<int:pk>/latest_frame/', views.execution_latest_frame, name='execution-latest-frame'),

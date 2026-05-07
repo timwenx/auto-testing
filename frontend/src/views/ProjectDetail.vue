@@ -740,8 +740,8 @@ const handleSaveTC = async () => {
     })
     ElMessage.success('保存成功')
     showEditDialog.value = false
-    loadData()
-  } catch { ElMessage.error('保存失败') } finally { savingTC.value = false }
+    await loadData()
+  } catch (e) { ElMessage.error('保存失败') } finally { savingTC.value = false }
 }
 
 function openEditor(row) {

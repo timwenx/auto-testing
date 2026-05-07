@@ -255,9 +255,64 @@ class ExecutionRecordListView(generics.ListAPIView):
         return qs
 
 
-class ExecutionRecordDetailView(generics.RetrieveAPIView):
+class ExecutionRecordDetailView(generics.RetrieveDestroyAPIView):
     queryset = ExecutionRecord.objects.select_related('project', 'testcase').all()
     serializer_class = ExecutionRecordSerializer
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # 清理关联截图文件
+        _cleanup_execution_files(instance)
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['DELETE'])
+def execution_batch_delete(request):
+    """批量删除执行记录：支持按 ID 列表、按项目、按功能点删除"""
+    import shutil
+    ids = request.data.get('ids', [])
+    project_id = request.data.get('project_id')
+    feature_group = request.data.get('feature_group')
+    clear_all = request.data.get('clear_all', False)
+
+    if clear_all:
+        # 清除所有执行记录
+        records = ExecutionRecord.objects.all()
+    elif ids:
+        records = ExecutionRecord.objects.filter(id__in=ids)
+    elif project_id or feature_group is not None:
+        qs = ExecutionRecord.objects.all()
+        if project_id:
+            qs = qs.filter(project_id=project_id)
+        if feature_group is not None:
+            if feature_group == '':
+                qs = qs.filter(testcase__feature_group__in=['', None]) | qs.filter(testcase__isnull=True)
+            else:
+                qs = qs.filter(testcase__feature_group=feature_group)
+        plan_only = request.data.get('plan_only', False)
+        if plan_only:
+            qs = qs.exclude(plan_execution__isnull=True)
+        records = qs
+    else:
+        return Response({'error': '请提供 ids、project_id、feature_group 或 clear_all 参数'}, status=400)
+
+    # 清理关联文件
+    for record in records:
+        _cleanup_execution_files(record)
+
+    count, _ = records.delete()
+    return Response({'deleted': count, 'message': f'已删除 {count} 条执行记录'})
+
+
+def _cleanup_execution_files(record):
+    """清理单条执行记录关联的截图文件"""
+    import shutil
+    from django.conf import settings as django_settings
+    media_root = django_settings.MEDIA_ROOT
+    record_dir = os.path.join(media_root, str(record.id))
+    if os.path.isdir(record_dir):
+        shutil.rmtree(record_dir, ignore_errors=True)
 
 
 @api_view(['GET'])
@@ -1092,6 +1147,22 @@ def convert_to_script(request, pk):
     record.replay_script = script
     record.save(update_fields=['replay_script'])
 
+    # 同步创建/更新 Script 模型实例，使脚本管理页面可查
+    script_name = script.get('name') or (record.testcase.name if record.testcase else f'脚本-{record.pk}')
+    script_feature_group = (record.testcase.feature_group if record.testcase else '') or ''
+    Script.objects.update_or_create(
+        source_execution=record,
+        defaults={
+            'project': record.project,
+            'testcase': record.testcase,
+            'name': script_name,
+            'feature_group': script_feature_group,
+            'script_data': script,
+            'status': 'active',
+            'version': 1,
+        },
+    )
+
     return Response(script)
 
 
@@ -1144,6 +1215,14 @@ def update_replay_script(request, pk):
 
     record.replay_script = current
     record.save(update_fields=['replay_script'])
+
+    # 同步更新关联的 Script 模型实例
+    linked_script = Script.objects.filter(source_execution=record).first()
+    if linked_script:
+        linked_script.script_data = current
+        if 'name' in data and data['name']:
+            linked_script.name = data['name']
+        linked_script.save(update_fields=['script_data', 'name', 'updated_at'])
 
     return Response(current)
 

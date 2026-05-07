@@ -45,14 +45,17 @@ def _selector_hash(selector, length=8):
 
 
 def _make_param_name(prefix, selector='', index=0):
-    """Generate a deterministic parameter name based on selector content.
+    """Generate a deterministic, human-readable parameter name from a selector.
 
-    - If selector is provided, uses a hash of the selector for uniqueness.
-    - If no selector, falls back to index-based naming.
+    - If selector is provided, extracts a readable suffix (e.g. '#username' → 'username').
+    - Falls back to MD5 hash when the readable part is too short or ambiguous.
     - Same selector always produces the same parameter name, enabling
       cross-script parameter deduplication in plan execution.
     """
     if selector:
+        readable = _short_selector(selector)
+        if len(readable) >= 2:
+            return f'{prefix}_{readable}'
         suffix = _selector_hash(selector)
     else:
         suffix = str(index)
